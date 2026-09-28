@@ -627,9 +627,6 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         addLog(`Settings save failed: ${msg}`);
         throw e;
       }
-      try {
-        if (next.appLockPin) localStorage.setItem('hermes_pinlen', String(next.appLockPin.length));
-      } catch {}
       await transactionalVaultSave(buildVaultPayload(next));
       setSettingsSaveError(null);
     } else if (!next.appLockEnabled) {
@@ -643,7 +640,6 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
       try {
         localStorage.removeItem('hermes_vault');
-        localStorage.removeItem('hermes_pinlen');
       } catch {}
       setSettingsSaveError(null);
     } else {
@@ -651,6 +647,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const pub = sanitizeForPersist({ ...next } as unknown as Record<string, unknown>) as unknown as HermesSettings;
       try {
         localStorage.setItem('hermes_settings', JSON.stringify(pub));
+        setSettingsSaveError(null);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         setSettingsSaveError(`Settings write failed: ${msg}`);
@@ -685,9 +682,6 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       next.approvalScope = 'once';
     }
     if (newSettings.appLockEnabled && !prev.appLockEnabled && next.appLockPin) {
-      try {
-        localStorage.setItem('hermes_pinlen', String(next.appLockPin.length));
-      } catch {}
       lockVault(next.appLockPin)
         .then(() => {
           setVaultUnlocked(true);
@@ -715,9 +709,6 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         addLog('PIN change blocked while vault locked; keeping the existing PIN.');
         void persistSettings(next).catch(() => {});
       } else {
-        try {
-          localStorage.setItem('hermes_pinlen', String(next.appLockPin.length));
-        } catch {}
         lockVault(next.appLockPin)
           .then(() => {
             setVaultUnlocked(true);
@@ -1396,7 +1387,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       // no addresses, ports, or log-file internals (U15).
       const offlineError = (count: number) =>
         count > 0
-          ? 'Gateway unreachable. Showing cached data , pull to retry.'
+          ? 'Gateway unreachable. Showing cached data, pull to retry.'
           : 'Gateway unreachable. Check the gateway status and retry.';
       setListsMeta((prev) => {
         const next: ListSyncMetaMap = { ...prev };
@@ -1650,14 +1641,11 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       await startGateway();
       return;
     } else {
-      setInstallProgress('Downloading hermes-image (~305MB)...');
-      addLog('Download started from repository manifest');
-
-      for (let i = 10; i <= 100; i += 20) {
-        await new Promise((r) => setTimeout(r, 400));
-        setInstallProgress(`Extracting rootfs layers (${i}%)...`);
-        addLog(`Extracted package block #${i / 20}`);
-      }
+      // Web preview has no local installer: there is nothing to download
+      // or extract here. Keep progress indeterminate and let the health
+      // probe below decide the outcome honestly.
+      setInstallProgress('Checking gateway...');
+      addLog('Web preview has no local installer; probing gateway health');
     }
 
     // Probe real gateway health before declaring success.
@@ -2309,6 +2297,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setTurnMeta((prev) => ({
           ...prev,
           [agentMsgId]: {
+            ...prev[agentMsgId],
             model: activeModel,
             durationMs: duration,
             ...(estimated ? { estimated: true } : {}),
@@ -2450,7 +2439,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           live: false,
           stale: count > 0,
           error: count > 0
-            ? 'Jobs unavailable. Showing cached jobs , pull to retry.'
+            ? 'Jobs unavailable. Showing cached jobs, pull to retry.'
             : 'Jobs unavailable. Check the gateway status and retry.',
         };
         return {

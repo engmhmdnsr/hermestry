@@ -1,4 +1,4 @@
-import React, { useState, useEffect, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { useHermes } from './context/HermesContext';
 import { Header } from './components/layout/Header';
 import { BottomNav } from './components/layout/BottomNav';
@@ -9,6 +9,7 @@ import { OnboardingWizard } from './components/wizard/OnboardingWizard';
 import { AppLockGate } from './components/security/AppLockGate';
 import { HomeTab } from './components/tabs/HomeTab';
 import { ChatTab } from './components/tabs/ChatTab';
+import { TabPaneSkeleton } from './components/ui/Skeleton';
 
 // PERF-01: code-split the heavy routes so the initial bundle stays lean.
 // Chat (default tab) and Home stay eager; Jobs (~26KB) and Settings (~67KB,
@@ -18,12 +19,6 @@ const JobsTab = lazy(() =>
 );
 const SettingsTab = lazy(() =>
   import('./components/tabs/SettingsTab').then((m) => ({ default: m.SettingsTab }))
-);
-
-const TabFallback: React.FC = () => (
-  <div className="flex-1 flex items-center justify-center" aria-label="Loading tab">
-    <div className="w-6 h-6 rounded-full border-2 border-slate-600 border-t-indigo-400 animate-spin" />
-  </div>
 );
 
 // Tab ids are stable: 0 Home, 1 Chat, 2 Jobs, 3 Settings.
@@ -88,14 +83,22 @@ export const App: React.FC = () => {
 
   // Persist the active tab across reloads and expose hash deep links
   // (#/home, #/chat, #/jobs, #/settings) with back/forward support.
+  // Init sync uses replaceState (no extra history entry on load); user tab
+  // switches use pushState so back/forward walks the tab trail.
+  const isFirstTabSync = useRef(true);
   useEffect(() => {
     try {
       localStorage.setItem(TAB_STORAGE_KEY, String(currentTab));
     } catch {}
     const hash = TAB_HASHES[currentTab];
     if (typeof window !== 'undefined' && window.location.hash !== hash) {
-      window.history.replaceState(null, '', hash);
+      if (isFirstTabSync.current) {
+        window.history.replaceState(null, '', hash);
+      } else {
+        window.history.pushState(null, '', hash);
+      }
     }
+    isFirstTabSync.current = false;
   }, [currentTab]);
 
   useEffect(() => {
@@ -184,12 +187,12 @@ export const App: React.FC = () => {
             />
           )}
           {currentTab === 2 && (
-            <Suspense fallback={<TabFallback />}>
+            <Suspense fallback={<TabPaneSkeleton />}>
               <JobsTab />
             </Suspense>
           )}
           {currentTab === 3 && (
-            <Suspense fallback={<TabFallback />}>
+            <Suspense fallback={<TabPaneSkeleton />}>
               <SettingsTab />
             </Suspense>
           )}

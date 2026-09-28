@@ -55,6 +55,7 @@ interface MessageRowProps {
   onRegenerate: (content: string) => void;
   onFork: () => void;
   onToggleMenu: (id: string | null) => void;
+  t: (key: string) => string;
 }
 
 // Memoized so 50ms batched streaming flushes only re-render the live tail
@@ -77,6 +78,7 @@ const MessageRow: React.FC<MessageRowProps> = memo(
     onRegenerate,
     onFork,
     onToggleMenu,
+    t,
   }) => {
     const isUser = msg.sender === 'you';
     return (
@@ -110,8 +112,8 @@ const MessageRow: React.FC<MessageRowProps> = memo(
               <button
                 onClick={() => onCopy(msg.id, msg.content || msg.thinking || '')}
                 className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-white cursor-pointer ms-1"
-                title="Copy message"
-                aria-label="Copy message"
+                title={t('copy')}
+                aria-label={t('copy')}
               >
                 {copied ? (
                   <Check className="w-3.5 h-3.5 text-emerald-400" />
@@ -213,7 +215,7 @@ const MessageRow: React.FC<MessageRowProps> = memo(
                     className="w-full min-h-[44px] px-3 py-2 flex items-center gap-2 text-start text-slate-300 hover:text-white hover:bg-white/[0.06] transition cursor-pointer"
                   >
                     <GitFork className="w-3.5 h-3.5" />
-                    <span>Branch</span>
+                    <span>{t('fork')}</span>
                   </button>
                 )}
                 <button
@@ -228,7 +230,7 @@ const MessageRow: React.FC<MessageRowProps> = memo(
                   {speaking ? (
                     <>
                       <VolumeX className="w-3.5 h-3.5 text-rose-400" />
-                      <span className="text-rose-400 font-medium">Stop</span>
+                      <span className="text-rose-400 font-medium">{t('stopShort')}</span>
                     </>
                   ) : (
                     <>
@@ -272,6 +274,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     activateProvider,
     retryLast,
     connected,
+    streamError,
     gatewayFailed,
     gatewayFailureReason,
     t,
@@ -306,8 +309,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   // Optional context surface (lands with the context owner's stream-error
   // work): the live failure banner below activates when present, and stays
   // hidden otherwise. Never touch HermesContext.tsx from this file.
-  const streamError =
-    (useHermes() as unknown as { streamError?: string | null }).streamError ?? null;
+  const liveStreamError = streamError ?? null;
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const textRef = useRef('');
@@ -797,10 +799,33 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     const cleanText = sanitizeForSpeech(content);
     if (!cleanText) return;
     const truncated = cleanText.length > MAX_SPEECH_CHARS;
-    const utter = new SpeechSynthesisUtterance(
-      truncated ? cleanText.slice(0, MAX_SPEECH_CHARS) : cleanText
-    );
-    utter.lang = speechLocaleForLanguage(settings.language || 'en');
+    let spoken = cleanText;
+    if (truncated) {
+      // Cut at a sentence or word boundary so read-aloud never stops
+      // mid-word; fall back to a hard cut only when no boundary exists.
+      const window_ = cleanText.slice(0, MAX_SPEECH_CHARS);
+      const sentenceEnd = Math.max(
+        window_.lastIndexOf('. '),
+        window_.lastIndexOf('! '),
+        window_.lastIndexOf('? '),
+        window_.lastIndexOf('\n')
+      );
+      const wordEnd = window_.lastIndexOf(' ');
+      const cut = sentenceEnd > MAX_SPEECH_CHARS / 2 ? sentenceEnd + 1 : wordEnd > 0 ? wordEnd : MAX_SPEECH_CHARS;
+      spoken = window_.slice(0, cut).trimEnd();
+    }
+    const utter = new SpeechSynthesisUtterance(spoken);
+    const locale = speechLocaleForLanguage(settings.language || 'en');
+    utter.lang = locale;
+    try {
+      const voices = window.speechSynthesis.getVoices?.() || [];
+      const match =
+        voices.find((v) => v.lang === locale) ||
+        voices.find((v) => v.lang?.startsWith(locale.split('-')[0]));
+      if (match) utter.voice = match;
+    } catch {
+      // Voice lookup is best-effort; utter.lang already carries the locale.
+    }
     utter.onend = () => setSpeakingMsgId(null);
     utter.onerror = () => setSpeakingMsgId(null);
     setSpeakingMsgId(msgId);
@@ -811,6 +836,24 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   const handleCopy = async (id: string, content: string) => {
     try {
       await navigator.clipboard.writeText(content);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 1800);
+      return;
+    } catch {
+      // Fall through to the legacy execCommand path below.
+    }
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = content;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      // eslint-disable-next-line deprecation/deprecation
+      const ok = document.execCommand('copy');
+      ta.remove();
+      if (!ok) throw new Error('execCommand copy failed');
       setCopiedId(id);
       setTimeout(() => setCopiedId(null), 1800);
     } catch {
@@ -888,7 +931,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   // A new stream error re-arms the banner after a previous dismiss.
   useEffect(() => {
     setStreamErrorDismissed(null);
-  }, [streamError]);
+  }, [liveStreamError]);
 
   const curModelName =
     models.find((m) => m.id === settings.modelId)?.displayName ||
@@ -1086,6 +1129,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                 onRegenerate={onRegenerateMessage}
                 onFork={onForkMessage}
                 onToggleMenu={onToggleMenu}
+                t={t}
               />
             );
           })
@@ -1114,7 +1158,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             <span className="text-xs font-semibold text-amber-200 tracking-tight">
               {t('approvalTitle')}
             </span>
-            <span className="text-[11px] font-mono text-amber-300/80">
+            <span className="text-[11px] font-mono text-amber-300/80" aria-label={`${pendingApprovals.length} ${t('pending')}`}>
               {pendingApprovals.length} {t('pending')}
             </span>
           </div>
@@ -1154,12 +1198,12 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       )}
 
       {/* Live stream failure banner (context streamError surface, never a bubble) */}
-      {streamError && streamErrorDismissed !== streamError && (
+      {liveStreamError && streamErrorDismissed !== liveStreamError && (
         <div
           role="alert"
           className="mb-2 px-3.5 py-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs"
         >
-          <p className="text-rose-200 break-words leading-relaxed">Stream error: {streamError}</p>
+          <p className="text-rose-200 break-words leading-relaxed">Stream error: {liveStreamError}</p>
           <div className="flex items-center gap-2 mt-2">
             <button
               onClick={() => {
@@ -1175,7 +1219,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
               Retry
             </button>
             <button
-              onClick={() => setStreamErrorDismissed(streamError)}
+              onClick={() => setStreamErrorDismissed(liveStreamError)}
               className="min-h-[44px] px-3 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 text-xs cursor-pointer"
             >
               Dismiss
@@ -1426,7 +1470,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                   title={!settings.modelId ? 'Select a model first' : 'Stop and send now'}
                   className="px-2 min-h-[44px] py-1 rounded-full text-[11px] font-medium bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25 disabled:opacity-40 cursor-pointer"
                 >
-                  Send
+                  {t('send')}
                 </button>
                 <button
                   type="button"

@@ -69,8 +69,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
   useEffect(() => {
     if (step === 3 && launchTried && !launching && !connected && gatewayFailed) {
       setLaunchError(
-        gatewayFailureReason ||
-          'Gateway start failed: health check did not pass. See the log or press Skip to open the workspace offline.'
+        gatewayFailureReason || t('wizardLaunchFailed')
       );
     }
   }, [step, launchTried, launching, connected, gatewayFailed, gatewayFailureReason]);
@@ -110,14 +109,17 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
   };
 
   const handleSkip = () => {
-    // Offline skip is a deliberate two-tap confirm, never silent.
-    if (typeof navigator !== 'undefined' && !navigator.onLine && !skipArmed) {
+    // Offline skip is a deliberate two-tap confirm, never silent: the first
+    // tap arms and explains that chats stay dead until the gateway starts.
+    if (!skipArmed) {
       setSkipArmed(true);
       return;
     }
     updateSettings({ onboarded: true });
     onDone();
   };
+
+  const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
 
   return (
     <div className="min-h-screen bg-[var(--app-bg,#090B0E)] text-slate-200 p-6 max-w-lg mx-auto flex flex-col justify-start">
@@ -318,6 +320,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                     id="ob-provider"
                     value={provider}
                     onChange={(e) => setProvider(e.target.value)}
+                    dir="ltr"
                     className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
                   >
                     <option value="">{t('selectProvider')}</option>
@@ -348,7 +351,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                   <button
                     type="button"
                     onClick={() => setShowKey(!showKey)}
-                    aria-label={showKey ? 'Hide API key' : 'Show API key'}
+                    aria-label={showKey ? t('hideToken') : t('showToken')}
                     aria-pressed={showKey}
                     className="absolute end-2 top-1/2 -translate-y-1/2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-500 hover:text-white"
                   >
@@ -407,7 +410,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                   <button
                     type="button"
                     onClick={() => setShowTg(!showTg)}
-                    aria-label={showTg ? 'Hide Telegram token' : 'Show Telegram token'}
+                    aria-label={showTg ? t('hideToken') : t('showToken')}
                     aria-pressed={showTg}
                     className="absolute end-2 top-1/2 -translate-y-1/2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-500 hover:text-white"
                   >
@@ -507,7 +510,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
 
               {skipArmed && (
                 <div role="alert" className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 leading-relaxed">
-                  You appear to be offline and the gateway is not running. Press Skip again to open the workspace anyway , chats will not work until the gateway starts.
+                  {isOffline ? t('skipConfirmOffline') : t('skipConfirmOnline')}
                 </div>
               )}
               <button

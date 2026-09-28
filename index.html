@@ -1,10 +1,29 @@
 <!doctype html>
-<html lang="en" class="dark">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/ic_hermes_logo.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Hermes Mobile</title>
+    <style>html{background-color:#F1F5F9}html[data-mode="dark"]{background-color:#090B0E}</style>
+    <script>
+      try {
+        (function () {
+          var mode = 'dark';
+          try {
+            var raw = localStorage.getItem('hermes_settings');
+            if (raw) mode = (JSON.parse(raw).themeMode) || 'dark';
+          } catch (e) {}
+          var dark = true;
+          if (mode === 'light') dark = false;
+          else if (mode === 'system' && window.matchMedia) {
+            dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          }
+          document.documentElement.setAttribute('data-mode', dark ? 'dark' : 'light');
+          document.documentElement.style.backgroundColor = dark ? '#090B0E' : '#F1F5F9';
+        })();
+      } catch (e) {}
+    </script>
     <meta name="description" content="On-phone and remote Hermes AI gateway client with live streaming, session management, scheduled cron jobs, approvals, and system diagnostics." />
     
     <!-- OpenGraph -->
@@ -18,7 +37,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   </head>
-  <body class="bg-[#090B0E] text-[#F3F4F6] font-sans antialiased overflow-x-hidden selection:bg-[#6366F1]/30 selection:text-[#E0E7FF]">
+  <body class="bg-[#F1F5F9] text-[#0F172A] font-sans antialiased overflow-x-hidden selection:bg-[#6366F1]/30 selection:text-[#E0E7FF]">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

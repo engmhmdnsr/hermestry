@@ -44,6 +44,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     currentSessionId,
     selectSession,
     newSession,
+    sendMessage,
     startGateway,
     refreshNow,
     settings,
@@ -169,6 +170,26 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     }
   };
 
+  // Try-asking chips: a new session is created first, then the chip prompt
+  // is sent as the opening message so the tap is never a blank chat.
+  const handleChipPromptGoChat = async (prompt: string) => {
+    setActionError(null);
+    try {
+      await newSession();
+      sendMessage(prompt);
+      onGoChat();
+    } catch {
+      setActionError('Could not create session. Gateway unreachable.');
+    }
+  };
+
+  // Jobs count convention: nav badges show enabled-only; Home surfaces the
+  // enabled count with the total as context so the numbers never disagree.
+  const enabledJobsCount = useMemo(
+    () => jobs.filter((j) => j.enabled).length,
+    [jobs]
+  );
+
   // Recent-session truthfulness: cached list while offline is stale, not live.
   const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
   const recentListState = resolveListUiState(
@@ -281,7 +302,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               className="flex-1 min-h-[44px] flex items-center justify-center gap-2 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${startingGateway ? 'animate-spin' : ''}`} />
-              <span>{startingGateway ? `${t('starting')}...` : t('restartDaemon')}</span>
+              <span>{startingGateway ? `${t('starting')}...` : 'Restart Gateway'}</span>
             </button>
             <button
               onClick={onGoSettings}
@@ -308,7 +329,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               className="flex-1 min-h-[44px] flex items-center justify-center gap-2 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${startingGateway ? 'animate-spin' : ''}`} />
-              <span>{startingGateway ? `${t('starting')}...` : t('startDaemon')}</span>
+              <span>{startingGateway ? `${t('starting')}...` : 'Start Gateway'}</span>
             </button>
             <button
               onClick={onGoSettings}
@@ -335,7 +356,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             <div className="w-8 h-8 rounded-xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
               <MessageSquare className="w-4 h-4" />
             </div>
-            <span className="text-xs font-semibold text-white">New chat</span>
+            <span className="text-xs font-semibold text-white">{t('newSession')}</span>
             <span className="text-[11px] text-slate-400 mt-0.5">Start a conversation with Hermes</span>
           </button>
 
@@ -360,7 +381,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               <CalendarClock className="w-4 h-4" />
             </div>
             <span className="text-xs font-semibold text-white">Scheduled jobs</span>
-            <span className="text-[11px] text-slate-400 mt-0.5">{jobs.length} {jobs.length === 1 ? 'job' : 'jobs'}</span>
+            <span className="text-[11px] text-slate-400 mt-0.5">{enabledJobsCount} {t('active')} · {jobs.length} total</span>
           </button>
 
           {/* Settings / Ops */}
@@ -404,7 +425,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               onClick={() => void handleRetrySessions()}
               className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition cursor-pointer"
             >
-              Retry
+              {t('refresh')}
             </button>
           </div>
         ) : recentSessions.length === 0 ? (
@@ -430,7 +451,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                 {['Check my system health', 'Summarize my recent sessions', 'Help me plan my day'].map((prompt) => (
                   <button
                     key={prompt}
-                    onClick={() => void handleNewSessionGoChat()}
+                    onClick={() => void handleChipPromptGoChat(prompt)}
                     className="px-3 py-1.5 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-[11px] text-slate-300 transition cursor-pointer"
                   >
                     {prompt}
@@ -512,7 +533,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               onClick={onGoActivity}
               className="min-h-[44px] px-2 inline-flex items-center text-xs text-indigo-400 hover:text-indigo-300 transition-colors font-medium cursor-pointer"
             >
-              {t('jobs')} ({jobs.length})
+              {t('jobs')} ({enabledJobsCount}/{jobs.length})
             </button>
           </div>
 

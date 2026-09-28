@@ -694,6 +694,7 @@ export const JobsTab: React.FC = () => {
                   </div>
 
                   <span
+                    aria-label={`${j.name}: ${j.enabled ? t('enabled') : 'Paused'}`}
                     className={`px-2.5 py-1 rounded-lg text-xs font-medium ${
                       j.enabled
                         ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20'
@@ -771,7 +772,7 @@ export const JobsTab: React.FC = () => {
                       className="text-indigo-400 hover:text-indigo-300 disabled:opacity-50 cursor-pointer flex items-center gap-1.5 transition font-medium min-h-[44px]"
                     >
                       <Play className="w-3.5 h-3.5" />
-                      <span>{pending === 'run' ? 'Running...' : t('runNow')}</span>
+                      <span>{pending === 'run' ? `${t('running')}...` : t('runNow')}</span>
                     </button>
 
                     <button
@@ -807,7 +808,7 @@ export const JobsTab: React.FC = () => {
                 {/* Run History Expansion */}
                 {isHistoryOpen && (
                   <div className="mt-3 pt-3 border-t border-white/[0.06] space-y-2 animate-in fade-in duration-150">
-                    <span className="text-xs font-semibold text-slate-300 block">
+                    <span className="text-xs font-semibold text-slate-300 block" aria-label={`${t('runsHistory')}: ${runs.length}`}>
                       {t('runsHistory')}{runs.length > 0 ? ` (${runs.length})` : ''}
                     </span>
                     {isRunsLoading && runsRaw === undefined ? (
@@ -839,7 +840,7 @@ export const JobsTab: React.FC = () => {
                             Showing the 10 most recent of {runs.length} runs.
                           </p>
                         )}
-                        {runs.slice(0, 10).map((r, i) => {
+                        {[...runs].sort((a, b) => parseRunDate(b.startedAt) - parseRunDate(a.startedAt)).slice(0, 10).map((r, i) => {
                           const duration = formatDuration(r.startedAt, r.finishedAt);
                           const startedLabel = r.startedAt
                             ? formatRunTimestamp(r.startedAt, displayTz)
@@ -860,7 +861,7 @@ export const JobsTab: React.FC = () => {
                               className="p-2.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] text-xs space-y-1"
                             >
                               <div className="flex items-center justify-between gap-2 text-slate-300">
-                                <span className={`px-2 py-0.5 rounded-md border text-[10px] font-medium capitalize ${badgeClass}`}>
+                                <span className={`px-2 py-0.5 rounded-md border text-[10px] font-medium capitalize ${badgeClass}`} aria-label={`Run status: ${r.status || 'Completed'}`}>
                                   {r.status || 'Completed'}
                                 </span>
                                 <span className="text-slate-500 text-[11px] font-mono" title={r.startedAt}>{startedLabel}</span>

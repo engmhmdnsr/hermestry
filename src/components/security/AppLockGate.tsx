@@ -113,7 +113,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
     if (lockoutLeft > 0 || busyRef.current) return;
     const attempted = pinRef.current;
     if (attempted.length < MIN_PIN_LEN) {
-      setError(`Enter at least ${MIN_PIN_LEN} digits.`);
+      setError(t('lockMinDigits').replace('{n}', String(MIN_PIN_LEN)));
       return;
     }
     let hasVault = false;
@@ -196,7 +196,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
         {t('lockedTitle')}
       </h2>
       <p className="text-xs text-slate-400 mb-8">
-        Enter your PIN to continue
+        {t('lockEnterPin').replace('{min}', String(MIN_PIN_LEN)).replace('{max}', String(MAX_PIN_LEN))}
       </p>
 
       {/* PIN indicator dots: a fixed number of slots, so the display never
@@ -218,7 +218,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
         })}
       </div>
       <p role="status" className="sr-only">
-        {`${pin.length} digits entered, at least ${MIN_PIN_LEN} required`}
+        {t('lockDigitsStatus').replace('{n}', String(pin.length)).replace('{min}', String(MIN_PIN_LEN))}
       </p>
 
       {error && (
@@ -282,13 +282,13 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
         }`}
       >
         <LogIn className="w-4 h-4" />
-        <span>{busy ? 'Unlocking…' : 'Unlock'}</span>
+        <span>{busy ? t('unlocking') : t('unlock')}</span>
       </button>
       {!lockedOut && (
         <p className="mt-2 text-[11px] text-slate-500 text-center max-w-[260px]">
           {attempts > 0
             ? `${t('incorrectPin')} ${MAX_ATTEMPTS - attempts} ${t('attemptsLeft')}.`
-            : `Enter ${MIN_PIN_LEN}–${MAX_PIN_LEN} digits, then press Unlock.`}
+            : t('lockHint').replace('{min}', String(MIN_PIN_LEN)).replace('{max}', String(MAX_PIN_LEN))}
         </p>
       )}
 
@@ -298,13 +298,13 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
       </p>
       <div className="mt-4 max-w-[300px] space-y-2 text-center">
         <p className="text-[11px] text-amber-300/90 leading-relaxed">
-          Forgot your PIN? There is no recovery , clearing the app data is the only reset, and the locked vault goes with it.
+          {t('lockRecovery')}
         </p>
         <p className="text-[11px] text-slate-500 leading-relaxed">
-          Tip: lock anytime from Settings → App Lock → Lock Now.
+          {t('lockTip')}
         </p>
         <p className="text-[11px] text-slate-600 leading-relaxed">
-          This screen does not block screenshots or screen recording , keep your device screen lock on.
+          {t('screenshotNote')}
         </p>
       </div>
     </div>

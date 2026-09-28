@@ -36,6 +36,7 @@ export const DesktopInspector: React.FC<DesktopInspectorProps> = ({ isOpen, onCl
     gatewayLogs,
     approvals,
     chat,
+    t,
   } = useHermes();
 
   const [activeTab, setActiveTab] = useState<'tools' | 'logs' | 'system'>('tools');
@@ -54,13 +55,13 @@ export const DesktopInspector: React.FC<DesktopInspectorProps> = ({ isOpen, onCl
       <div className="h-14 border-b border-white/[0.06] flex items-center justify-between px-4">
         <div className="flex items-center gap-2">
           <Activity className="w-4 h-4 text-indigo-400" />
-          <span className="font-semibold text-white tracking-tight">Inspector & Telemetry</span>
+          <span className="font-semibold text-white tracking-tight">{t('inspectorTitle')}</span>
         </div>
         <button
           onClick={onClose}
           className="w-7 h-7 min-w-[44px] min-h-[44px] rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.05]"
-          title="Close Inspector"
-          aria-label="Close Inspector"
+          title={t('inspectorClose')}
+          aria-label={t('inspectorClose')}
         >
           <X className="w-4 h-4" />
         </button>
@@ -121,7 +122,7 @@ export const DesktopInspector: React.FC<DesktopInspectorProps> = ({ isOpen, onCl
                       <Sparkles className="w-3 h-3 text-indigo-400" />
                       <span>Invocations</span>
                     </span>
-                    <span className="text-[10px] text-slate-500 font-mono">
+                    <span className="text-[10px] text-slate-500 font-mono" aria-label={`${msg.tools?.length} tools`}>
                       {msg.tools?.length} tools
                     </span>
                   </div>
@@ -158,7 +159,7 @@ export const DesktopInspector: React.FC<DesktopInspectorProps> = ({ isOpen, onCl
               <span className="text-[11px] font-semibold uppercase tracking-wider">
                 Raw Event Stream
               </span>
-              <span className="text-[10px] text-slate-500">
+              <span className="text-[10px] text-slate-500" aria-label={`${gatewayLogs.length} events`}>
                 {gatewayLogs.length} events
               </span>
             </div>
@@ -218,7 +219,7 @@ export const DesktopInspector: React.FC<DesktopInspectorProps> = ({ isOpen, onCl
               <span className="text-slate-400 block font-medium">Security Gate</span>
               <div className="flex items-center justify-between text-[11px]">
                 <span className="text-slate-500">Pending Actions</span>
-                <span className={`font-semibold ${approvals.length > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                <span className={`font-semibold ${approvals.length > 0 ? 'text-amber-400' : 'text-emerald-400'}`} aria-label={`${approvals.length} pending`}>
                   {approvals.length} pending
                 </span>
               </div>

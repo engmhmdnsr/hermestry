@@ -30,6 +30,7 @@ import {
 } from '../../constants/providers';
 import { THEME_PALETTES, ThemeMode } from '../../constants/themes';
 import { LANGUAGES } from '../../constants/languages';
+import { toAppError, localizedMessage } from '../../services/appErrors';
 import {
   Blueprint,
   DoctorReport,
@@ -52,7 +53,7 @@ const RiskBadge: React.FC<{ level: RiskLevel; label: string }> = ({ level, label
     off: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30',
   };
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold border ${styles[level]}`}>
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-[var(--radius-sm,6px)] text-[10px] font-semibold border ${styles[level]}`}>
       {level === 'off' ? <ShieldCheck className="w-3 h-3" /> : <ShieldAlert className="w-3 h-3" />}
       {label}
     </span>
@@ -287,6 +288,10 @@ export const SettingsTab: React.FC = () => {
     return !v || v === key ? fallback : v;
   };
 
+  // Disabling App Lock is a two-tap confirm like auto-approve: first tap
+  // arms, second tap commits. Re-enabling always requires a new PIN.
+  const [pendingDisableLock, setPendingDisableLock] = useState(false);
+  const disableLockTimer = useRef<number | null>(null);
   // App lock PIN setup state
   const [showPinForm, setShowPinForm] = useState(false);
   const [newPin, setNewPin] = useState('');
@@ -307,7 +312,9 @@ export const SettingsTab: React.FC = () => {
   const appLockTitle = tx('appLock', 'App Lock PIN');
 
   // Toast feedback with a single retriggerable timer (no stacked timeouts).
-  const [toast, setToast] = useState<string | null>(null);
+  // Tone drives color: info indigo, success emerald, error rose.
+  type ToastTone = 'info' | 'success' | 'error';
+  const [toast, setToast] = useState<{ msg: string; tone: ToastTone } | null>(null);
   const toastTimer = useRef<number | null>(null);
   useEffect(() => () => {
     if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
@@ -354,6 +361,7 @@ export const SettingsTab: React.FC = () => {
   useEffect(() => () => {
     if (scopeTimer.current !== null) window.clearTimeout(scopeTimer.current);
     if (autoApproveTimer.current !== null) window.clearTimeout(autoApproveTimer.current);
+    if (disableLockTimer.current !== null) window.clearTimeout(disableLockTimer.current);
   }, []);
 
   const handleScopeChange = (id: string, label: string) => {
@@ -448,9 +456,9 @@ export const SettingsTab: React.FC = () => {
       } catch {
         ok = false;
       }
-      showToast(ok ? t('gatewayStarted') : tx('gatewayStartFailed', 'Gateway failed to start. See details below.'));
+      showToast(ok ? t('gatewayStarted') : tx('gatewayStartFailed', 'Gateway failed to start. See details below.'), ok ? 'success' : 'error');
     } catch {
-      showToast(tx('gatewayStartFailed', 'Gateway failed to start. See details below.'));
+      showToast(tx('gatewayStartFailed', 'Gateway failed to start. See details below.'), 'error');
     } finally {
       setGatewayBusy(false);
     }
@@ -471,9 +479,9 @@ export const SettingsTab: React.FC = () => {
     setInstalling(true);
     try {
       await installGateway();
-      showToast(tx('installFinished', 'Install finished. Check gateway status above.'));
+      showToast(tx('installFinished', 'Install finished. Check gateway status above.'), 'success');
     } catch {
-      showToast(tx('installFailed', 'Install failed. Press Retry to try again.'));
+      showToast(tx('installFailed', 'Install failed. Press Retry to try again.'), 'error');
     } finally {
       setInstalling(false);
     }
@@ -534,19 +542,17 @@ export const SettingsTab: React.FC = () => {
     th.description.toLowerCase().includes(themeSearch.toLowerCase())
   );
   const visibleThemes = showAllThemes ? filteredThemes : filteredThemes.slice(0, 6);
-  // Search copy lives in languages.ts (owned elsewhere) and still names the
-  // VS Code Marketplace; trim that tail so the field describes itself.
+  // Short search copy lives in languages.ts per locale, no regex trimming.
   const themeSearchPlaceholder =
-    (t('searchThemes') || '').replace(/\s*or the VS Code Marketplace.*$/i, '...') ||
-    'Search themes...';
+    t('searchThemesShort') || 'Search themes...';
 
   const filteredLanguages = LANGUAGES.filter((l) =>
     l.name.toLowerCase().includes(langSearch.toLowerCase()) ||
     l.code.toLowerCase().includes(langSearch.toLowerCase())
   );
 
-  const showToast = (msg: string) => {
-    setToast(msg);
+  const showToast = (msg: string, tone: ToastTone = 'info') => {
+    setToast({ msg, tone });
     if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => {
       setToast(null);
@@ -657,7 +663,7 @@ export const SettingsTab: React.FC = () => {
   };
 
   const handleRunBackup = async () => {
-    if (!window.confirm(tx('confirmBackup', 'Create a local snapshot? It saves workspace sessions, cron schedules, and settings.'))) {
+    if (!window.confirm(t('confirmBackup'))) {
       return;
     }
     setRunningBackup(true);
@@ -667,7 +673,7 @@ export const SettingsTab: React.FC = () => {
   };
 
   const handleShareDebug = async () => {
-    if (!window.confirm(tx('confirmDebug', 'Generate a debug bundle? It collects diagnostics for sharing. Secrets are redacted before upload.'))) {
+    if (!window.confirm(t('confirmDebug'))) {
       return;
     }
     setSharingDebug(true);
@@ -688,7 +694,7 @@ export const SettingsTab: React.FC = () => {
     await service.instantiateBlueprint(id, blueprintSlots);
     setSelectedBlueprint(null);
     setBlueprintSlots({});
-    showToast(t('blueprintLaunched'));
+    showToast(t('blueprintLaunched'), 'success');
   };
 
   const handleRefreshStatus = async () => {
@@ -696,8 +702,9 @@ export const SettingsTab: React.FC = () => {
     setRefreshingStatus(true);
     try {
       await refreshNow();
-    } catch {
-      showToast(tx('refreshFailed', 'Refresh failed. Gateway may be offline.'));
+    } catch (e) {
+      // Localized cause+action string; raw detail stays in logs only.
+      showToast(localizedMessage(toAppError(e), settings.language || 'en'), 'error');
     } finally {
       setRefreshingStatus(false);
     }
@@ -731,9 +738,11 @@ export const SettingsTab: React.FC = () => {
         <div
           role="status"
           aria-live="polite"
-          className="fixed top-16 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-50 px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-semibold shadow-2xl animate-in fade-in slide-in-from-top-2"
+          className={`fixed top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl text-white text-xs font-semibold shadow-2xl animate-in fade-in slide-in-from-top-2 ${
+            toast.tone === 'error' ? 'bg-rose-600' : toast.tone === 'success' ? 'bg-emerald-600' : 'bg-indigo-600'
+          }`}
         >
-          {toast}
+          {toast.msg}
         </div>
       )}
 
@@ -820,7 +829,7 @@ export const SettingsTab: React.FC = () => {
           >
             {chip.label}
             {chip.id === 'security' && riskCount > 0 && (
-              <span className="ms-1.5 px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-300 text-[10px] font-semibold">
+              <span className="ms-1.5 px-1.5 py-0.5 rounded-[var(--radius-sm,6px)] bg-amber-500/15 text-amber-300 text-[10px] font-semibold">
                 {riskCount}
               </span>
             )}
@@ -838,7 +847,7 @@ export const SettingsTab: React.FC = () => {
         onToggle={() => toggleSection('connection')}
         badge={
           activeProvider ? (
-            <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 text-[10px] font-medium border border-emerald-500/30">
+            <span className="px-2 py-0.5 rounded-[var(--radius-sm,6px)] bg-emerald-500/15 text-emerald-300 text-[10px] font-medium border border-emerald-500/30">
               {t('active')}
             </span>
           ) : undefined
@@ -873,7 +882,7 @@ export const SettingsTab: React.FC = () => {
         </Row>
         {configuredProviders.length === 0 ? (
           <Row>
-            <StateNote state={connected ? 'empty' : 'offline'} message={connected ? t('noProviders') : 'Gateway is offline. Provider profiles are stored locally and can still be edited.'} />
+            <StateNote state={connected ? 'empty' : 'offline'} message={connected ? t('noProviders') : t('providersOfflineNote')} />
           </Row>
         ) : (
           <Row>
@@ -898,12 +907,12 @@ export const SettingsTab: React.FC = () => {
                         <div className="flex items-center gap-2">
                           <p className="text-xs font-semibold text-white truncate">{prov.name}</p>
                           {isActive && (
-                            <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 text-[10px] font-medium border border-emerald-500/30">
+                            <span className="px-2 py-0.5 rounded-[var(--radius-sm,6px)] bg-emerald-500/15 text-emerald-300 text-[10px] font-medium border border-emerald-500/30">
                               {t('active')}
                             </span>
                           )}
                           {!prov.validated && (
-                            <span className="px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-300 text-[10px] font-medium border border-amber-500/30">
+                            <span className="px-2 py-0.5 rounded-[var(--radius-sm,6px)] bg-amber-500/15 text-amber-300 text-[10px] font-medium border border-amber-500/30">
                               Untested
                             </span>
                           )}
@@ -918,7 +927,7 @@ export const SettingsTab: React.FC = () => {
                         <button
                           onClick={() => {
                             activateProvider(prov.id);
-                            showToast(`${t('switchedTo')} ${prov.name}`);
+                            showToast(`${t('switchedTo')} ${prov.name}`, 'success');
                           }}
                           className="px-3 py-1.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-slate-200 transition cursor-pointer"
                         >
@@ -1004,6 +1013,7 @@ export const SettingsTab: React.FC = () => {
               <button
                 onClick={handleAutoApproveToggle}
                 aria-pressed={!!settings.autoApproveGlobal}
+                title={settings.autoApproveGlobal ? t('confirmDisableAutoApprove') : undefined}
                 aria-label={`${t('autoApprove')}: ${settings.autoApproveGlobal ? t('active') : t('disabled')}${!settings.autoApproveGlobal && !pendingAutoApprove ? `. ${tx('tapAgainAutoApprove', 'Tap again to confirm: auto-approve lets actions run without asking.')}` : ''}`}
                 className={`px-3 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
                   settings.autoApproveGlobal
@@ -1064,10 +1074,20 @@ export const SettingsTab: React.FC = () => {
               <button
                 onClick={() => {
                   if (settings.appLockEnabled) {
+                    if (!pendingDisableLock) {
+                      setPendingDisableLock(true);
+                      if (disableLockTimer.current !== null) window.clearTimeout(disableLockTimer.current);
+                      disableLockTimer.current = window.setTimeout(() => setPendingDisableLock(false), 4000);
+                      showToast(tx('tapAgainAppLock', 'Tap again to confirm disabling App Lock. Anyone holding the device will be able to open it.'));
+                      return;
+                    }
+                    if (disableLockTimer.current !== null) window.clearTimeout(disableLockTimer.current);
+                    setPendingDisableLock(false);
                     updateSettings({ appLockEnabled: false });
                     setShowPinForm(false);
                     showToast(`${appLockTitle}: ${t('disabled')}`);
                   } else {
+                    setPendingDisableLock(false);
                     setPinError(null);
                     setNewPin('');
                     setConfirmPin('');
@@ -1081,10 +1101,13 @@ export const SettingsTab: React.FC = () => {
                 }`}
               >
                 {settings.appLockEnabled ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
-                <span>{settings.appLockEnabled ? t('locked') : t('disabled')}</span>
+                <span>{settings.appLockEnabled ? (pendingDisableLock ? tx('confirm', 'Confirm?') : t('locked')) : t('disabled')}</span>
               </button>
             </div>
           </div>
+          {settings.appLockEnabled && (
+            <p className="text-[11px] text-slate-500 mt-0.5">{t('appLockReentryNote')}</p>
+          )}
 
           {settings.appLockEnabled && (
             <div className="flex items-center gap-2 mt-2.5">
@@ -1435,7 +1458,7 @@ export const SettingsTab: React.FC = () => {
             <div className="pt-2">
               <StateNote
                 state="offline"
-                message={gatewayFailureReason || installError || 'Gateway is stopped.'}
+                message={gatewayFailureReason || installError || tx('gatewayStoppedHint', 'Gateway is stopped. Start it to run diagnostics and automations.')}
                 onRetry={() => {
                   void handleRefreshStatus();
                 }}
@@ -1463,7 +1486,7 @@ export const SettingsTab: React.FC = () => {
             >
               <div
                 className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
-                  settings.autostart ? 'translate-x-5' : 'translate-x-0'
+                  settings.autostart ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'
                 }`}
               />
             </button>
@@ -1525,7 +1548,7 @@ export const SettingsTab: React.FC = () => {
                 >
                   <div
                     className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
-                      sk.enabled ? 'translate-x-5' : 'translate-x-0'
+                      sk.enabled ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'
                     }`}
                   />
                 </button>
