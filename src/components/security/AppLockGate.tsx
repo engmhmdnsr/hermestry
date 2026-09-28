@@ -123,7 +123,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
   }, [lockedOut]);
 
   return (
-    <div className="fixed inset-0 z-50 bg-[#090B0E] flex flex-col items-center justify-center p-6 text-slate-200">
+    <div className="fixed inset-0 z-50 bg-[var(--app-bg,#090B0E)] flex flex-col items-center justify-center p-6 text-slate-200">
       <div className="w-16 h-16 rounded-3xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mb-6 shadow-sm">
         <Lock className="w-7 h-7 text-indigo-400" />
       </div>
@@ -174,7 +174,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
             onClick={() => handleDigit(digit)}
             disabled={lockedOut}
             aria-label={`${t('digitLabel')} ${digit}`}
-            className="h-14 rounded-2xl bg-[#0E1217] hover:bg-white/[0.06] active:scale-95 border border-white/[0.06] text-base font-semibold text-white flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
+            className="h-14 rounded-2xl bg-[var(--app-card,#0E1217)] hover:bg-white/[0.06] active:scale-95 border border-white/[0.06] text-base font-semibold text-white flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
           >
             {digit}
           </button>
@@ -183,7 +183,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
           onClick={() => setPin('')}
           disabled={lockedOut}
           aria-label={t('clear')}
-          className="h-14 rounded-2xl bg-[#0E1217] hover:bg-white/[0.06] active:scale-95 border border-white/[0.06] text-xs font-medium text-slate-400 flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
+          className="h-14 rounded-2xl bg-[var(--app-card,#0E1217)] hover:bg-white/[0.06] active:scale-95 border border-white/[0.06] text-xs font-medium text-slate-400 flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
         >
           {t('clear')}
         </button>
@@ -191,14 +191,14 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
           onClick={() => handleDigit('0')}
           disabled={lockedOut}
           aria-label={`${t('digitLabel')} 0`}
-          className="h-14 rounded-2xl bg-[#0E1217] hover:bg-white/[0.06] active:scale-95 border border-white/[0.06] text-base font-semibold text-white flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
+          className="h-14 rounded-2xl bg-[var(--app-card,#0E1217)] hover:bg-white/[0.06] active:scale-95 border border-white/[0.06] text-base font-semibold text-white flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
         >
           0
         </button>
         <button
           onClick={handleDelete}
           disabled={lockedOut}
-          className="h-14 rounded-2xl bg-[#0E1217] hover:bg-white/[0.06] active:scale-95 border border-white/[0.06] text-slate-400 hover:text-white flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
+          className="h-14 rounded-2xl bg-[var(--app-card,#0E1217)] hover:bg-white/[0.06] active:scale-95 border border-white/[0.06] text-slate-400 hover:text-white flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
           aria-label={t('deleteLabel')}
         >
           <Delete className="w-5 h-5" />

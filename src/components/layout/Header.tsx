@@ -106,7 +106,7 @@ export const Header: React.FC<HeaderProps> = ({
       {/* Right Area: Telemetry + Status + Approvals + Inspector */}
       <div className="flex items-center gap-2.5 shrink-0">
         {/* Token Usage Metrics */}
-        <div className="hidden sm:flex items-center gap-2 text-xs text-slate-400 font-mono bg-[#11151B] px-2.5 py-1 rounded-lg border border-white/[0.06]">
+        <div className="hidden sm:flex items-center gap-2 text-xs text-slate-400 font-mono bg-[var(--app-card,#11151B)] px-2.5 py-1 rounded-lg border border-white/[0.06]">
           <span title="Prompt Input Tokens">↑ {fmtTok(usageIn)}</span>
           <span className="text-slate-600">·</span>
           <span title="Generated Output Tokens">↓ {fmtTok(usageOut)}</span>

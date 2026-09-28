@@ -48,7 +48,7 @@ export const DesktopInspector: React.FC<DesktopInspectorProps> = ({ isOpen, onCl
     .reverse();
 
   return (
-    <aside className="w-80 h-screen bg-[#080B0E] border-s border-white/[0.07] flex flex-col shrink-0 text-xs">
+    <aside className="w-80 h-screen bg-[var(--app-bg,#080B0E)] border-s border-white/[0.07] flex flex-col shrink-0 text-xs">
       {/* 1. Header */}
       <div className="h-14 border-b border-white/[0.06] flex items-center justify-between px-4">
         <div className="flex items-center gap-2">
@@ -65,7 +65,7 @@ export const DesktopInspector: React.FC<DesktopInspectorProps> = ({ isOpen, onCl
       </div>
 
       {/* 2. Mode Tabs */}
-      <div className="flex items-center p-2 border-b border-white/[0.06] bg-[#0A0D11] gap-1">
+      <div className="flex items-center p-2 border-b border-white/[0.06] bg-[var(--app-bg,#0A0D11)] gap-1">
         {[
           { id: 'tools', label: 'Tool Output', icon: Wrench },
           { id: 'logs', label: 'Daemon Logs', icon: Terminal },
@@ -104,14 +104,14 @@ export const DesktopInspector: React.FC<DesktopInspectorProps> = ({ isOpen, onCl
             </div>
 
             {recentToolCalls.length === 0 ? (
-              <div className="p-4 rounded-xl bg-[#0E1217] border border-white/[0.06] text-center text-slate-500">
+              <div className="p-4 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] text-center text-slate-500">
                 No tool executions in current view. Ask Hermes to search the web or execute a command.
               </div>
             ) : (
               recentToolCalls.map((msg, i) => (
                 <div
                   key={msg.id || i}
-                  className="rounded-xl bg-[#0E1217] border border-white/[0.06] p-3 space-y-2"
+                  className="rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] p-3 space-y-2"
                 >
                   <div className="flex items-center justify-between text-slate-300">
                     <span className="font-medium text-indigo-300 flex items-center gap-1.5">
@@ -182,18 +182,18 @@ export const DesktopInspector: React.FC<DesktopInspectorProps> = ({ isOpen, onCl
 
             {/* Token Metrics */}
             <div className="grid grid-cols-2 gap-2">
-              <div className="p-3 rounded-xl bg-[#0E1217] border border-white/[0.06]">
+              <div className="p-3 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.06]">
                 <span className="text-[10px] text-slate-500 uppercase block">Input Tokens</span>
                 <span className="text-sm font-semibold text-white font-mono">{usageIn.toLocaleString()}</span>
               </div>
-              <div className="p-3 rounded-xl bg-[#0E1217] border border-white/[0.06]">
+              <div className="p-3 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.06]">
                 <span className="text-[10px] text-slate-500 uppercase block">Output Tokens</span>
                 <span className="text-sm font-semibold text-white font-mono">{usageOut.toLocaleString()}</span>
               </div>
             </div>
 
             {/* Inference Model & Endpoint */}
-            <div className="p-3 rounded-xl bg-[#0E1217] border border-white/[0.06] space-y-2">
+            <div className="p-3 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] space-y-2">
               <div className="flex justify-between items-center">
                 <span className="text-slate-400">Active Model</span>
                 <span className="font-mono text-white font-medium truncate max-w-[140px]">
@@ -211,7 +211,7 @@ export const DesktopInspector: React.FC<DesktopInspectorProps> = ({ isOpen, onCl
             </div>
 
             {/* Pending Approvals Summary */}
-            <div className="p-3 rounded-xl bg-[#0E1217] border border-white/[0.06] space-y-1.5">
+            <div className="p-3 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] space-y-1.5">
               <span className="text-slate-400 block font-medium">Security Gate</span>
               <div className="flex items-center justify-between text-[11px]">
                 <span className="text-slate-500">Pending Actions</span>

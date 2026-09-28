@@ -1298,10 +1298,27 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
   },
 };
 
+const warnedMissingKeys = new Set<string>();
+
+const isDevBuild = (): boolean => {
+  try {
+    return (import.meta as any)?.env?.DEV === true;
+  } catch {
+    return false;
+  }
+};
+
 export const getTranslation = (key: string, lang: string = 'en'): string => {
   const raw = (lang || 'en').toLowerCase();
   // Legacy alias: zh-hant was removed from LANGUAGES; map stored values to zh.
   const normLang = raw === 'zh-hant' || raw === 'zh_hant' ? 'zh' : raw;
+  const missing =
+    TRANSLATIONS[normLang]?.[key] === undefined &&
+    TRANSLATIONS['en']?.[key] === undefined;
+  if (missing && isDevBuild() && !warnedMissingKeys.has(key)) {
+    warnedMissingKeys.add(key);
+    console.warn(`[i18n] missing translation key: "${key}"`);
+  }
   return TRANSLATIONS[normLang]?.[key] || TRANSLATIONS['en']?.[key] || key;
 };
 

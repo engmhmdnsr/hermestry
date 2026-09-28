@@ -61,7 +61,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
   })();
 
   return (
-    <div className="min-h-screen bg-[#090B0E] text-slate-200 p-6 max-w-lg mx-auto flex flex-col justify-start">
+    <div className="min-h-screen bg-[var(--app-bg,#090B0E)] text-slate-200 p-6 max-w-lg mx-auto flex flex-col justify-start">
       {/* Step Indicators */}
       <div className="mb-6 pt-4">
         <div className="flex items-center justify-between text-xs text-slate-400 mb-2 font-medium">
@@ -102,7 +102,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
               {t('welcomeDesc')}
             </p>
 
-            <div className="p-4 rounded-2xl bg-[#0E1217] border border-white/[0.08] space-y-2 mt-4">
+            <div className="p-4 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] space-y-2 mt-4">
               <div className="flex items-center gap-2 text-xs font-semibold text-white">
                 <ShieldCheck className="w-4 h-4 text-emerald-400" />
                 <span>{t('zeroTelemetry')}</span>
@@ -150,7 +150,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
               <p className="text-xs font-mono text-teal-400">{installProgress}</p>
             )}
 
-            <div className="rounded-2xl bg-[#0E1217] border border-white/[0.08] p-3.5 h-52 overflow-y-auto font-mono text-xs text-slate-400 space-y-1">
+            <div className="rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-3.5 h-52 overflow-y-auto font-mono text-xs text-slate-400 space-y-1">
               {gatewayLogs.slice(-20).map((log, i) => (
                 <div key={i} className="leading-relaxed">
                   {log}
@@ -227,13 +227,13 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                     value={provider}
                     onChange={(e) => setProvider(e.target.value)}
                     placeholder="e.g. my-proxy"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                   />
                 ) : (
                   <select
                     value={normed}
                     onChange={(e) => setProvider(e.target.value)}
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
                   >
                     {PROVIDER_OPTIONS.map(([id, name]) => (
                       <option key={id} value={id}>
@@ -254,7 +254,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                     value={apiKey}
                     onChange={(e) => setApiKey(e.target.value)}
                     placeholder="sk-..."
-                    className="w-full px-3.5 py-2.5 pr-10 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                    className="w-full px-3.5 py-2.5 pr-10 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                   />
                   <button
                     type="button"
@@ -275,7 +275,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                   value={baseUrl}
                   onChange={(e) => setBaseUrl(e.target.value)}
                   placeholder="https://api.openai.com/v1"
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                 />
               </div>
 
@@ -288,7 +288,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                   value={modelId}
                   onChange={(e) => setModelId(e.target.value)}
                   placeholder="e.g. deepseek-chat, gpt-4o, claude-3-5-sonnet"
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                 />
               </div>
 
@@ -301,7 +301,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                   value={tgToken}
                   onChange={(e) => setTgToken(e.target.value)}
                   placeholder="bot123456:ABC-DEF..."
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                 />
               </div>
             </div>
@@ -345,7 +345,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
               </p>
             </div>
 
-            <div className="p-4 rounded-2xl bg-[#0E1217] border border-white/[0.08] space-y-2">
+            <div className="p-4 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] space-y-2">
               <p className="text-xs font-semibold text-white">{t('autostartTitle')}?</p>
               <p className="text-xs text-slate-400">
                 {t('autostartWizardDesc')}

@@ -261,7 +261,7 @@ export const SettingsTab: React.FC = () => {
       )}
 
       {/* Settings Navigation Tabs */}
-      <div className="flex items-center gap-1.5 p-1 rounded-2xl bg-[#0E1217] border border-white/[0.08] overflow-x-auto">
+      <div className="flex items-center gap-1.5 p-1 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] overflow-x-auto">
         {[
           { id: 'connection', label: t('inference') },
           { id: 'gateway', label: t('daemonOps') },
@@ -288,7 +288,7 @@ export const SettingsTab: React.FC = () => {
       {activeSection === 'connection' && (
         <div className="space-y-4">
           {/* Multi-provider Overview & Switcher */}
-          <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-5 space-y-4 shadow-xs">
+          <div className="rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-5 space-y-4 shadow-xs">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h3 className="text-sm font-semibold text-white tracking-tight">
@@ -320,7 +320,7 @@ export const SettingsTab: React.FC = () => {
             {/* List of Configured Providers */}
             <div className="space-y-2 pt-1">
               {configuredProviders.length === 0 && (
-                <p className="text-xs text-slate-500 p-3 rounded-2xl bg-[#141920] border border-white/[0.06]">
+                <p className="text-xs text-slate-500 p-3 rounded-2xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06]">
                   {t('noProviders')}
                 </p>
               )}
@@ -336,7 +336,7 @@ export const SettingsTab: React.FC = () => {
                     className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between gap-3 ${
                       isActive
                         ? 'bg-indigo-600/10 border-indigo-500/40 text-white shadow-xs'
-                        : 'bg-[#141920] border-white/[0.06] text-slate-300 hover:border-white/[0.12]'
+                        : 'bg-[var(--app-card-subtle,#141920)] border-white/[0.06] text-slate-300 hover:border-white/[0.12]'
                     }`}
                   >
                     <div className="min-w-0 flex items-center gap-3">
@@ -430,7 +430,7 @@ export const SettingsTab: React.FC = () => {
       {/* ========================================================= */}
       {activeSection === 'gateway' && (
         <div className="space-y-4">
-          <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-5 space-y-4 shadow-xs">
+          <div className="rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-5 space-y-4 shadow-xs">
             <div className="flex items-start justify-between">
               <div>
                 <h3 className="text-sm font-semibold text-white tracking-tight">
@@ -496,7 +496,7 @@ export const SettingsTab: React.FC = () => {
           </div>
 
           {/* Diagnostics Doctor */}
-          <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-5 space-y-3">
+          <div className="rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-5 space-y-3">
             <div className="flex items-center justify-between">
               <div>
                 <h4 className="text-sm font-semibold text-white">{t('diagnosticsTitle')}</h4>
@@ -518,7 +518,7 @@ export const SettingsTab: React.FC = () => {
                   {doctorReport.checks.map((c, i) => (
                     <div
                       key={i}
-                      className="flex items-center gap-2.5 p-2.5 rounded-xl bg-[#141920] border border-white/[0.06] text-xs"
+                      className="flex items-center gap-2.5 p-2.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] text-xs"
                     >
                       {c.ok ? (
                         <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
@@ -536,7 +536,7 @@ export const SettingsTab: React.FC = () => {
 
           {/* Backup & Debug Export */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-4 space-y-2">
+            <div className="rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-4 space-y-2">
               <h4 className="text-xs font-semibold text-white">{t('snapshotTitle')}</h4>
               <p className="text-[11px] text-slate-400">{t('snapshotDesc')}</p>
               <button
@@ -551,7 +551,7 @@ export const SettingsTab: React.FC = () => {
               )}
             </div>
 
-            <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-4 space-y-2">
+            <div className="rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-4 space-y-2">
               <h4 className="text-xs font-semibold text-white">{t('debugTitle')}</h4>
               <p className="text-[11px] text-slate-400">{t('debugDesc')}</p>
               <button
@@ -575,7 +575,7 @@ export const SettingsTab: React.FC = () => {
       {activeSection === 'preferences' && (
         <div className="space-y-4">
           {/* 1. Theme Configuration Card (Matching Image 2) */}
-          <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-5 space-y-4 shadow-xs">
+          <div className="rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-5 space-y-4 shadow-xs">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <h3 className="text-sm font-semibold text-white tracking-tight">
@@ -587,7 +587,7 @@ export const SettingsTab: React.FC = () => {
               </div>
 
               {/* Mode Switcher [Light | Dark | System] */}
-              <div className="flex items-center gap-1 p-1 bg-[#141920] border border-white/[0.08] rounded-xl self-start sm:self-auto">
+              <div className="flex items-center gap-1 p-1 bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] rounded-xl self-start sm:self-auto">
                 {[
                   { id: 'light', label: t('light') || 'Light', icon: Sun },
                   { id: 'dark', label: t('dark') || 'Dark', icon: Moon },
@@ -620,7 +620,7 @@ export const SettingsTab: React.FC = () => {
                 value={themeSearch}
                 onChange={(e) => setThemeSearch(e.target.value)}
                 placeholder={t('searchThemes')}
-                className="w-full pl-9 pr-3.5 py-2.5 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 placeholder:text-slate-500"
+                className="w-full pl-9 pr-3.5 py-2.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 placeholder:text-slate-500"
               />
             </div>
 
@@ -638,7 +638,7 @@ export const SettingsTab: React.FC = () => {
                     className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between group ${
                       isSelected
                         ? 'border-indigo-500 bg-indigo-500/10 ring-1 ring-indigo-500/50 shadow-sm'
-                        : 'border-white/[0.08] bg-[#141920]/60 hover:bg-[#141920] hover:border-white/[0.18]'
+                        : 'border-white/[0.08] bg-[var(--app-card-subtle,#141920)]/60 hover:bg-[var(--app-card-subtle,#141920)] hover:border-white/[0.18]'
                     }`}
                   >
                     {/* Mockup Preview illustration matching Image 2 */}
@@ -692,7 +692,7 @@ export const SettingsTab: React.FC = () => {
           </div>
 
           {/* 2. Language & Locale Configuration Card (Matching Image 1) */}
-          <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-5 space-y-4 shadow-xs">
+          <div className="rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-5 space-y-4 shadow-xs">
             <div className="flex items-start justify-between">
               <div>
                 <h3 className="text-sm font-semibold text-white tracking-tight">
@@ -715,12 +715,12 @@ export const SettingsTab: React.FC = () => {
                 value={langSearch}
                 onChange={(e) => setLangSearch(e.target.value)}
                 placeholder={t('searchLanguages')}
-                className="w-full pl-9 pr-3.5 py-2.5 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 placeholder:text-slate-500 font-sans"
+                className="w-full pl-9 pr-3.5 py-2.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 placeholder:text-slate-500 font-sans"
               />
             </div>
 
             {/* Languages List matching Image 1 */}
-            <div className="divide-y divide-white/[0.04] max-h-64 overflow-y-auto rounded-2xl bg-[#141920] border border-white/[0.06]">
+            <div className="divide-y divide-white/[0.04] max-h-64 overflow-y-auto rounded-2xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06]">
               {filteredLanguages.map((lang) => {
                 const isSelected = (settings.language || 'en') === lang.id;
                 return (
@@ -753,7 +753,7 @@ export const SettingsTab: React.FC = () => {
           </div>
 
           {/* 3. Interface & Security Controls Card */}
-          <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-5 space-y-5 shadow-xs">
+          <div className="rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-5 space-y-5 shadow-xs">
             <div>
               <h3 className="text-sm font-semibold text-white tracking-tight">
                 {t('interfaceSecurityTitle')}
@@ -806,7 +806,7 @@ export const SettingsTab: React.FC = () => {
 
             <div className="pt-2 border-t border-white/[0.06] space-y-3">
               {/* Auto-Approve Global */}
-              <div className="flex items-center justify-between p-3 rounded-2xl bg-[#141920] border border-white/[0.06]">
+              <div className="flex items-center justify-between p-3 rounded-2xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06]">
                 <div>
                   <p className="text-xs font-medium text-white">{t('autoApprove')}</p>
                   <p className="text-[11px] text-slate-400">{t('autoApproveDesc')}</p>
@@ -828,12 +828,12 @@ export const SettingsTab: React.FC = () => {
               </div>
 
               {/* Approval scope: one-tap allow applies once or for the session */}
-              <div className="flex items-center justify-between p-3 rounded-2xl bg-[#141920] border border-white/[0.06]">
+              <div className="flex items-center justify-between p-3 rounded-2xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06]">
                 <div>
                   <p className="text-xs font-medium text-white">Approval Scope</p>
                   <p className="text-[11px] text-slate-400">How long an auto-approval lasts once granted.</p>
                 </div>
-                <div className="flex items-center gap-1 p-1 bg-[#0E1217] border border-white/[0.08] rounded-xl shrink-0">
+                <div className="flex items-center gap-1 p-1 bg-[var(--app-card,#0E1217)] border border-white/[0.08] rounded-xl shrink-0">
                   {[
                     { id: 'once', label: 'Once' },
                     { id: 'session', label: 'Session' },
@@ -857,7 +857,7 @@ export const SettingsTab: React.FC = () => {
               </div>
 
               {/* App Lock PIN */}
-              <div className="p-3 rounded-2xl bg-[#141920] border border-white/[0.06] space-y-2">
+              <div className="p-3 rounded-2xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] space-y-2">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-xs font-medium text-white">{t('appLock')}</p>
@@ -913,7 +913,7 @@ export const SettingsTab: React.FC = () => {
                           setPinError(null);
                         }}
                         placeholder={t('newPinPlaceholder')}
-                        className="flex-1 px-3 py-2 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                        className="flex-1 px-3 py-2 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                       />
                       <input
                         type="password"
@@ -924,7 +924,7 @@ export const SettingsTab: React.FC = () => {
                           setPinError(null);
                         }}
                         placeholder={t('confirmPinPlaceholder')}
-                        className="flex-1 px-3 py-2 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                        className="flex-1 px-3 py-2 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                       />
                     </div>
                     {pinError && <p className="text-[11px] text-rose-400">{pinError}</p>}
@@ -968,7 +968,7 @@ export const SettingsTab: React.FC = () => {
               </div>
 
               {/* Telegram Bot Token (Optional multi-channel bridge) */}
-              <div className="p-3 rounded-2xl bg-[#141920] border border-white/[0.06] space-y-2">
+              <div className="p-3 rounded-2xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] space-y-2">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-xs font-medium text-white">{t('telegramBridge')}</p>
@@ -981,7 +981,7 @@ export const SettingsTab: React.FC = () => {
                     value={tgToken}
                     onChange={(e) => setTgToken(e.target.value)}
                     placeholder="bot123456:ABC-DEF..."
-                    className="flex-1 px-3 py-2 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                    className="flex-1 px-3 py-2 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                   />
                   <button
                     onClick={() => {
@@ -996,7 +996,7 @@ export const SettingsTab: React.FC = () => {
               </div>
 
               {/* Discord Bot Token (Optional multi-channel bridge) */}
-              <div className="p-3 rounded-2xl bg-[#141920] border border-white/[0.06] space-y-2">
+              <div className="p-3 rounded-2xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] space-y-2">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-xs font-medium text-white">{t('discordBridge')}</p>
@@ -1009,7 +1009,7 @@ export const SettingsTab: React.FC = () => {
                     value={discordToken}
                     onChange={(e) => setDiscordToken(e.target.value)}
                     placeholder={t('botTokenPlaceholder')}
-                    className="flex-1 px-3 py-2 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                    className="flex-1 px-3 py-2 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                   />
                   <button
                     onClick={() => {
@@ -1024,7 +1024,7 @@ export const SettingsTab: React.FC = () => {
               </div>
 
               {/* Gateway Server Key (Daemon authentication) */}
-              <div className="p-3 rounded-2xl bg-[#141920] border border-white/[0.06] space-y-2">
+              <div className="p-3 rounded-2xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] space-y-2">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-xs font-medium text-white">{t('serverKeyTitle')}</p>
@@ -1037,7 +1037,7 @@ export const SettingsTab: React.FC = () => {
                     value={serverKey}
                     onChange={(e) => setServerKey(e.target.value)}
                     placeholder={t('serverKeyPlaceholder')}
-                    className="flex-1 px-3 py-2 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                    className="flex-1 px-3 py-2 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                   />
                   <button
                     onClick={() => {
@@ -1061,7 +1061,7 @@ export const SettingsTab: React.FC = () => {
       {activeSection === 'library' && (
         <div className="space-y-4">
           {/* Agent Skills */}
-          <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-5 space-y-3 shadow-xs">
+          <div className="rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-5 space-y-3 shadow-xs">
             <div className="flex items-center justify-between">
               <div>
                 <h4 className="text-sm font-semibold text-white">{t('skillsCatalog')}</h4>
@@ -1079,7 +1079,7 @@ export const SettingsTab: React.FC = () => {
               {skills.map((sk) => (
                 <div
                   key={sk.id}
-                  className="flex items-center justify-between p-3 rounded-2xl bg-[#141920] border border-white/[0.06]"
+                  className="flex items-center justify-between p-3 rounded-2xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06]"
                 >
                   <div className="pr-3">
                     <p className="text-xs font-semibold text-white">{sk.name}</p>
@@ -1103,24 +1103,24 @@ export const SettingsTab: React.FC = () => {
           </div>
 
           {/* Long Term Memory */}
-          <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-5 space-y-2 shadow-xs">
+          <div className="rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-5 space-y-2 shadow-xs">
             <h4 className="text-sm font-semibold text-white">{t('memoryTitle')}</h4>
             <p className="text-xs text-slate-400">
               {t('providerLabel')}: {memory?.provider || t('localVector')} · {t('entriesLabel')}: {memory?.entries || 0}
             </p>
-            <div className="text-xs text-slate-300 bg-[#141920] p-3 rounded-xl border border-white/[0.06] font-mono leading-relaxed mt-2">
+            <div className="text-xs text-slate-300 bg-[var(--app-card-subtle,#141920)] p-3 rounded-xl border border-white/[0.06] font-mono leading-relaxed mt-2">
               {memory?.summary || t('memoryEmpty')}
             </div>
           </div>
 
           {/* Blueprints */}
-          <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-5 space-y-3 shadow-xs">
+          <div className="rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-5 space-y-3 shadow-xs">
             <h4 className="text-sm font-semibold text-white">{t('blueprintsTitle')}</h4>
             <div className="space-y-2">
               {blueprints.map((bp) => (
                 <div
                   key={bp.id}
-                  className="p-3.5 rounded-2xl bg-[#141920] border border-white/[0.06] flex items-center justify-between gap-3"
+                  className="p-3.5 rounded-2xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] flex items-center justify-between gap-3"
                 >
                   <div>
                     <p className="text-xs font-semibold text-white">{bp.name}</p>
@@ -1149,7 +1149,7 @@ export const SettingsTab: React.FC = () => {
       {/* Blueprint Launch Modal */}
       {selectedBlueprint && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150">
-          <div className="w-full max-w-sm rounded-3xl bg-[#0E1217] border border-white/[0.1] p-5 shadow-2xl space-y-4">
+          <div className="w-full max-w-sm rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-4">
             <div className="flex items-center justify-between pb-2 border-b border-white/[0.08]">
               <span className="text-sm font-semibold text-white">
                 {selectedBlueprint.name}
@@ -1179,7 +1179,7 @@ export const SettingsTab: React.FC = () => {
                           [param.name]: e.target.value,
                         })
                       }
-                      className="w-full px-3 py-2 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
+                      className="w-full px-3 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
                     />
                   </div>
                 ))}
@@ -1206,7 +1206,7 @@ export const SettingsTab: React.FC = () => {
       {/* Multi-Provider Add / Edit Modal */}
       {showAddModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="w-full max-w-md rounded-3xl bg-[#0E1217] border border-white/[0.1] p-5 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+          <div className="w-full max-w-md rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-2 border-b border-white/[0.08]">
               <span className="text-sm font-semibold text-white">
                 {editingProviderId ? t('editModelProvider') : t('addModelProvider')}
@@ -1235,7 +1235,7 @@ export const SettingsTab: React.FC = () => {
                     const defModel = DEFAULT_MODELS[val]?.[0] || '';
                     if (defModel) setNewProvModel(defModel);
                   }}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
                 >
                   {PROVIDER_OPTIONS.map(([id, name]) => (
                     <option key={id} value={id}>
@@ -1255,7 +1255,7 @@ export const SettingsTab: React.FC = () => {
                   value={newProvName}
                   onChange={(e) => setNewProvName(e.target.value)}
                   placeholder={t('profilePlaceholder')}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
                 />
               </div>
 
@@ -1276,7 +1276,7 @@ export const SettingsTab: React.FC = () => {
                       setKeyResult(null);
                     }}
                     placeholder="sk-..."
-                    className="w-full px-3.5 py-2.5 pr-10 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                    className="w-full px-3.5 py-2.5 pr-10 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                   />
                   <button
                     type="button"
@@ -1319,7 +1319,7 @@ export const SettingsTab: React.FC = () => {
                   value={newProvModel}
                   onChange={(e) => setNewProvModel(e.target.value)}
                   placeholder={DEFAULT_MODELS[newProvType]?.[0] || 'e.g. gpt-4o, claude-3-7-sonnet'}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                 />
               </div>
 
@@ -1333,7 +1333,7 @@ export const SettingsTab: React.FC = () => {
                   value={newProvBaseUrl}
                   onChange={(e) => setNewProvBaseUrl(e.target.value)}
                   placeholder="https://api.openai.com/v1"
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                 />
               </div>
             </div>

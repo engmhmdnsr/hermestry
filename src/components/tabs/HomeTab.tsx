@@ -145,7 +145,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     <div className="space-y-6 max-w-2xl mx-auto px-4 pt-4 pb-20">
       {/* 1. Hero Presence Banner */}
       <div
-        className={`relative overflow-hidden rounded-2xl bg-gradient-to-br ${statusConfig.bgGlow} bg-[#0E1217] border ${statusConfig.borderColor} p-5 shadow-sm transition-all`}
+        className={`relative overflow-hidden rounded-2xl bg-gradient-to-br ${statusConfig.bgGlow} bg-[var(--app-card,#0E1217)] border ${statusConfig.borderColor} p-5 shadow-sm transition-all`}
       >
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
@@ -241,7 +241,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               await newSession();
               onGoChat();
             }}
-            className="flex flex-col items-start p-3.5 rounded-2xl bg-[#0E1217] border border-white/[0.07] hover:border-indigo-500/40 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-start"
+            className="flex flex-col items-start p-3.5 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.07] hover:border-indigo-500/40 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-start"
           >
             <div className="w-8 h-8 rounded-xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
               <MessageSquare className="w-4 h-4" />
@@ -253,7 +253,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           {/* Quick Command */}
           <button
             onClick={onRunCommand}
-            className="flex flex-col items-start p-3.5 rounded-2xl bg-[#0E1217] border border-white/[0.07] hover:border-teal-500/40 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-start"
+            className="flex flex-col items-start p-3.5 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.07] hover:border-teal-500/40 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-start"
           >
             <div className="w-8 h-8 rounded-xl bg-teal-500/10 text-teal-400 flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
               <Terminal className="w-4 h-4" />
@@ -265,7 +265,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           {/* Automation Jobs */}
           <button
             onClick={onGoActivity}
-            className="flex flex-col items-start p-3.5 rounded-2xl bg-[#0E1217] border border-white/[0.07] hover:border-violet-500/40 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-start"
+            className="flex flex-col items-start p-3.5 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.07] hover:border-violet-500/40 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-start"
           >
             <div className="w-8 h-8 rounded-xl bg-violet-500/10 text-violet-400 flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
               <CalendarClock className="w-4 h-4" />
@@ -277,7 +277,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           {/* Settings / Ops */}
           <button
             onClick={onGoSettings}
-            className="flex flex-col items-start p-3.5 rounded-2xl bg-[#0E1217] border border-white/[0.07] hover:border-white/20 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-start"
+            className="flex flex-col items-start p-3.5 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.07] hover:border-white/20 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-start"
           >
             <div className="w-8 h-8 rounded-xl bg-slate-500/10 text-slate-300 flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
               <SlidersHorizontal className="w-4 h-4" />
@@ -297,7 +297,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
         </div>
 
         {recentSessions.length === 0 ? (
-          <div className="p-8 rounded-2xl bg-[#0E1217] border border-white/[0.06] text-center space-y-3">
+          <div className="p-8 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] text-center space-y-3">
             <div className="w-10 h-10 rounded-2xl bg-white/[0.03] text-slate-400 flex items-center justify-center mx-auto">
               <MessageSquare className="w-5 h-5" />
             </div>
@@ -332,8 +332,8 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                   }}
                   className={`p-3.5 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
                     isSelected
-                      ? 'bg-[#141920] border-indigo-500/40 shadow-xs'
-                      : 'bg-[#0E1217] border-white/[0.06] hover:border-white/[0.12] hover:bg-white/[0.02]'
+                      ? 'bg-[var(--app-card-subtle,#141920)] border-indigo-500/40 shadow-xs'
+                      : 'bg-[var(--app-card,#0E1217)] border-white/[0.06] hover:border-white/[0.12] hover:bg-white/[0.02]'
                   }`}
                 >
                   <div className="flex items-center gap-3 min-w-0">
@@ -389,7 +389,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               <div
                 key={job.id}
                 onClick={onGoActivity}
-                className="p-3.5 rounded-2xl bg-[#0E1217] border border-white/[0.06] hover:border-white/[0.12] flex items-center justify-between gap-3 cursor-pointer transition"
+                className="p-3.5 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] hover:border-white/[0.12] flex items-center justify-between gap-3 cursor-pointer transition"
               >
                 <div className="flex items-center gap-3 min-w-0">
                   <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center shrink-0">

@@ -185,7 +185,7 @@ export const JobsTab: React.FC = () => {
         </div>
       )}
       {/* 1. New Automation Schedule Builder Card */}
-      <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-5 space-y-4 shadow-xs">
+      <div className="rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-5 space-y-4 shadow-xs">
         <div>
           <h2 className="text-sm font-semibold text-white tracking-tight">{t('scheduledJobsTitle')}</h2>
           <p className="text-xs text-slate-400 mt-0.5">
@@ -203,7 +203,7 @@ export const JobsTab: React.FC = () => {
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Morning Briefing"
-              className="w-full px-3.5 py-2 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
+              className="w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
             />
           </div>
 
@@ -216,7 +216,7 @@ export const JobsTab: React.FC = () => {
               value={schedule}
               onChange={(e) => setSchedule(e.target.value)}
               placeholder="e.g. every 1h, every day 9am, or 0 9 * * *"
-              className="w-full px-3.5 py-2 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
+              className="w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
             />
             {/* Quick Presets */}
             <div className="flex flex-wrap gap-1.5 mt-2">
@@ -242,7 +242,7 @@ export const JobsTab: React.FC = () => {
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder="Task instructions to execute at each scheduled interval..."
-              className="w-full px-3.5 py-2 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition resize-none"
+              className="w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition resize-none"
             />
           </div>
         </div>
@@ -270,7 +270,7 @@ export const JobsTab: React.FC = () => {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={t('search')}
-            className="w-full ps-10 pe-3.5 py-2 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
+            className="w-full ps-10 pe-3.5 py-2 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
           />
         </div>
       )}
@@ -282,11 +282,11 @@ export const JobsTab: React.FC = () => {
         </h3>
 
         {jobs.length === 0 ? (
-          <div className="p-8 rounded-3xl bg-[#0E1217] border border-white/[0.06] text-center text-xs text-slate-400">
+          <div className="p-8 rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] text-center text-xs text-slate-400">
             No scheduled automation jobs configured. Create your first job above using standard cadence or cron expressions.
           </div>
         ) : visibleJobs.length === 0 ? (
-          <div className="p-8 rounded-3xl bg-[#0E1217] border border-white/[0.06] text-center text-xs text-slate-400">
+          <div className="p-8 rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] text-center text-xs text-slate-400">
             No tasks match "{query}".
           </div>
         ) : (
@@ -302,7 +302,7 @@ export const JobsTab: React.FC = () => {
             return (
               <div
                 key={j.id}
-                className="rounded-2xl bg-[#0E1217] border border-white/[0.07] p-4 space-y-3 transition hover:border-white/[0.14]"
+                className="rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.07] p-4 space-y-3 transition hover:border-white/[0.14]"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
@@ -355,7 +355,7 @@ export const JobsTab: React.FC = () => {
                   aria-expanded={!!expandedPrompts[j.id]}
                   title={j.prompt}
                   aria-label={`Job prompt: ${j.prompt}. Tap to ${expandedPrompts[j.id] ? 'collapse' : 'expand'}.`}
-                  className={`block w-full text-start text-xs text-slate-300 bg-[#141920] p-3 rounded-xl border border-white/[0.06] font-mono leading-relaxed cursor-pointer ${expandedPrompts[j.id] ? 'whitespace-pre-wrap break-all' : 'line-clamp-6'}`}
+                  className={`block w-full text-start text-xs text-slate-300 bg-[var(--app-card-subtle,#141920)] p-3 rounded-xl border border-white/[0.06] font-mono leading-relaxed cursor-pointer ${expandedPrompts[j.id] ? 'whitespace-pre-wrap break-all' : 'line-clamp-6'}`}
                 >
                   {j.prompt}
                 </button>
@@ -438,7 +438,7 @@ export const JobsTab: React.FC = () => {
                         return (
                           <div
                             key={r.id || i}
-                            className="p-2.5 rounded-xl bg-[#141920] border border-white/[0.06] text-xs space-y-1"
+                            className="p-2.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] text-xs space-y-1"
                           >
                             <div className="flex items-center justify-between text-slate-300">
                               <span className="font-medium capitalize">{r.status || 'Completed'}</span>
@@ -472,7 +472,7 @@ export const JobsTab: React.FC = () => {
           }}
         >
           <div
-            className="w-full max-w-sm rounded-3xl bg-[#0E1217] border border-white/[0.1] p-5 shadow-2xl space-y-4"
+            className="w-full max-w-sm rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
             <h3 className="text-base font-semibold text-white">
@@ -511,7 +511,7 @@ export const JobsTab: React.FC = () => {
           }}
         >
           <div
-            className="w-full max-w-sm rounded-3xl bg-[#0E1217] border border-white/[0.1] p-5 shadow-2xl space-y-4"
+            className="w-full max-w-sm rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between pb-2 border-b border-white/[0.08]">
@@ -533,7 +533,7 @@ export const JobsTab: React.FC = () => {
                   type="text"
                   value={editName}
                   onChange={(e) => setEditName(e.target.value)}
-                  className="w-full px-3.5 py-2 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 transition"
+                  className="w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 transition"
                 />
               </div>
               <div>
@@ -545,7 +545,7 @@ export const JobsTab: React.FC = () => {
                   value={editSchedule}
                   onChange={(e) => setEditSchedule(e.target.value)}
                   placeholder="e.g. every 1h, every day 9am, or 0 9 * * *"
-                  className="w-full px-3.5 py-2 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 transition"
+                  className="w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 transition"
                 />
                 <div className="flex flex-wrap gap-1.5 mt-2">
                   {presets.map((p) => (
@@ -568,7 +568,7 @@ export const JobsTab: React.FC = () => {
                   rows={2}
                   value={editPrompt}
                   onChange={(e) => setEditPrompt(e.target.value)}
-                  className="w-full px-3.5 py-2 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 transition resize-none"
+                  className="w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 transition resize-none"
                 />
               </div>
             </div>

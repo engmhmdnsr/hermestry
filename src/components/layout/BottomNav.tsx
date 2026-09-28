@@ -51,7 +51,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentTab, onSelectTab })
                   <Icon className="w-5 h-5" />
                 </div>
                 {tab.badge > 0 && (
-                  <span className="absolute -top-1 -end-1 min-w-[16px] h-4 px-1 rounded-full bg-rose-500 text-white font-mono text-[9px] font-bold flex items-center justify-center ring-2 ring-[#090B0E]">
+                  <span className="absolute -top-1 -end-1 min-w-[16px] h-4 px-1 rounded-full bg-rose-500 text-white font-mono text-[9px] font-bold flex items-center justify-center ring-2 ring-[var(--app-bg,#090B0E)]">
                     {tab.badge}
                   </span>
                 )}

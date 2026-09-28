@@ -163,7 +163,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       />
 
       {/* Drawer Container */}
-      <aside className="relative w-full max-w-xs bg-[#0E1217] border-e border-white/[0.08] h-full flex flex-col z-10 shadow-2xl animate-in slide-in-from-left rtl:slide-in-from-right duration-200">
+      <aside className="relative w-full max-w-xs bg-[var(--app-card,#0E1217)] border-e border-white/[0.08] h-full flex flex-col z-10 shadow-2xl animate-in slide-in-from-left rtl:slide-in-from-right duration-200">
         {/* Header */}
         <div className="p-4 border-b border-white/[0.08] flex items-center justify-between">
           <div>
@@ -206,7 +206,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search conversations..."
-              className="w-full ps-9 pe-3 py-1.5 rounded-xl bg-[#141920] border border-white/[0.06] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+              className="w-full ps-9 pe-3 py-1.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
             />
           </div>
 
@@ -324,7 +324,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
           }}
         >
           <div
-            className="w-full max-w-sm rounded-3xl bg-[#0E1217] border border-white/[0.1] p-5 shadow-2xl space-y-4"
+            className="w-full max-w-sm rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
             <h3 className="text-sm font-semibold text-white">
@@ -334,7 +334,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
               type="text"
               value={renameTitle}
               onChange={(e) => setRenameTitle(e.target.value)}
-              className="w-full px-3.5 py-2 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
+              className="w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
             />
             {renameError && (
               <p className="text-xs text-rose-400">{renameError}</p>
@@ -382,7 +382,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
           }}
         >
           <div
-            className="w-full max-w-sm rounded-3xl bg-[#0E1217] border border-white/[0.1] p-5 shadow-2xl space-y-3"
+            className="w-full max-w-sm rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-3"
             onClick={(e) => e.stopPropagation()}
           >
             <h3 className="text-sm font-semibold text-white">
@@ -461,7 +461,7 @@ const SessionCard: React.FC<SessionCardProps> = ({
       className={`group relative p-3 rounded-2xl border transition-all cursor-pointer ${
         isSelected
           ? 'bg-indigo-600/10 border-indigo-500/40 text-white'
-          : 'bg-[#141920]/60 hover:bg-[#141920] border-white/[0.05] hover:border-white/[0.1]'
+          : 'bg-[var(--app-card-subtle,#141920)]/60 hover:bg-[var(--app-card-subtle,#141920)] border-white/[0.05] hover:border-white/[0.1]'
       }`}
     >
       <div className="flex items-start justify-between gap-2">

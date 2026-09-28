@@ -174,7 +174,7 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
               value={sessionSearch}
               onChange={(e) => setSessionSearch(e.target.value)}
               placeholder={t('filterSessions')}
-              className="w-full ps-8 pe-2.5 py-1.5 rounded-lg bg-[#11151B] border border-white/[0.06] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500/50"
+              className="w-full ps-8 pe-2.5 py-1.5 rounded-lg bg-[var(--app-card,#11151B)] border border-white/[0.06] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500/50"
             />
           </div>
 
@@ -284,7 +284,7 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
       )}
 
       {/* 5. Desktop Footer: Local System Status */}
-      <div className="p-3 border-t border-white/[0.06] bg-[#0A0D11] text-xs">
+      <div className="p-3 border-t border-white/[0.06] bg-[var(--app-bg,#0A0D11)] text-xs">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 min-w-0">
             <span

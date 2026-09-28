@@ -421,7 +421,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       )}
       {/* In-chat Search Input */}
       {searchOpen && (
-        <div className="flex items-center gap-2 p-2 px-3 rounded-xl bg-[#141920] border border-white/[0.08] mb-2 shrink-0 animate-in fade-in duration-150">
+        <div className="flex items-center gap-2 p-2 px-3 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] mb-2 shrink-0 animate-in fade-in duration-150">
           <Search className="w-4 h-4 text-slate-400 shrink-0" />
           <input
             type="text"
@@ -473,7 +473,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                   key={idx}
                   onClick={() => sendMessage(chip)}
                   title={chip}
-                  className="px-3.5 py-2.5 rounded-xl bg-[#0E1217] border border-white/[0.06] hover:border-indigo-500/30 text-xs text-slate-300 text-start transition hover:bg-white/[0.02] cursor-pointer"
+                  className="px-3.5 py-2.5 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] hover:border-indigo-500/30 text-xs text-slate-300 text-start transition hover:bg-white/[0.02] cursor-pointer"
                 >
                   {chip}
                 </button>
@@ -496,7 +496,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                   className={`w-full max-w-[94%] sm:max-w-[88%] rounded-2xl p-4 transition-all ${
                     isUser
                       ? 'bg-indigo-600/90 text-white shadow-xs'
-                      : 'bg-[#0E1217] border border-white/[0.08] text-slate-200'
+                      : 'bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-slate-200'
                   }`}
                   style={{
                     fontSize: `${settings.fontScale * 14}px`,
@@ -554,7 +554,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                       </div>
 
                       {msg.toolOutputs && msg.toolOutputs.length > 0 && (
-                        <div className="rounded-xl bg-[#090B0E] p-2.5 border border-white/[0.06] text-xs font-mono text-slate-400 space-y-1">
+                        <div className="rounded-xl bg-[var(--app-bg,#090B0E)] p-2.5 border border-white/[0.06] text-xs font-mono text-slate-400 space-y-1">
                           {msg.toolOutputs.map((out, i) => (
                             <div key={i} className="leading-relaxed break-all whitespace-pre-wrap">
                               <span className="text-teal-400 font-medium">{out.toolName}:</span>{' '}
@@ -602,7 +602,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                       <MoreHorizontal className="w-4 h-4" />
                     </button>
                     {openMenuId === msg.id && (
-                      <div className="absolute bottom-full end-0 mb-1.5 min-w-[140px] rounded-xl bg-[#1A2230] border border-white/[0.1] shadow-2xl py-1 z-20">
+                      <div className="absolute bottom-full end-0 mb-1.5 min-w-[140px] rounded-xl bg-[var(--app-card-subtle,#1A2230)] border border-white/[0.1] shadow-2xl py-1 z-20">
                         {isUser && (
                           <button
                             onClick={() => {
@@ -712,7 +712,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
 
       {/* Attached Images preview */}
       {attachedImages.length > 0 && (
-        <div className="flex items-center gap-2 mb-2 p-2 rounded-xl bg-[#0E1217] border border-white/[0.08] overflow-x-auto">
+        <div className="flex items-center gap-2 mb-2 p-2 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] overflow-x-auto">
           {attachedImages.map((src, i) => (
             <div key={i} className="relative w-12 h-12 rounded-lg overflow-hidden shrink-0 border border-white/10 group">
               <img src={src} alt="Attached" className="w-full h-full object-cover" />
@@ -753,7 +753,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       </div>
 
       {/* 4. Desktop/Mobile Composer Surface matching modern Hermes aesthetic */}
-      <div className="rounded-[22px] sm:rounded-[26px] bg-[#121721] border border-white/[0.1] px-3.5 sm:px-4 pt-2.5 pb-2 shadow-2xl shrink-0 transition-all focus-within:border-indigo-500/50 focus-within:ring-1 focus-within:ring-indigo-500/20 mb-1">
+      <div className="rounded-[22px] sm:rounded-[26px] bg-[var(--app-card,#121721)] border border-white/[0.1] px-3.5 sm:px-4 pt-2.5 pb-2 shadow-2xl shrink-0 transition-all focus-within:border-indigo-500/50 focus-within:ring-1 focus-within:ring-indigo-500/20 mb-1">
         <textarea
           ref={textareaRef}
           rows={1}
@@ -786,7 +786,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="w-7.5 h-7.5 rounded-full flex items-center justify-center text-slate-300 hover:text-white bg-[#1A2230] hover:bg-[#232D3F] active:scale-95 transition-all border border-white/[0.08] cursor-pointer shrink-0 shadow-xs"
+              className="w-7.5 h-7.5 rounded-full flex items-center justify-center text-slate-300 hover:text-white bg-[var(--app-card-subtle,#1A2230)] hover:bg-[var(--app-card-subtle,#232D3F)] active:scale-95 transition-all border border-white/[0.08] cursor-pointer shrink-0 shadow-xs"
               title="Attach image or text file (.txt/.md/.csv/.json)"
             >
               <Plus className="w-4 h-4 stroke-[2.2]" />
@@ -794,7 +794,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
 
             {/* Model pill: tap name to expand, chevron opens sheet */}
             <div
-              className={`min-h-[30px] px-2.5 sm:px-3 rounded-full flex items-center gap-1.5 text-xs text-slate-200 bg-[#1A2230] border border-white/[0.08] shadow-xs min-w-0 ${
+              className={`min-h-[30px] px-2.5 sm:px-3 rounded-full flex items-center gap-1.5 text-xs text-slate-200 bg-[var(--app-card-subtle,#1A2230)] border border-white/[0.08] shadow-xs min-w-0 ${
                 modelPillExpanded ? 'max-w-full' : 'max-w-[130px] sm:max-w-[200px]'
               }`}
             >
@@ -856,7 +856,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
               className={`w-7.5 h-7.5 rounded-full flex items-center justify-center transition-all cursor-pointer border border-white/[0.08] shadow-xs ${
                 isListening
                   ? 'bg-rose-500/20 border-rose-500/40 text-rose-300 animate-pulse'
-                  : 'bg-[#1A2230] hover:bg-[#232D3F] text-sky-400 hover:text-sky-300'
+                  : 'bg-[var(--app-card-subtle,#1A2230)] hover:bg-[var(--app-card-subtle,#232D3F)] text-sky-400 hover:text-sky-300'
               }`}
               title={isListening ? 'Listening...' : 'Voice Dictation'}
             >
@@ -899,7 +899,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                 className={`w-7.5 h-7.5 rounded-full flex items-center justify-center transition-all cursor-pointer shrink-0 shadow-xs border ${
                   text.trim() || attachedImages.length > 0
                     ? 'bg-white hover:bg-slate-100 text-slate-900 border-white shadow-md active:scale-95'
-                    : 'bg-[#1A2230] text-slate-500 border-white/[0.08] opacity-50 cursor-not-allowed'
+                    : 'bg-[var(--app-card-subtle,#1A2230)] text-slate-500 border-white/[0.08] opacity-50 cursor-not-allowed'
                 }`}
                 title="Send Message"
               >
@@ -924,7 +924,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             if (e.target === e.currentTarget) setShowModelsSheet(false);
           }}
         >
-          <div className="w-full sm:max-w-lg bg-[#0B0F15] border border-white/[0.09] rounded-t-[28px] sm:rounded-3xl p-4 sm:p-5 shadow-2xl flex flex-col max-h-[85vh] sm:max-h-[80vh] animate-in slide-in-from-bottom-4 duration-200">
+          <div className="w-full sm:max-w-lg bg-[var(--app-bg,#0B0F15)] border border-white/[0.09] rounded-t-[28px] sm:rounded-3xl p-4 sm:p-5 shadow-2xl flex flex-col max-h-[85vh] sm:max-h-[80vh] animate-in slide-in-from-bottom-4 duration-200">
             {/* Top Pull Bar / Handle */}
             <div className="w-10 h-1 bg-slate-500/50 rounded-full mx-auto mb-3 shrink-0 sm:hidden" />
 
@@ -948,7 +948,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             </div>
 
             {/* Search Input Bar */}
-            <div className="relative flex items-center px-3.5 py-2.5 rounded-xl bg-[#141A23] border border-white/[0.08] focus-within:border-cyan-500/50 transition shrink-0 mb-3">
+            <div className="relative flex items-center px-3.5 py-2.5 rounded-xl bg-[var(--app-card-subtle,#141A23)] border border-white/[0.08] focus-within:border-cyan-500/50 transition shrink-0 mb-3">
               <Search className="w-4 h-4 text-slate-400 me-2.5 shrink-0" />
               <input
                 type="text"
@@ -977,8 +977,8 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                     onClick={() => setModelFilterProvider(opt.id)}
                     className={`px-3 py-1 rounded-lg text-xs font-mono transition cursor-pointer shrink-0 border whitespace-nowrap ${
                       isActive
-                        ? 'bg-[#0E2938] text-cyan-400 border-cyan-500/60 font-semibold shadow-xs'
-                        : 'bg-[#131924] text-slate-400 border-white/[0.08] hover:text-slate-200 hover:bg-[#1A2230] font-normal'
+                        ? 'bg-[var(--app-card-subtle,#0E2938)] text-cyan-400 border-cyan-500/60 font-semibold shadow-xs'
+                        : 'bg-[var(--app-card-subtle,#131924)] text-slate-400 border-white/[0.08] hover:text-slate-200 hover:bg-[var(--app-card-subtle,#1A2230)] font-normal'
                     }`}
                   >
                     {opt.label}
@@ -1024,8 +1024,8 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                       }}
                       className={`w-full flex flex-col p-3 sm:p-3.5 rounded-2xl border text-start transition cursor-pointer group shadow-xs ${
                         isSelected
-                          ? 'bg-[#122232] border-cyan-500/70 text-white'
-                          : 'bg-[#131924] border-white/[0.06] hover:border-cyan-500/40 text-slate-300'
+                          ? 'bg-[var(--app-card-subtle,#122232)] border-cyan-500/70 text-white'
+                          : 'bg-[var(--app-card-subtle,#131924)] border-white/[0.06] hover:border-cyan-500/40 text-slate-300'
                       }`}
                     >
                       <div className="flex items-center justify-between gap-2">
