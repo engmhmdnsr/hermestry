@@ -1,27 +1,43 @@
-# Hermes Mobile v1.1.9 (sideload)
+# Hermes Mobile (Web & Mobile React)
 
-Separate app from Hermes Control. Package `ee.oversight.hermes.mobile`.
-On-phone Hermes gateway, external models only (you enter your own key, no default).
-Local on-device LLM is phase 2, not in this build.
+A cross-platform React application rewritten from the Hermes Mobile Android codebase, preserving the core features, cyber terminal aesthetic, and business logic of the Hermes AI gateway.
 
-## What v1 does
-- Setup tab: provider + API key + model id + telegram/discord tokens + local api key,
-  Install (downloads the prebuilt image once, ~305MB, ready to run),
-  Start/Stop foreground service on localhost:8080, auto-start on boot (WorkManager,
-  safe on Android 12+).
-  First run also gets a wizard: welcome, install (live logs), keys, start.
-- Chat tab: sessions drawer, real SSE streaming against the on-phone gateway
-  (event: names tracked like Hermes Control, mid-stream approvals surface inline),
-  thinking blocks, tool lines, approvals (allow once / deny), rename/fork/delete.
-- Jobs tab: cron CRUD (every 1h, every monday 9am, or 5-field cron).
-- System tab: gateway status from /health/detailed + gateway.log tail + app log.
-- Dark desktop-style theme (void + violet/cyan, same identity as Hermes Control).
+## Features
 
-## Notes
-- Use a SEPARATE telegram bot token from your PC gateway (same token = 409 conflict).
-- Debian + proot URLs live in `install/Bootstrap.kt` (arch auto-detected).
-- First install needs network + ~500MB free space + patience (extraction is slow).
+- **Setup & Onboarding Wizard:**
+  - 4-step first-run wizard (Welcome, Image install simulation with live logs, 29+ Provider catalog & API key configuration, Boot restart options).
+  - Provider catalog matching Hermes Desktop registry (DeepSeek, OpenAI, Anthropic, Gemini, xAI, Kimi, MiniMax, Qwen, Ollama, LM Studio, etc. + custom base URL).
+- **Home Dashboard:**
+  - Dynamic Agent status presence (ONLINE, THINKING, EXECUTING, WAITING, OFFLINE, CONNECTING, ERROR).
+  - Current task banner and relative timestamps (`homeAgo`).
+  - Quick action shortcuts (Chat, Command, Tasks/Jobs, Files).
+  - Active & recent activities list with live streaming badges.
+- **Chat (Agent Workspace):**
+  - Live streaming SSE interface with thinking/reasoning blocks and duration timers.
+  - Tool execution cards (web search, sandboxed execution, system ops).
+  - Prominent mid-stream approval cards (Deny, Allow Once, Allow for Session).
+  - Composer with multi-line input, image attachments (up to 4 with thumbnail previews), voice input, reasoning effort switcher, and model picker sheet.
+  - Slash commands catalog (`/new`, `/retry`, `/clear`, `/help`, `/status`) and quick pills.
+  - Text-to-speech (TTS) speaker on Hermes assistant replies.
+  - Per-session message draft persistence and markdown export/share.
+- **Scheduled Jobs (Activity / Cron):**
+  - Cron schedule CRUD with quick presets (Once, Daily, Weekdays, Hourly, custom 5-field cron).
+  - Overdue run tracking, manual "Run now", Pause/Resume toggles, and execution history log.
+- **Settings & Ops Center:**
+  - Connection credentials management with tri-state "Test key" verification.
+  - Gateway service supervisor controls (Start, Stop, Auto-start toggle).
+  - Operations diagnostics: Doctor health report checks, backup snapshotting, and debug report sharing.
+  - Chat preferences: Font size slider, reasoning effort, auto-approve toggle, and App PIN lock screen.
+  - Library: Agent skills toggles, long-term memory summary, blueprints launcher with variable slots, and feedback form.
+- **Sessions Drawer:**
+  - Multi-session drawer with search filter, source filters, sorting (Newest, Oldest, Most messages).
+  - Pinned sessions section with star icons, session renaming, forking/branching, and deletion.
 
-## Build
-debug only (sideload): `./gradlew.bat assembleDebug --no-daemon`,
-APK at `app/build/outputs/apk/debug/app-debug.apk`.
+## Development
+
+```bash
+npm install
+npm run dev
+```
+
+Built with React 19, TypeScript, Vite, Tailwind CSS, and Lucide Icons.

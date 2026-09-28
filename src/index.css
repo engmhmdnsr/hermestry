@@ -1,0 +1,228 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --app-bg: #090B14;
+    --app-sidebar: #06070E;
+    --app-card: #0E1222;
+    --app-card-subtle: #14182E;
+    --app-card-hover: #1B203C;
+    --app-border: rgba(129, 140, 248, 0.16);
+    --app-border-subtle: rgba(255, 255, 255, 0.06);
+    --app-accent: #6366F1;
+    --app-accent-hover: #4F46E5;
+    --app-accent-subtle: rgba(99, 102, 241, 0.16);
+    --app-accent-text: #A5B4FC;
+    --app-text: #F8FAFC;
+    --app-text-muted: #94A3B8;
+    --app-text-dim: #64748B;
+    --app-input-bg: #101426;
+  }
+
+  body {
+    background-color: var(--app-bg, #090B14);
+    color: var(--app-text, #F8FAFC);
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    letter-spacing: -0.011em;
+    min-height: 100vh;
+    min-height: 100dvh;
+    overflow-x: hidden;
+  }
+
+  /* Ultra sleek scrollbar */
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--app-border, rgba(255, 255, 255, 0.12));
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--app-text-muted, rgba(255, 255, 255, 0.25));
+  }
+}
+
+/* ==========================================================================
+   DYNAMIC THEME APPLIER & CONTAINER OVERRIDES
+   ========================================================================== */
+
+/* Main dark backgrounds */
+.bg-\[\#090B0E\],
+.bg-\[\#080B0E\],
+.bg-\[\#0A0D11\],
+.bg-\[\#0B0F15\],
+.bg-\[\#090B0E\]\/90,
+.bg-\[\#090B0E\]\/95,
+.bg-\[\#090B0E\]\/80 {
+  background-color: var(--app-bg, #090B14) !important;
+}
+
+/* Card surfaces */
+.bg-\[\#0E1217\],
+.bg-\[\#121721\],
+.bg-\[\#11151B\],
+.bg-\[\#0E1217\]\/90 {
+  background-color: var(--app-card, #0E1222) !important;
+}
+
+/* Elevated/subtle inputs and secondary containers */
+.bg-\[\#141920\],
+.bg-\[\#1A2230\],
+.bg-\[\#232D3F\],
+.bg-\[\#131924\],
+.bg-\[\#122232\],
+.bg-\[\#0E2938\],
+.bg-\[\#141A23\],
+.bg-\[\#141920\]\/60 {
+  background-color: var(--app-card-subtle, #14182E) !important;
+}
+
+/* Primary text & muted text */
+.text-\[\#F3F4F6\],
+.text-slate-100,
+.text-slate-200 {
+  color: var(--app-text, #F8FAFC) !important;
+}
+
+.text-slate-400,
+.text-slate-500 {
+  color: var(--app-text-muted, #94A3B8) !important;
+}
+
+.text-slate-600 {
+  color: var(--app-text-dim, #64748B) !important;
+}
+
+/* Borders */
+.border-white\/\[0\.08\],
+.border-white\/\[0\.07\],
+.border-white\/\[0\.06\],
+.border-white\/\[0\.05\],
+.border-white\/\[0\.09\],
+.border-white\/\[0\.1\] {
+  border-color: var(--app-border, rgba(129, 140, 248, 0.16)) !important;
+}
+
+/* Accent buttons & highlights */
+.bg-indigo-600,
+.bg-indigo-500 {
+  background-color: var(--app-accent, #6366F1) !important;
+}
+.bg-indigo-600:hover,
+.bg-indigo-500:hover,
+.hover\:bg-indigo-500:hover {
+  background-color: var(--app-accent-hover, #4F46E5) !important;
+}
+.text-indigo-400,
+.text-indigo-300 {
+  color: var(--app-accent-text, #A5B4FC) !important;
+}
+.border-indigo-500,
+.border-indigo-500\/40,
+.border-indigo-500\/50,
+.border-indigo-500\/30,
+.border-indigo-500\/20 {
+  border-color: var(--app-accent, #6366F1) !important;
+}
+.bg-indigo-500\/10,
+.bg-indigo-500\/15,
+.bg-indigo-500\/20,
+.bg-indigo-600\/20,
+.bg-indigo-600\/10 {
+  background-color: var(--app-accent-subtle, rgba(99, 102, 241, 0.16)) !important;
+}
+.ring-indigo-500\/50 {
+  --tw-ring-color: var(--app-accent, #6366F1) !important;
+}
+.accent-indigo-500 {
+  accent-color: var(--app-accent, #6366F1) !important;
+}
+
+/* ==========================================================================
+   LIGHT MODE OVERRIDES
+   ========================================================================== */
+[data-mode="light"] {
+  color-scheme: light;
+}
+
+[data-mode="light"] body {
+  background-color: var(--app-bg, #F1F5F9) !important;
+  color: var(--app-text, #0F172A) !important;
+}
+
+[data-mode="light"] .text-white:not(button.bg-indigo-600 *, button.bg-indigo-600, button.bg-indigo-500 *, button.bg-indigo-500, .bg-emerald-600 *, .bg-rose-500 *, .bg-emerald-500 *, .text-white-keep) {
+  color: var(--app-text, #0F172A) !important;
+}
+
+[data-mode="light"] .text-slate-300,
+[data-mode="light"] .text-slate-200 {
+  color: var(--app-text, #0F172A) !important;
+}
+
+[data-mode="light"] input:not([type="checkbox"]):not([type="radio"]),
+[data-mode="light"] select,
+[data-mode="light"] textarea {
+  color: var(--app-text, #0F172A) !important;
+  background-color: var(--app-input-bg, #FFFFFF) !important;
+  border-color: var(--app-border, #CBD5E1) !important;
+}
+
+[data-mode="light"] .bg-white\/\[0\.02\],
+[data-mode="light"] .bg-white\/\[0\.03\],
+[data-mode="light"] .bg-white\/\[0\.04\],
+[data-mode="light"] .bg-white\/\[0\.05\],
+[data-mode="light"] .bg-white\/\[0\.06\] {
+  background-color: rgba(0, 0, 0, 0.04) !important;
+}
+
+[data-mode="light"] .hover\:bg-white\/\[0\.02\]:hover,
+[data-mode="light"] .hover\:bg-white\/\[0\.04\]:hover,
+[data-mode="light"] .hover\:bg-white\/\[0\.06\]:hover,
+[data-mode="light"] .hover\:bg-white\/\[0\.08\]:hover,
+[data-mode="light"] .hover\:bg-white\/\[0\.1\]:hover,
+[data-mode="light"] .hover\:bg-white\/\[0\.12\]:hover {
+  background-color: rgba(0, 0, 0, 0.07) !important;
+}
+
+[data-mode="light"] ::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.18);
+}
+[data-mode="light"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+/* ==========================================================================
+   RTL LANGUAGE SUPPORT (Arabic)
+   ========================================================================== */
+[dir="rtl"] {
+  direction: rtl;
+  text-align: right;
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Cairo", "Tajawal", sans-serif;
+}
+
+[dir="rtl"] .text-left {
+  text-align: right !important;
+}
+
+[dir="rtl"] .text-right {
+  text-align: left !important;
+}
+
+[dir="rtl"] .ml-auto {
+  margin-left: unset !important;
+  margin-right: auto !important;
+}
+
+[dir="rtl"] .mr-auto {
+  margin-right: unset !important;
+  margin-left: auto !important;
+}
+
+/* Mirror directional icons */
+[dir="rtl"] .rtl-flip {
+  transform: scaleX(-1);
+}

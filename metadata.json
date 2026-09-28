@@ -1,0 +1,8 @@
+{
+  "name": "Hermes Mobile",
+  "description": "On-phone and remote Hermes AI gateway client with live streaming, session management, scheduled cron jobs, approvals, and system diagnostics.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
