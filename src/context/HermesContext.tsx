@@ -916,7 +916,9 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const token = ++refreshTokenRef.current;
     const alive = () => token === refreshTokenRef.current;
     try {
-      const isOk = await gatewayService.health();
+      // On-device the WebView fetch can be blocked (mixed content), so ask
+      // the native side, which probes 127.0.0.1:8080 directly.
+      const isOk = isNativeGateway() ? await nativeHealth() : await gatewayService.health();
       if (!alive()) return;
       setConnected(isOk);
       const status = await gatewayService.healthDetailed();

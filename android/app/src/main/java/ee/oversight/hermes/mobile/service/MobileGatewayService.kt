@@ -262,6 +262,11 @@ class MobileGatewayService : Service() {
     pb.environment()["API_SERVER_ENABLED"] = "true"
     pb.environment()["API_SERVER_HOST"] = "127.0.0.1"
     pb.environment()["API_SERVER_PORT"] = "8080"
+    // The WebView app is served from https://localhost, so every browser fetch
+    // to the gateway is cross-origin and preflights. Without an explicit
+    // allow-list the api_server answers no ACAO header and the WebView blocks
+    // everything (UI stuck Offline, streams fail). Loopback-only anyway.
+    pb.environment()["API_SERVER_CORS_ORIGINS"] = "https://localhost,capacitor://localhost"
     SecurePrefs.getString(this, SecurePrefs.KEY_SERVER).ifBlank { null }?.let {
       pb.environment()["API_SERVER_KEY"] = it
     }
