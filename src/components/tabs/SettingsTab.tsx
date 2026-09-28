@@ -31,6 +31,7 @@ import {
   PROVIDER_OPTIONS,
   normProvider,
   DEFAULT_MODELS,
+  keysValid,
 } from '../../constants/providers';
 import { THEME_PALETTES, ThemeMode } from '../../constants/themes';
 import { LANGUAGES } from '../../constants/languages';
@@ -82,11 +83,34 @@ export const SettingsTab: React.FC = () => {
   const [keyOk, setKeyOk] = useState<boolean | null>(null);
 
   // External bot bridges state
-  const [tgToken, setTgToken] = useState(settings.tgToken);
+  const [tgToken, setTgToken] = useState(settings.tgToken || '');
+  const [discordToken, setDiscordToken] = useState(settings.discordToken || '');
+  const [serverKey, setServerKey] = useState(settings.serverKey || '');
 
   useEffect(() => {
-    setTgToken(settings.tgToken);
+    setTgToken(settings.tgToken || '');
   }, [settings.tgToken]);
+
+  useEffect(() => {
+    setDiscordToken(settings.discordToken || '');
+  }, [settings.discordToken]);
+
+  useEffect(() => {
+    setServerKey(settings.serverKey || '');
+  }, [settings.serverKey]);
+
+  // App lock PIN setup state
+  const [showPinForm, setShowPinForm] = useState(false);
+  const [newPin, setNewPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
+  const [pinError, setPinError] = useState<string | null>(null);
+
+  const validatePin = (pin: string): string | null => {
+    if (!/^\d{4,8}$/.test(pin)) return 'PIN must be 4 to 8 digits.';
+    if (pin === '1234' || pin === '0000') return 'That PIN is too common. Choose a different one.';
+    if (/^(\d)\1+$/.test(pin)) return 'Repeated-digit PINs are not allowed. Choose a different one.';
+    return null;
+  };
 
   // Toast feedback
   const [toast, setToast] = useState<string | null>(null);
@@ -261,6 +285,11 @@ export const SettingsTab: React.FC = () => {
 
             {/* List of Configured Providers */}
             <div className="space-y-2 pt-1">
+              {configuredProviders.length === 0 && (
+                <p className="text-xs text-slate-500 p-3 rounded-2xl bg-[#141920] border border-white/[0.06]">
+                  No providers configured. Add one to start chatting.
+                </p>
+              )}
               {configuredProviders.map((prov) => {
                 const isActive = prov.provider === settings.provider;
                 return (
@@ -334,18 +363,20 @@ export const SettingsTab: React.FC = () => {
                         {t('edit')}
                       </button>
 
-                      {configuredProviders.length > 1 && (
-                        <button
-                          onClick={() => {
-                            removeConfiguredProvider(prov.id);
-                            showToast(`Removed ${prov.name}`);
-                          }}
-                          className="p-1.5 rounded-xl text-slate-500 hover:text-rose-400 hover:bg-white/[0.06] transition cursor-pointer"
-                          title="Delete provider"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      )}
+                      <button
+                        onClick={() => {
+                          const isSole = configuredProviders.length === 1;
+                          removeConfiguredProvider(prov.id);
+                          if (isSole) {
+                            updateSettings({ provider: '', apiKey: '', baseUrl: '', modelId: '' });
+                          }
+                          showToast(`Removed ${prov.name}`);
+                        }}
+                        className="p-1.5 rounded-xl text-slate-500 hover:text-rose-400 hover:bg-white/[0.06] transition cursor-pointer"
+                        title={t('delete')}
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
                     </div>
                   </div>
                 );
@@ -756,26 +787,114 @@ export const SettingsTab: React.FC = () => {
               </div>
 
               {/* App Lock PIN */}
-              <div className="flex items-center justify-between p-3 rounded-2xl bg-[#141920] border border-white/[0.06]">
-                <div>
-                  <p className="text-xs font-medium text-white">{t('appLock')}</p>
-                  <p className="text-[11px] text-slate-400">Require PIN code upon opening workspace</p>
+              <div className="p-3 rounded-2xl bg-[#141920] border border-white/[0.06] space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-medium text-white">{t('appLock')}</p>
+                    <p className="text-[11px] text-slate-400">Require PIN code upon opening workspace</p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      if (settings.appLockEnabled) {
+                        updateSettings({ appLockEnabled: false });
+                        setShowPinForm(false);
+                        showToast(`${t('appLock')}: Disabled`);
+                      } else {
+                        setPinError(null);
+                        setNewPin('');
+                        setConfirmPin('');
+                        setShowPinForm(true);
+                      }
+                    }}
+                    className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
+                      settings.appLockEnabled
+                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                        : 'bg-white/[0.04] text-slate-400'
+                    }`}
+                  >
+                    {settings.appLockEnabled ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
+                    <span>{settings.appLockEnabled ? 'Locked' : 'Disabled'}</span>
+                  </button>
                 </div>
-                <button
-                  onClick={() => {
-                    const next = !settings.appLockEnabled;
-                    updateSettings({ appLockEnabled: next });
-                    showToast(next ? `${t('appLock')}: Enabled` : `${t('appLock')}: Disabled`);
-                  }}
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
-                    settings.appLockEnabled
-                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                      : 'bg-white/[0.04] text-slate-400'
-                  }`}
-                >
-                  {settings.appLockEnabled ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
-                  <span>{settings.appLockEnabled ? 'Locked' : 'Disabled'}</span>
-                </button>
+
+                {settings.appLockEnabled && !showPinForm && (
+                  <button
+                    onClick={() => {
+                      setPinError(null);
+                      setNewPin('');
+                      setConfirmPin('');
+                      setShowPinForm(true);
+                    }}
+                    className="text-xs text-indigo-400 hover:text-indigo-300 cursor-pointer"
+                  >
+                    Change PIN
+                  </button>
+                )}
+
+                {showPinForm && (
+                  <div className="space-y-2 pt-1">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        value={newPin}
+                        onChange={(e) => {
+                          setNewPin(e.target.value.replace(/\D/g, '').slice(0, 8));
+                          setPinError(null);
+                        }}
+                        placeholder="New PIN (4-8 digits)"
+                        className="flex-1 px-3 py-2 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                      />
+                      <input
+                        type="password"
+                        inputMode="numeric"
+                        value={confirmPin}
+                        onChange={(e) => {
+                          setConfirmPin(e.target.value.replace(/\D/g, '').slice(0, 8));
+                          setPinError(null);
+                        }}
+                        placeholder="Confirm PIN"
+                        className="flex-1 px-3 py-2 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                      />
+                    </div>
+                    {pinError && <p className="text-[11px] text-rose-400">{pinError}</p>}
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          const err = validatePin(newPin);
+                          if (err) {
+                            setPinError(err);
+                            return;
+                          }
+                          if (newPin !== confirmPin) {
+                            setPinError('PINs do not match.');
+                            return;
+                          }
+                          updateSettings({ appLockPin: newPin, appLockEnabled: true });
+                          setShowPinForm(false);
+                          setNewPin('');
+                          setConfirmPin('');
+                          setPinError(null);
+                          showToast(`${t('appLock')}: Enabled`);
+                        }}
+                        className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition cursor-pointer"
+                      >
+                        {settings.appLockEnabled ? 'Save New PIN' : 'Set PIN & Enable Lock'}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setShowPinForm(false);
+                          setNewPin('');
+                          setConfirmPin('');
+                          setPinError(null);
+                        }}
+                        className="px-3.5 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white transition cursor-pointer"
+                      >
+                        {t('cancel')}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Telegram Bot Token (Optional multi-channel bridge) */}
@@ -798,6 +917,62 @@ export const SettingsTab: React.FC = () => {
                     onClick={() => {
                       updateSettings({ tgToken: tgToken.trim() });
                       showToast('Telegram bot token saved');
+                    }}
+                    className="px-3.5 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white transition cursor-pointer"
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+
+              {/* Discord Bot Token (Optional multi-channel bridge) */}
+              <div className="p-3 rounded-2xl bg-[#141920] border border-white/[0.06] space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-medium text-white">Discord Bot Bridge</p>
+                    <p className="text-[11px] text-slate-400">Optional bridge to chat with Hermes via Discord</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="password"
+                    value={discordToken}
+                    onChange={(e) => setDiscordToken(e.target.value)}
+                    placeholder="Bot token..."
+                    className="flex-1 px-3 py-2 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  />
+                  <button
+                    onClick={() => {
+                      updateSettings({ discordToken: discordToken.trim() });
+                      showToast('Discord bot token saved');
+                    }}
+                    className="px-3.5 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white transition cursor-pointer"
+                  >
+                    Save
+                  </button>
+                </div>
+              </div>
+
+              {/* Gateway Server Key (Daemon authentication) */}
+              <div className="p-3 rounded-2xl bg-[#141920] border border-white/[0.06] space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-medium text-white">Gateway Server Key</p>
+                    <p className="text-[11px] text-slate-400">Auth key the app uses to talk to the local gateway daemon</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="password"
+                    value={serverKey}
+                    onChange={(e) => setServerKey(e.target.value)}
+                    placeholder="Server key..."
+                    className="flex-1 px-3 py-2 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  />
+                  <button
+                    onClick={() => {
+                      updateSettings({ serverKey: serverKey.trim() });
+                      showToast('Gateway server key saved');
                     }}
                     className="px-3.5 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white transition cursor-pointer"
                   >
@@ -1003,7 +1178,7 @@ export const SettingsTab: React.FC = () => {
               {/* Provider Profile Label */}
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1">
-                  {t('modelCatalog')} Name
+                  Profile Label
                 </label>
                 <input
                   type="text"
@@ -1017,7 +1192,10 @@ export const SettingsTab: React.FC = () => {
               {/* API Key */}
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1">
-                  {t('apiKey')} *
+                  {t('apiKey')}{' '}
+                  {normProvider(newProvType) === 'lmstudio' || normProvider(newProvType) === 'ollama-cloud'
+                    ? '(optional for local providers)'
+                    : '*'}
                 </label>
                 <div className="relative">
                   <input
@@ -1090,6 +1268,14 @@ export const SettingsTab: React.FC = () => {
               </div>
             </div>
 
+            {!keysValid(newProvType, newProvKey, newProvBaseUrl) && (
+              <p className="text-[11px] text-amber-400">
+                {!newProvKey.trim()
+                  ? 'An API key is required for this provider (LM Studio and Ollama Cloud work without one).'
+                  : 'This provider id is not recognized: a Base URL endpoint is required.'}
+              </p>
+            )}
+
             <div className="flex justify-end gap-2.5 pt-3 border-t border-white/[0.06]">
               <button
                 onClick={() => setShowAddModal(false)}
@@ -1098,7 +1284,7 @@ export const SettingsTab: React.FC = () => {
                 {t('cancel')}
               </button>
               <button
-                disabled={!newProvKey.trim()}
+                disabled={!keysValid(newProvType, newProvKey, newProvBaseUrl)}
                 onClick={() => {
                   const cleanedKey = newProvKey.trim();
                   const targetModel = newProvModel.trim() || DEFAULT_MODELS[newProvType]?.[0] || `${newProvType}/default`;

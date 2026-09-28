@@ -59,7 +59,7 @@ interface HermesContextType {
   addConfiguredProvider: (prov: Omit<ConfiguredProvider, 'id'>) => string;
   updateConfiguredProvider: (id: string, prov: Partial<ConfiguredProvider>) => void;
   removeConfiguredProvider: (id: string) => void;
-  activateProvider: (id: string) => void;
+  activateProvider: (id: string, keepModelId?: string) => void;
   
   // Install & Gateway state
   install: InstallState;
@@ -100,7 +100,7 @@ interface HermesContextType {
   renameSession: (id: string, title: string) => Promise<void>;
   forkSession: (id: string) => Promise<void>;
   sendMessage: (text: string, imageDataUrls?: string[]) => boolean;
-  sendNow: (text: string, imageDataUrls?: string[]) => boolean;
+  sendNow: (text: string, imageDataUrls?: string[]) => boolean | 'queued';
   queueMessage: (text: string, imageDataUrls?: string[]) => boolean;
   cancelQueued: () => void;
   stopStream: () => void;
@@ -115,6 +115,7 @@ interface HermesContextType {
   refreshJobs: () => Promise<void>;
   createJob: (name: string, schedule: string, prompt: string) => Promise<boolean>;
   jobAction: (id: string, action: string) => Promise<boolean>;
+  updateJob: (id: string, patch: { name?: string; schedule?: string; prompt?: string }) => Promise<boolean>;
   cronRuns: Record<string, CronRun[]>;
   fetchRuns: (jobId: string) => Promise<void>;
   
@@ -219,13 +220,13 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [gatewayLogs, setGatewayLogs] = useState<string[]>([
     'Hermes Mobile client initialized',
   ]);
-  const [connected, setConnected] = useState<boolean>(true);
+  const [connected, setConnected] = useState<boolean>(false);
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>({
-    ok: true,
-    version: '1.3.0',
-    gatewayState: 'ready',
-    platforms: { android: 'ready', web: 'active', gateway: 'running' },
-    detail: '',
+    ok: false,
+    version: '',
+    gatewayState: 'down',
+    platforms: {},
+    detail: 'Probing gateway health...',
   });
   const [gatewayFailed, setGatewayFailed] = useState<boolean>(false);
   const [gatewayFailureReason, setGatewayFailureReason] = useState<string | null>(null);
@@ -261,6 +262,24 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Synchronous mirrors so stop-then-send in the same tick works (state lags a render).
+  const streamingRef = useRef<boolean>(false);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const currentSessionIdRef = useRef<string | null>(currentSessionId);
+  currentSessionIdRef.current = currentSessionId;
+  const queuedRef = useRef<QueuedMessage[]>([]);
+  const refreshTokenRef = useRef<number>(0);
+  const sessionsRef = useRef<MobileSession[]>(sessions);
+  sessionsRef.current = sessions;
+
+  // Persist chat outside of state updaters (StrictMode purity).
+  useEffect(() => {
+    if (!currentSessionId || chat.length === 0) return;
+    try {
+      gatewayService.saveLocalMessages(currentSessionId, chat);
+    } catch {}
+  }, [chat, currentSessionId, gatewayService]);
 
   const addLog = (msg: string) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -268,13 +287,11 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const updateSettings = (newSettings: Partial<HermesSettings>) => {
-    setSettings((prev) => {
-      const next = { ...prev, ...newSettings };
-      try {
-        localStorage.setItem('hermes_settings', JSON.stringify(next));
-      } catch {}
-      return next;
-    });
+    const next = { ...settingsRef.current, ...newSettings };
+    try {
+      localStorage.setItem('hermes_settings', JSON.stringify(next));
+    } catch {}
+    setSettings(next);
   };
 
   const saveKeys = (
@@ -390,38 +407,51 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     addLog(`Removed provider profile ${id}`);
   };
 
-  const activateProvider = (id: string) => {
-    const target = (settings.providers || []).find((p) => p.id === id);
+  const activateProvider = (id: string, keepModelId?: string) => {
+    const list = settingsRef.current.providers || [];
+    const normed = normProvider(id);
+    const target =
+      list.find((p) => p.id === id) ||
+      (normed ? list.find((p) => normProvider(p.provider) === normed) : undefined);
     if (!target) return;
 
+    const keep = (keepModelId || '').trim();
     updateSettings({
       provider: target.provider,
-      apiKey: target.apiKey,
+      apiKey: target.apiKey || '',
       baseUrl: target.baseUrl || '',
-      modelId: target.defaultModel,
+      modelId: keep || target.defaultModel,
     });
     addLog(`Switched active inference endpoint to ${target.name} (${target.provider})`);
   };
 
   // Toggle Pinned
   const togglePin = (id: string) => {
-    setPinnedIds((prev) => {
-      const next = prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id];
-      try {
-        localStorage.setItem('hermes_pinned_sessions', JSON.stringify(next));
-      } catch {}
-      return next;
-    });
+    const prev = pinnedIds;
+    const next = prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id];
+    try {
+      localStorage.setItem('hermes_pinned_sessions', JSON.stringify(next));
+    } catch {}
+    setPinnedIds(next);
   };
 
-  // Drafts
+  // Drafts (persisted per session so input survives refresh)
   const getDraft = (sid: string | null) => {
     const key = sid || 'none';
-    return drafts[key] || '';
+    if (drafts[key] !== undefined) return drafts[key];
+    try {
+      return localStorage.getItem(`hermes_draft_${key}`) || '';
+    } catch {
+      return '';
+    }
   };
 
   const setDraft = (sid: string | null, text: string) => {
     const key = sid || 'none';
+    try {
+      if (text) localStorage.setItem(`hermes_draft_${key}`, text);
+      else localStorage.removeItem(`hermes_draft_${key}`);
+    } catch {}
     setDrafts((prev) => ({ ...prev, [key]: text }));
   };
 
@@ -534,23 +564,38 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   }, [streaming]);
 
   const refreshNow = async () => {
+    const token = ++refreshTokenRef.current;
+    const alive = () => token === refreshTokenRef.current;
     try {
       const isOk = await gatewayService.health();
-      setConnected(isOk || true); // In web container, local engine acts as healthy
+      if (!alive()) return;
+      setConnected(isOk);
       const status = await gatewayService.healthDetailed();
+      if (!alive()) return;
       setGatewayStatus(status);
       const sessList = await gatewayService.fetchSessions();
-      setSessions(sessList);
+      if (!alive()) return;
+      // Merge instead of wholesale clobber so locally created sessions survive.
+      const localOnly = sessionsRef.current.filter(
+        (ls) => !sessList.some((s) => s.id === ls.id)
+      );
+      const merged = [...localOnly, ...sessList];
+      sessionsRef.current = merged;
+      setSessions(merged);
       const jobsList = await gatewayService.jobs();
+      if (!alive()) return;
       setJobs(jobsList);
-      if (currentSessionId) {
-        const msgs = gatewayService.loadLocalMessages(currentSessionId);
+      // Keep the current session; only auto-select when none is active.
+      const cur = currentSessionIdRef.current;
+      if (cur) {
+        const msgs = gatewayService.loadLocalMessages(cur);
         setChat(msgs);
-      } else if (sessList.length > 0) {
-        selectSession(sessList[0].id);
+      } else if (merged.length > 0) {
+        selectSession(merged[0].id);
       }
     } catch {
-      setConnected(true);
+      if (!alive()) return;
+      setConnected(false);
     }
   };
 
@@ -584,15 +629,58 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       addLog(`Extracted package block #${i / 20}`);
     }
 
-    setInstall('INSTALLED');
-    setInstallProgress('');
-    addLog('Installed Hermes rootfs OK, ready to start');
+    // Probe real gateway health before declaring success.
+    let healthy = false;
+    try {
+      healthy = await gatewayService.health();
+    } catch {
+      healthy = false;
+    }
+    if (healthy) {
+      setInstall('INSTALLED');
+      setInstallProgress('');
+      addLog('Installed Hermes rootfs OK, ready to start');
+      refreshNow();
+    } else {
+      setInstall('FAILED');
+      setInstallProgress('');
+      setInstallError('Install finished but the gateway health check failed. Press Retry to try again.');
+      setConnected(false);
+      addLog('Install failed: gateway health check did not pass after install');
+    }
   };
 
   const selectSession = (id: string) => {
+    // Abort any in-flight stream before switching.
+    if (abortControllerRef.current) {
+      try {
+        abortControllerRef.current.abort();
+      } catch {}
+      abortControllerRef.current = null;
+    }
+    if (activeRunId) {
+      gatewayService.stopRun(activeRunId);
+      setActiveRunId(null);
+    }
+    streamingRef.current = false;
+    setStreaming(false);
     setCurrentSessionId(id);
-    const msgs = gatewayService.loadLocalMessages(id);
-    setChat(msgs);
+    const local = gatewayService.loadLocalMessages(id);
+    setChat(local);
+    // Merge server history with local messages (dedupe by id, chronological).
+    gatewayService
+      .sessionMessages(id)
+      .then((server) => {
+        if (!server || server.length === 0) return;
+        setChat((prev) => {
+          const ids = new Set(server.map((m) => m.id));
+          const onlyLocal = prev.filter((m) => !ids.has(m.id));
+          return [...server, ...onlyLocal].sort(
+            (a, b) => (a.timestamp || 0) - (b.timestamp || 0)
+          );
+        });
+      })
+      .catch(() => {});
   };
 
   const newSession = async (): Promise<string> => {
@@ -637,13 +725,16 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const stopStream = () => {
     if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
+      try {
+        abortControllerRef.current.abort();
+      } catch {}
       abortControllerRef.current = null;
     }
     if (activeRunId) {
       gatewayService.stopRun(activeRunId);
       setActiveRunId(null);
     }
+    streamingRef.current = false;
     setStreaming(false);
     // Mark pending assistant message as finished thinking
     setChat((prev) =>
@@ -657,22 +748,35 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const sendMessage = (text: string, imageDataUrls: string[] = []): boolean => {
     const trimmed = text.trim();
     if (!trimmed && imageDataUrls.length === 0) return false;
-    if (streaming) return false;
+    // Never silently drop: queue when a stream is active.
+    if (streamingRef.current) {
+      queueMessage(trimmed, imageDataUrls);
+      addLog('Stream busy, message queued for next turn');
+      return true;
+    }
 
-    let targetSid = currentSessionId;
+    let targetSid = currentSessionIdRef.current;
     if (!targetSid) {
       // Auto create a session if none active
       targetSid = 'sess_' + Math.random().toString(36).substring(2, 9);
       const newSess: MobileSession = {
         id: targetSid,
         title: trimmed.slice(0, 30) || 'New Conversation',
-        model: settings.modelId,
+        model: settingsRef.current.modelId,
         messageCount: 0,
         lastActiveAt: Date.now(),
         costUsd: 0.0,
         source: 'web',
       };
-      setSessions((prev) => [newSess, ...prev]);
+      try {
+        const known = sessionsRef.current;
+        if (!known.some((s) => s.id === targetSid)) {
+          const nextKnown = [newSess, ...known];
+          sessionsRef.current = nextKnown;
+          gatewayService.saveLocalSessions(nextKnown);
+        }
+      } catch {}
+      setSessions((prev) => (prev.some((s) => s.id === targetSid) ? prev : [newSess, ...prev]));
       setCurrentSessionId(targetSid);
     }
 
@@ -701,20 +805,24 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     gatewayService.saveLocalMessages(sid, initialChat);
     setChat(initialChat);
 
+    streamingRef.current = true;
     setStreaming(true);
     const startTime = Date.now();
+    const activeModel = settingsRef.current.modelId;
+    const activeEffort = settingsRef.current.reasoningEffort;
+    const autoApprove = settingsRef.current.autoApproveGlobal;
     setTurnMeta((prev) => ({
       ...prev,
-      [agentMsgId]: { model: settings.modelId, durationMs: 0 },
+      [agentMsgId]: { model: activeModel, durationMs: 0 },
     }));
 
     abortControllerRef.current = new AbortController();
 
     gatewayService.streamChat(
       sid,
-      settings.modelId,
+      activeModel,
       trimmed,
-      settings.reasoningEffort,
+      activeEffort,
       imageDataUrls,
       {
         onRunId: (rId) => setActiveRunId(rId),
@@ -768,82 +876,143 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           setUsageOut((prev) => prev + outp);
         },
         onApproval: (req) => {
-          if (settings.autoApproveGlobal) {
+          if (autoApprove) {
             resolveApproval(req, true, 'session');
           } else {
             setApprovals((prev) => (prev.some((a) => a.runId === req.runId) ? prev : [...prev, req]));
           }
         },
-      },
+        onError: (message: string) => {
+          const errBubble: ChatMessage = {
+            id: 'msg_' + Math.random().toString(36).substring(2, 9),
+            sender: 'hermes',
+            content: `Stream error: ${message || 'the gateway closed the stream unexpectedly'}`,
+            thinkingDone: true,
+            timestamp: Date.now(),
+          };
+          setChat((prev) => [...prev, errBubble]);
+          addLog(`Stream error: ${message || 'unknown gateway error'}`);
+        },
+        onStopped: () => {
+          setChat((prev) =>
+            prev.map((m) =>
+              m.id === agentMsgId ? { ...m, thinkingDone: true } : m
+            )
+          );
+          setTurnMeta((prev) => ({
+            ...prev,
+            [agentMsgId]: {
+              model: activeModel,
+              durationMs: Date.now() - startTime,
+              stopped: true,
+            } as TurnMeta,
+          }));
+          addLog('Stream stopped by gateway');
+        },
+      } as Parameters<GatewayService['streamChat']>[5],
       abortControllerRef.current.signal
     )
       .finally(() => {
+        streamingRef.current = false;
         setStreaming(false);
         setActiveRunId(null);
         abortControllerRef.current = null;
         const duration = Date.now() - startTime;
         setTurnMeta((prev) => ({
           ...prev,
-          [agentMsgId]: { model: settings.modelId, durationMs: duration },
+          [agentMsgId]: { model: activeModel, durationMs: duration },
         }));
 
-        setChat((latest) => {
-          const finalMessages = latest.map((m) =>
+        // Pure updater; persistence happens in the chat persist effect.
+        setChat((latest) =>
+          latest.map((m) =>
             m.id === agentMsgId ? { ...m, thinkingDone: true } : m
-          );
-          gatewayService.saveLocalMessages(sid, finalMessages);
-          return finalMessages;
-        });
-
-        // Update session meta
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.id === sid
-              ? {
-                  ...s,
-                  messageCount: s.messageCount + 2,
-                  lastActiveAt: Date.now(),
-                }
-              : s
           )
         );
 
-        // Process next queued message if any
-        setQueuedMessages((q) => {
-          if (q.length > 0) {
-            const [nextMsg, ...remaining] = q;
-            setTimeout(() => {
-              sendMessage(nextMsg.text, nextMsg.images);
-            }, 300);
-            return remaining;
-          }
-          return q;
-        });
+        // Update session meta (computed outside the updater; StrictMode purity).
+        const bumped = sessionsRef.current.map((s) =>
+          s.id === sid
+            ? { ...s, messageCount: s.messageCount + 2, lastActiveAt: Date.now() }
+            : s
+        );
+        sessionsRef.current = bumped;
+        setSessions(bumped);
+        try {
+          gatewayService.saveLocalSessions(bumped);
+        } catch {}
+
+        // Process next queued message if any (outside the updater; StrictMode purity).
+        const nextMsg = queuedRef.current[0];
+        if (nextMsg) {
+          queuedRef.current = queuedRef.current.slice(1);
+          setQueuedMessages([...queuedRef.current]);
+          setTimeout(() => {
+            sendMessage(nextMsg.text, nextMsg.images);
+          }, 300);
+        }
       });
 
     return true;
   };
 
-  const sendNow = (text: string, imageDataUrls: string[] = []): boolean => {
-    stopStream();
-    return sendMessage(text, imageDataUrls);
+  const sendNow = (text: string, imageDataUrls: string[] = []): boolean | 'queued' => {
+    const trimmed = text.trim();
+    if (!trimmed && imageDataUrls.length === 0) return false;
+    // Stop-then-send in the same tick: stopStream clears streamingRef synchronously.
+    if (streamingRef.current) {
+      stopStream();
+    }
+    if (streamingRef.current) {
+      queueMessage(trimmed, imageDataUrls);
+      return 'queued';
+    }
+    const ok = sendMessage(trimmed, imageDataUrls);
+    if (!ok) {
+      queueMessage(trimmed, imageDataUrls);
+      return 'queued';
+    }
+    return true;
   };
 
   const queueMessage = (text: string, imageDataUrls: string[] = []): boolean => {
     const t = text.trim();
     if (!t && imageDataUrls.length === 0) return false;
-    setQueuedMessages((prev) => [...prev, { text: t, images: imageDataUrls }]);
+    const next = [...queuedRef.current, { text: t, images: imageDataUrls }];
+    queuedRef.current = next;
+    setQueuedMessages(next);
     return true;
   };
 
   const cancelQueued = () => {
+    queuedRef.current = [];
     setQueuedMessages([]);
   };
 
   const resolveApproval = async (approval: PendingApproval, allow: boolean, mode: string = 'once') => {
-    await gatewayService.resolveApproval(approval.runId, allow, mode);
-    setApprovals((prev) => prev.filter((a) => a.runId !== approval.runId));
-    addLog(`Approval for "${approval.summary.slice(0, 40)}" ${allow ? 'ALLOWED (' + mode + ')' : 'DENIED'}`);
+    let ok = false;
+    try {
+      ok = await gatewayService.resolveApproval(approval.runId, allow, mode);
+    } catch {
+      ok = false;
+    }
+    if (ok) {
+      setApprovals((prev) => prev.filter((a) => a.runId !== approval.runId));
+      addLog(`Approval for "${approval.summary.slice(0, 40)}" ${allow ? 'ALLOWED (' + mode + ')' : 'DENIED'}`);
+    } else {
+      // Keep the card and surface the failure.
+      addLog(`Approval ${allow ? 'grant' : 'deny'} failed: gateway did not confirm. Keeping the pending approval.`);
+      if (currentSessionIdRef.current === approval.sessionId) {
+        const errBubble: ChatMessage = {
+          id: 'msg_' + Math.random().toString(36).substring(2, 9),
+          sender: 'hermes',
+          content: `Approval ${allow ? 'grant' : 'deny'} failed: the gateway did not confirm. The approval is still pending.`,
+          thinkingDone: true,
+          timestamp: Date.now(),
+        };
+        setChat((prev) => [...prev, errBubble]);
+      }
+    }
   };
 
   // Jobs Actions
@@ -860,6 +1029,12 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const jobAction = async (id: string, action: string): Promise<boolean> => {
     const ok = await gatewayService.jobAction(id, action);
+    if (ok) refreshJobs();
+    return ok;
+  };
+
+  const updateJob = async (id: string, patch: { name?: string; schedule?: string; prompt?: string }): Promise<boolean> => {
+    const ok = await gatewayService.updateJob(id, patch);
     if (ok) refreshJobs();
     return ok;
   };
@@ -923,6 +1098,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         refreshJobs,
         createJob,
         jobAction,
+        updateJob,
         cronRuns,
         fetchRuns,
         service: gatewayService,

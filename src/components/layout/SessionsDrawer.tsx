@@ -15,7 +15,10 @@ import {
   MessageSquare,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
+import { GatewayService } from '../../services/gateway';
 import { MobileSession } from '../../types/hermes';
+
+const gatewayService = new GatewayService();
 
 interface SessionsDrawerProps {
   isOpen: boolean;
@@ -38,7 +41,6 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     refreshNow,
     pinnedIds,
     togglePin,
-    chat,
   } = useHermes();
 
   const [query, setQuery] = useState('');
@@ -85,8 +87,9 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
   }, [visibleSessions, pinnedIds]);
 
   const handleExportMarkdown = (sess: MobileSession) => {
+    const targetMessages = gatewayService.loadLocalMessages(sess.id);
     let md = `# ${sess.title}\nID: ${sess.id}\nModel: ${sess.model}\nDate: ${new Date().toISOString()}\n\n---\n\n`;
-    for (const msg of chat) {
+    for (const msg of targetMessages) {
       md += `### ${msg.sender === 'you' ? 'User' : 'Hermes'}\n\n${msg.content}\n\n`;
       if (msg.thinking) {
         md += `> **Thinking:**\n> ${msg.thinking.replace(/\n/g, '\n> ')}\n\n`;
@@ -102,9 +105,10 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  const handleCopyTranscript = () => {
+  const handleCopyTranscript = (sess: MobileSession) => {
+    const targetMessages = gatewayService.loadLocalMessages(sess.id);
     let md = `# Session Transcript\n\n`;
-    for (const msg of chat) {
+    for (const msg of targetMessages) {
       md += `**${msg.sender === 'you' ? 'User' : 'Hermes'}:**\n${msg.content}\n\n`;
     }
     navigator.clipboard.writeText(md);
@@ -239,6 +243,8 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                       }}
                       onFork={() => forkSession(sess.id)}
                       onDelete={() => setDeleteTarget(sess)}
+                      onExport={() => handleExportMarkdown(sess)}
+                      onCopy={() => handleCopyTranscript(sess)}
                     />
                   ))}
                 </div>
@@ -263,6 +269,8 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                     }}
                     onFork={() => forkSession(sess.id)}
                     onDelete={() => setDeleteTarget(sess)}
+                    onExport={() => handleExportMarkdown(sess)}
+                    onCopy={() => handleCopyTranscript(sess)}
                   />
                 ))}
               </div>
@@ -351,6 +359,8 @@ interface SessionCardProps {
   onRename: () => void;
   onFork: () => void;
   onDelete: () => void;
+  onExport: () => void;
+  onCopy: () => void;
 }
 
 const SessionCard: React.FC<SessionCardProps> = ({
@@ -362,6 +372,8 @@ const SessionCard: React.FC<SessionCardProps> = ({
   onRename,
   onFork,
   onDelete,
+  onExport,
+  onCopy,
 }) => {
   return (
     <div
@@ -382,7 +394,7 @@ const SessionCard: React.FC<SessionCardProps> = ({
             onTogglePin();
           }}
           className={`p-1 rounded-md transition ${
-            isPinned ? 'text-amber-400' : 'text-slate-600 hover:text-slate-400 opacity-0 group-hover:opacity-100'
+            isPinned ? 'text-amber-400' : 'text-slate-500 hover:text-slate-300'
           }`}
           title={isPinned ? 'Unpin' : 'Pin to favorites'}
         >
@@ -395,7 +407,27 @@ const SessionCard: React.FC<SessionCardProps> = ({
         <span>{new Date(session.lastActiveAt).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span>
       </div>
 
-      <div className="mt-2 pt-2 border-t border-white/[0.05] flex items-center justify-end gap-3 text-[11px] text-slate-400">
+      <div className="mt-2 pt-2 border-t border-white/[0.05] flex items-center justify-end flex-wrap gap-3 text-[11px] text-slate-400">
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onExport();
+          }}
+          className="hover:text-white transition flex items-center gap-1 min-h-[44px]"
+        >
+          <Download className="w-3 h-3" />
+          <span>Export</span>
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onCopy();
+          }}
+          className="hover:text-white transition flex items-center gap-1 min-h-[44px]"
+        >
+          <Copy className="w-3 h-3" />
+          <span>Copy</span>
+        </button>
         <button
           onClick={(e) => {
             e.stopPropagation();

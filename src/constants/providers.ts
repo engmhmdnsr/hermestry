@@ -101,10 +101,13 @@ export function normProvider(p: string): string {
 }
 
 export function keysValid(provider: string, key: string, baseUrl: string): boolean {
-  if (!key.trim()) return false;
   const p = normProvider(provider).trim() || 'deepseek';
+  if (KEYLESS_PROVIDERS.has(p)) return true;
+  if (!key.trim()) return false;
   return KNOWN_PROVIDERS.has(p) || baseUrl.trim().length > 0;
 }
+
+export const KEYLESS_PROVIDERS = new Set(['lmstudio', 'ollama-cloud']);
 
 export const DEFAULT_MODELS: Record<string, string[]> = {
   openrouter: [
@@ -131,6 +134,11 @@ export const DEFAULT_MODELS: Record<string, string[]> = {
     'moa/reasoning-ensemble-v2',
   ],
   deepseek: ['deepseek/deepseek-chat', 'deepseek/deepseek-reasoner'],
+  'opencode-go': ['opencode-go/default', 'opencode-go/auto'],
+  'opencode-zen': ['opencode-zen/default', 'opencode-zen/auto'],
+  xiaomi: ['mimo-v2-flash', 'mimo-v2-thinking-flash'],
+  'tencent-tokenhub': ['tokenhub-default', 'tokenhub-plus'],
+  'tencent-tokenplan': ['tokenplan-default', 'tokenplan-plus'],
   gemini: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash-exp'],
   anthropic: ['claude-3-7-sonnet', 'claude-3-5-sonnet', 'claude-3-5-haiku'],
   'openai-api': ['gpt-4o', 'gpt-4o-mini', 'o3-mini', 'o1'],

@@ -189,7 +189,7 @@ export const THEME_PALETTES: ThemePalette[] = [
   {
     id: 'catppuccin',
     name: 'Catppuccin',
-    description: 'Soothing pastels — Mocha and Latte with lavender',
+    description: 'Soothing pastels, Mocha and Latte with lavender',
     preview: {
       bg: '#1E1E2E',
       sidebar: '#181825',

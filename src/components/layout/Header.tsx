@@ -122,7 +122,7 @@ export const Header: React.FC<HeaderProps> = ({
                 : 'bg-rose-500'
             }`}
           />
-          <span className="text-slate-300 font-medium text-[11px] hidden xs:inline">
+          <span className="text-slate-300 font-medium text-[11px] hidden sm:inline">
             {isHealthy ? (t('connected') || 'Connected') : isConnecting ? (t('starting') || 'Starting') : (t('offline') || 'Offline')}
           </span>
         </div>

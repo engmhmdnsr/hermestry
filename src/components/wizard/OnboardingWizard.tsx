@@ -6,6 +6,7 @@ import {
   KNOWN_PROVIDERS,
   normProvider,
   keysValid,
+  KEYLESS_PROVIDERS,
 } from '../../constants/providers';
 
 interface OnboardingWizardProps {
@@ -46,8 +47,18 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
   }, [connected, step, onDone, updateSettings]);
 
   const normed = normProvider(provider);
-  const isKnown = KNOWN_PROVIDERS.has(normed);
-  const isKeyValid = keysValid(provider, apiKey, baseUrl);
+  const effectiveProvider = customProvider ? provider.trim() || normed : normed;
+  const isKnown = KNOWN_PROVIDERS.has(normProvider(effectiveProvider));
+  const isKeyless = KEYLESS_PROVIDERS.has(normProvider(effectiveProvider));
+  const isKeyValid = keysValid(effectiveProvider, apiKey, baseUrl);
+
+  const saveBlockReason: string | null = (() => {
+    if (customProvider && !provider.trim()) return 'Enter a custom provider id.';
+    if (!apiKey.trim() && !isKeyless)
+      return 'An API key is required for this provider (LM Studio and Ollama Cloud work without one).';
+    if (!isKnown && !baseUrl.trim()) return 'Custom providers need a Base URL endpoint.';
+    return null;
+  })();
 
   return (
     <div className="min-h-screen bg-[#090B0E] text-slate-200 p-6 max-w-lg mx-auto flex flex-col justify-start">
@@ -157,13 +168,26 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                 </button>
               )}
               {install === 'FAILED' && (
-                <button
-                  onClick={() => installGateway()}
-                  className="w-full py-3.5 rounded-2xl bg-indigo-600 text-white font-semibold text-sm transition cursor-pointer"
-                >
-                  Retry Setup
-                </button>
+                <div className="space-y-3">
+                  {installError && (
+                    <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-300 leading-relaxed">
+                      {installError}
+                    </div>
+                  )}
+                  <button
+                    onClick={() => installGateway()}
+                    className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm transition cursor-pointer"
+                  >
+                    Retry Setup
+                  </button>
+                </div>
               )}
+              <button
+                onClick={() => setStep(0)}
+                className="w-full text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
+              >
+                Back
+              </button>
             </div>
           </div>
         )}
@@ -181,25 +205,48 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
 
             <div className="space-y-3">
               <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">
-                  Provider
-                </label>
-                <select
-                  value={normed}
-                  onChange={(e) => setProvider(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
-                >
-                  {PROVIDER_OPTIONS.map(([id, name]) => (
-                    <option key={id} value={id}>
-                      {name} ({id})
-                    </option>
-                  ))}
-                </select>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-medium text-slate-400">
+                    Provider
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setCustomProvider(!customProvider)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition cursor-pointer ${
+                      customProvider
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-white/[0.04] text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {customProvider ? 'Custom: On' : 'Custom: Off'}
+                  </button>
+                </div>
+                {customProvider ? (
+                  <input
+                    type="text"
+                    value={provider}
+                    onChange={(e) => setProvider(e.target.value)}
+                    placeholder="e.g. my-proxy"
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  />
+                ) : (
+                  <select
+                    value={normed}
+                    onChange={(e) => setProvider(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
+                  >
+                    {PROVIDER_OPTIONS.map(([id, name]) => (
+                      <option key={id} value={id}>
+                        {name} ({id})
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
 
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1">
-                  API Key *
+                  API Key {isKeyless ? '(optional for local providers)' : '*'}
                 </label>
                 <div className="relative">
                   <input
@@ -221,6 +268,19 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
 
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1">
+                  Base URL Endpoint{(customProvider || !isKnown) ? ' *' : ' (optional)'}
+                </label>
+                <input
+                  type="text"
+                  value={baseUrl}
+                  onChange={(e) => setBaseUrl(e.target.value)}
+                  placeholder="https://api.openai.com/v1"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">
                   Model Identifier (optional)
                 </label>
                 <input
@@ -231,13 +291,29 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                   className="w-full px-3.5 py-2.5 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                 />
               </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">
+                  Telegram Bot Token (optional)
+                </label>
+                <input
+                  type="password"
+                  value={tgToken}
+                  onChange={(e) => setTgToken(e.target.value)}
+                  placeholder="bot123456:ABC-DEF..."
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                />
+              </div>
             </div>
 
-            <div className="pt-4">
+            <div className="pt-4 space-y-2">
+              {saveBlockReason && (
+                <p className="text-[11px] text-amber-400">{saveBlockReason}</p>
+              )}
               <button
                 disabled={!isKeyValid}
                 onClick={() => {
-                  saveKeys(provider, apiKey, modelId, baseUrl, tgToken, settings.discordToken, settings.serverKey, bootRestart);
+                  saveKeys(effectiveProvider, apiKey, modelId, baseUrl, tgToken, settings.discordToken, settings.serverKey, bootRestart);
                   setStep(3);
                 }}
                 className={`w-full py-3.5 rounded-2xl font-semibold text-sm transition cursor-pointer ${
@@ -247,6 +323,12 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                 }`}
               >
                 Save and Continue
+              </button>
+              <button
+                onClick={() => setStep(1)}
+                className="w-full text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
+              >
+                Back
               </button>
             </div>
           </div>
@@ -313,6 +395,13 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                 className="w-full text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
               >
                 Skip to Workspace
+              </button>
+
+              <button
+                onClick={() => setStep(2)}
+                className="w-full text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
+              >
+                Back
               </button>
             </div>
           </div>

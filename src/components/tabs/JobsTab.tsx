@@ -13,12 +13,46 @@ import {
   ChevronUp,
   Sliders,
   Calendar,
+  Pencil,
+  X,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import { CronJob } from '../../types/hermes';
 
+const OVERDUE_GRACE_MS = 5 * 60 * 1000;
+
+const isValidSchedule = (s: string, presetVals: string[]): boolean => {
+  const v = s.trim();
+  if (!v) return false;
+  if (presetVals.includes(v)) return true;
+  return /^\S+\s+\S+\s+\S+\s+\S+\s+\S+$/.test(v);
+};
+
+const parseRunDate = (s: string): number => {
+  if (!s) return NaN;
+  const t = new Date(s).getTime();
+  if (!Number.isNaN(t)) return t;
+  return new Date(s.replace(' ', 'T')).getTime();
+};
+
+const formatDuration = (startedAt: string, finishedAt: string): string => {
+  const a = parseRunDate(startedAt);
+  const b = parseRunDate(finishedAt);
+  if (Number.isNaN(a) || Number.isNaN(b) || b < a) return '';
+  const secs = Math.round((b - a) / 1000);
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m ${secs % 60}s`;
+  const hrs = Math.floor(mins / 60);
+  return `${hrs}h ${mins % 60}m`;
+};
+
 export const JobsTab: React.FC = () => {
-  const { jobs, createJob, jobAction, cronRuns, fetchRuns, t } = useHermes();
+  const hermes = useHermes();
+  const { jobs, createJob, jobAction, cronRuns, fetchRuns, t } = hermes;
+  const updateJob = (hermes as unknown as {
+    updateJob?: (id: string, patch: { name?: string; schedule?: string; prompt?: string }) => Promise<boolean>;
+  }).updateJob;
 
   // Create form state
   const [name, setName] = useState('');
@@ -26,6 +60,15 @@ export const JobsTab: React.FC = () => {
   const [prompt, setPrompt] = useState('');
   const [createError, setCreateError] = useState('');
   const [isCreating, setIsCreating] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+
+  // Edit form state
+  const [editingJob, setEditingJob] = useState<CronJob | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editSchedule, setEditSchedule] = useState('');
+  const [editPrompt, setEditPrompt] = useState('');
+  const [editError, setEditError] = useState('');
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   // Search & history
   const [query, setQuery] = useState('');
@@ -39,9 +82,20 @@ export const JobsTab: React.FC = () => {
     { label: 'Every 1 Hour', val: 'every 1h' },
   ];
 
+  const presetVals = presets.map((p) => p.val);
+
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 3000);
+  };
+
   const handleCreate = async () => {
     if (!name.trim() || !schedule.trim() || !prompt.trim()) {
       setCreateError('Please fill in job title, schedule, and execution prompt');
+      return;
+    }
+    if (!isValidSchedule(schedule, presetVals)) {
+      setCreateError('Schedule must be a preset or a 5-field cron expression (e.g. 0 9 * * *)');
       return;
     }
 
@@ -55,7 +109,47 @@ export const JobsTab: React.FC = () => {
       setSchedule('');
       setPrompt('');
     } else {
-      setCreateError('Failed to create job');
+      setCreateError('Gateway rejected the job. It was not created. Check the schedule and try again.');
+      showToast('Failed to create job: gateway rejected the request');
+    }
+  };
+
+  const openEdit = (j: CronJob) => {
+    setEditingJob(j);
+    setEditName(j.name);
+    setEditSchedule(j.scheduleDisplay);
+    setEditPrompt(j.prompt);
+    setEditError('');
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingJob) return;
+    if (!editName.trim() || !editSchedule.trim() || !editPrompt.trim()) {
+      setEditError('Please fill in job title, schedule, and execution prompt');
+      return;
+    }
+    if (!isValidSchedule(editSchedule, presetVals)) {
+      setEditError('Schedule must be a preset or a 5-field cron expression (e.g. 0 9 * * *)');
+      return;
+    }
+    if (typeof updateJob !== 'function') {
+      setEditError('Editing is not supported by this gateway version.');
+      return;
+    }
+    setEditError('');
+    setIsSavingEdit(true);
+    const ok = await updateJob(editingJob.id, {
+      name: editName.trim(),
+      schedule: editSchedule.trim(),
+      prompt: editPrompt.trim(),
+    });
+    setIsSavingEdit(false);
+    if (ok) {
+      setEditingJob(null);
+      showToast('Job updated');
+    } else {
+      setEditError('Gateway rejected the update. The job was not changed.');
+      showToast('Failed to update job: gateway rejected the request');
     }
   };
 
@@ -64,7 +158,7 @@ export const JobsTab: React.FC = () => {
     if (!nextRunAt) return false;
     try {
       const target = new Date(nextRunAt).getTime();
-      return target < Date.now();
+      return target < Date.now() - OVERDUE_GRACE_MS;
     } catch {
       return false;
     }
@@ -80,6 +174,12 @@ export const JobsTab: React.FC = () => {
 
   return (
     <div className="space-y-6 max-w-2xl mx-auto px-4 pt-4 pb-28">
+      {/* Toast popup */}
+      {toast && (
+        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-semibold shadow-2xl animate-in fade-in slide-in-from-top-2">
+          {toast}
+        </div>
+      )}
       {/* 1. New Automation Schedule Builder Card */}
       <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-5 space-y-4 shadow-xs">
         <div>
@@ -153,7 +253,7 @@ export const JobsTab: React.FC = () => {
           className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold shadow-xs transition cursor-pointer flex items-center justify-center gap-2"
         >
           <Plus className="w-4 h-4" />
-          <span>{isCreating ? t('testingKey') : t('newJob')}</span>
+          <span>{isCreating ? 'Creating...' : t('newJob')}</span>
         </button>
       </div>
 
@@ -279,6 +379,14 @@ export const JobsTab: React.FC = () => {
                     </button>
 
                     <button
+                      onClick={() => openEdit(j)}
+                      className="text-slate-400 hover:text-white cursor-pointer flex items-center gap-1.5 transition"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                      <span>Edit</span>
+                    </button>
+
+                    <button
                       onClick={async () => {
                         if (isHistoryOpen) {
                           setHistoryForId(null);
@@ -297,7 +405,7 @@ export const JobsTab: React.FC = () => {
                   <button
                     onClick={() => setPendingDeleteJob(j)}
                     className="text-slate-500 hover:text-rose-400 cursor-pointer p-1.5 rounded-lg hover:bg-white/[0.04] transition"
-                    title="Delete schedule"
+                    title={t('delete')}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -314,20 +422,27 @@ export const JobsTab: React.FC = () => {
                         No previous runs logged for this job yet.
                       </p>
                     ) : (
-                      runs.slice(0, 10).map((r, i) => (
-                        <div
-                          key={r.id || i}
-                          className="p-2.5 rounded-xl bg-[#141920] border border-white/[0.06] text-xs space-y-1"
-                        >
-                          <div className="flex items-center justify-between text-slate-300">
-                            <span className="font-medium capitalize">{r.status || 'Completed'}</span>
-                            <span className="text-slate-500 text-[11px] font-mono">{r.startedAt}</span>
+                      runs.slice(0, 10).map((r, i) => {
+                        const duration = formatDuration(r.startedAt, r.finishedAt);
+                        return (
+                          <div
+                            key={r.id || i}
+                            className="p-2.5 rounded-xl bg-[#141920] border border-white/[0.06] text-xs space-y-1"
+                          >
+                            <div className="flex items-center justify-between text-slate-300">
+                              <span className="font-medium capitalize">{r.status || 'Completed'}</span>
+                              <span className="text-slate-500 text-[11px] font-mono">{r.startedAt}</span>
+                            </div>
+                            <div className="flex items-center gap-2 text-[11px] text-slate-500 font-mono">
+                              {r.finishedAt && <span>Ended {r.finishedAt}</span>}
+                              {duration && <span>· {duration}</span>}
+                            </div>
+                            {r.error && (
+                              <p className="text-rose-400 text-[11px] truncate">{r.error}</p>
+                            )}
                           </div>
-                          {r.error && (
-                            <p className="text-rose-400 text-[11px] truncate">{r.error}</p>
-                          )}
-                        </div>
-                      ))
+                        );
+                      })
                     )}
                   </div>
                 )}
@@ -352,7 +467,7 @@ export const JobsTab: React.FC = () => {
                 onClick={() => setPendingDeleteJob(null)}
                 className="px-4 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white hover:bg-white/[0.06] cursor-pointer"
               >
-                Cancel
+                {t('cancel')}
               </button>
               <button
                 onClick={() => {
@@ -362,6 +477,92 @@ export const JobsTab: React.FC = () => {
                 className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold cursor-pointer transition"
               >
                 Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Modal */}
+      {editingJob && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-3xl bg-[#0E1217] border border-white/[0.1] p-5 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-white/[0.08]">
+              <span className="text-sm font-semibold text-white">Edit Schedule</span>
+              <button
+                onClick={() => setEditingJob(null)}
+                className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-slate-400 font-medium mb-1">
+                  {t('jobName')}
+                </label>
+                <input
+                  type="text"
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="w-full px-3.5 py-2 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 transition"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 font-medium mb-1">
+                  {t('cronSchedule')}
+                </label>
+                <input
+                  type="text"
+                  value={editSchedule}
+                  onChange={(e) => setEditSchedule(e.target.value)}
+                  placeholder="e.g. every 1h, every day 9am, or 0 9 * * *"
+                  className="w-full px-3.5 py-2 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 transition"
+                />
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {presets.map((p) => (
+                    <button
+                      key={p.label}
+                      type="button"
+                      onClick={() => setEditSchedule(p.val)}
+                      className="px-2.5 py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-xs text-slate-300 hover:text-white transition cursor-pointer"
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs text-slate-400 font-medium mb-1">
+                  {t('instructions')}
+                </label>
+                <textarea
+                  rows={2}
+                  value={editPrompt}
+                  onChange={(e) => setEditPrompt(e.target.value)}
+                  className="w-full px-3.5 py-2 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 transition resize-none"
+                />
+              </div>
+            </div>
+
+            {editError && (
+              <p className="text-xs text-rose-400">{editError}</p>
+            )}
+
+            <div className="flex justify-end gap-2.5 pt-2">
+              <button
+                onClick={() => setEditingJob(null)}
+                className="px-4 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white hover:bg-white/[0.06] cursor-pointer"
+              >
+                {t('cancel')}
+              </button>
+              <button
+                onClick={handleSaveEdit}
+                disabled={isSavingEdit}
+                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer transition"
+              >
+                {isSavingEdit ? 'Saving...' : 'Save Changes'}
               </button>
             </div>
           </div>

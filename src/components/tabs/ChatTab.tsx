@@ -196,7 +196,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     );
   }, [chat, searchOpen, searchQuery]);
 
-  const activeApproval = approvals[0];
+  const pendingApprovals = approvals;
 
   const handleSend = () => {
     if (!text.trim() && attachedImages.length === 0) return;
@@ -547,52 +547,63 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
         <div ref={messagesEndRef} />
       </div>
 
-      {/* 3. Security Approval Confirmation Card */}
-      {activeApproval && (
+      {/* 3. Security Approval Confirmation Queue */}
+      {pendingApprovals.length > 0 && (
         <div className="mb-2 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 shadow-lg animate-in slide-in-from-bottom duration-200">
-          <div className="flex items-start gap-3">
-            <div className="p-2 rounded-xl bg-amber-500/20 text-amber-300 shrink-0">
-              <AlertTriangle className="w-4 h-4" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <span className="text-xs font-semibold text-amber-200 tracking-tight block">
-                Security Approval Required
-              </span>
-              <p className="text-xs text-slate-300 mt-1 break-all leading-relaxed">
-                {activeApproval.summary}
-              </p>
-            </div>
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <span className="text-xs font-semibold text-amber-200 tracking-tight">
+              Security Approval Required
+            </span>
+            <span className="text-[11px] font-mono text-amber-300/80">
+              {pendingApprovals.length} pending
+            </span>
           </div>
-          <div className="flex items-center gap-2 mt-3 pt-2 border-t border-amber-500/20">
-            <button
-              onClick={() => resolveApproval(activeApproval, false)}
-              className="flex-1 py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] text-slate-300 text-xs font-medium border border-white/[0.08] transition cursor-pointer"
-            >
-              Deny
-            </button>
-            <button
-              onClick={() => resolveApproval(activeApproval, true, 'once')}
-              className="flex-1 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
-            >
-              Allow Once
-            </button>
-            <button
-              onClick={() => resolveApproval(activeApproval, true, 'session')}
-              className="flex-1 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
-            >
-              Allow Session
-            </button>
+          <div className="space-y-3">
+            {pendingApprovals.map((approval) => (
+              <div key={approval.runId} className="rounded-xl border border-amber-500/20 bg-black/20 p-3">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 rounded-xl bg-amber-500/20 text-amber-300 shrink-0">
+                    <AlertTriangle className="w-4 h-4" />
+                  </div>
+                  <p className="text-xs text-slate-300 mt-1 break-all leading-relaxed flex-1 min-w-0">
+                    {approval.summary}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 mt-3 pt-2 border-t border-amber-500/20">
+                  <button
+                    onClick={() => resolveApproval(approval, false)}
+                    className="flex-1 min-h-[44px] py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] text-slate-300 text-xs font-medium border border-white/[0.08] transition cursor-pointer"
+                  >
+                    Deny
+                  </button>
+                  <button
+                    onClick={() => resolveApproval(approval, true, 'once')}
+                    className="flex-1 min-h-[44px] py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
+                  >
+                    Allow Once
+                  </button>
+                  <button
+                    onClick={() => resolveApproval(approval, true, 'session')}
+                    className="flex-1 min-h-[44px] py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
+                  >
+                    Allow Session
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}
 
       {/* Queued Messages Ribbon */}
       {queuedMessages.length > 0 && (
-        <div className="mb-2 px-3.5 py-2 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-between text-xs text-indigo-300">
-          <span>{queuedMessages.length} message(s) queued for execution</span>
+        <div className="mb-2 px-3.5 py-2 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-between gap-2 text-xs text-indigo-300">
+          <span className="min-w-0 truncate">
+            {queuedMessages.length} queued{queuedMessages[0]?.text ? `: ${queuedMessages[0].text.slice(0, 60)}` : ' for execution'}
+          </span>
           <button
             onClick={cancelQueued}
-            className="text-rose-400 hover:underline cursor-pointer"
+            className="text-rose-400 hover:underline cursor-pointer shrink-0 min-h-[44px] px-2"
           >
             Cancel
           </button>
@@ -619,10 +630,16 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
         </div>
       )}
 
-      {/* Slash command helpers */}
-      {!streaming && !text && (
+      {/* Slash command helpers: visible on empty composer and while typing a / command */}
+      {!streaming && (text === '' || text.startsWith('/')) && (
         <div className="flex items-center gap-1.5 mb-2 overflow-x-auto pb-1 text-xs shrink-0">
-          {slashCommands.map((cmd) => (
+          {slashCommands
+            .filter((cmd) => {
+              if (text === '') return true;
+              const token = text.trim().split(/\s+/)[0];
+              return cmd.label.startsWith(token || '/');
+            })
+            .map((cmd) => (
             <button
               key={cmd.label}
               onClick={cmd.action}
@@ -643,6 +660,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           onChange={(e) => handleTextChange(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
+              if ((e.nativeEvent as unknown as { isComposing?: boolean })?.isComposing || e.keyCode === 229) return;
               e.preventDefault();
               handleSend();
             }
@@ -651,10 +669,10 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           className="w-full bg-transparent px-1 py-1 text-[13.5px] sm:text-sm text-slate-100 placeholder-slate-400 focus:outline-none resize-none leading-relaxed font-sans min-h-[32px] max-h-[160px]"
         />
 
-        {/* Action Toolbar Row */}
-        <div className="flex items-center justify-between pt-1.5 gap-1.5 sm:gap-2 border-t border-white/[0.04]">
+        {/* Action Toolbar Row: wraps on narrow screens so mic/send never scroll off-canvas */}
+        <div className="flex items-center justify-between flex-wrap pt-1.5 gap-1.5 sm:gap-2 border-t border-white/[0.04]">
           {/* Left Action Buttons: Circular + Button, Model Pill, Reasoning Pill */}
-          <div className="flex items-center gap-1.5 min-w-0 flex-nowrap overflow-x-auto no-scrollbar py-0.5">
+          <div className="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap py-0.5">
             {/* Circular (+) Attachment Button */}
             <input
               type="file"
@@ -678,7 +696,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
               type="button"
               onClick={() => setShowModelsSheet(true)}
               className="h-7.5 px-2.5 sm:px-3 rounded-full flex items-center gap-1.5 text-xs text-slate-200 hover:text-white bg-[#1A2230] hover:bg-[#232D3F] active:scale-95 transition-all border border-white/[0.08] cursor-pointer shrink-0 max-w-[130px] sm:max-w-[200px] shadow-xs"
-              title="Select Model"
+              title={settings.modelId || 'Select Model'}
             >
               <span className="font-mono text-[11.5px] truncate">
                 {settings.modelId ? curModelName : 'No model'}
@@ -871,7 +889,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                             (p) => normProvider(p.provider) === normProvider(m.provider!)
                           );
                           if (matchingProv) {
-                            activateProvider(matchingProv.id);
+                            (activateProvider as (id: string, keepModelId?: string) => void)(matchingProv.id, m.id);
                           } else {
                             updateSettings({ provider: m.provider });
                           }

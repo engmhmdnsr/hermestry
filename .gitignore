@@ -1,7 +1,25 @@
-# Gradle
+# Node
+node_modules/
+dist/
+.vite/
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.iml
+
+# Legacy Android (removed in the web rewrite)
 .gradle/
 build/
 app/build/
 local.properties
-*.iml
-.DS_Store

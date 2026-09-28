@@ -81,7 +81,7 @@ export const App: React.FC = () => {
         {/* Global App Header */}
         <Header
           onOpenDrawer={() => setIsDrawerOpen(true)}
-          onGoSettings={() => setCurrentTab(3)}
+          onGoSettings={() => setCurrentTab(1)}
           isDesktop={isDesktop}
           inspectorOpen={inspectorOpen}
           onToggleInspector={() => setInspectorOpen(!inspectorOpen)}

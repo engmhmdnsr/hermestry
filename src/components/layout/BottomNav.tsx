@@ -12,8 +12,8 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentTab, onSelectTab })
 
   const tabs = [
     { label: t('home') || 'Overview', icon: LayoutGrid, badge: 0 },
-    { label: t('chat') || 'Chat', icon: MessageSquare, badge: 0 },
-    { label: t('jobs') || 'Jobs', icon: CalendarClock, badge: approvals.length },
+    { label: t('chat') || 'Chat', icon: MessageSquare, badge: approvals.length },
+    { label: t('jobs') || 'Jobs', icon: CalendarClock, badge: 0 },
     { label: t('settings') || 'Settings', icon: SlidersHorizontal, badge: 0 },
   ];
 
