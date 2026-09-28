@@ -160,12 +160,12 @@ export const DesktopInspector: React.FC<DesktopInspectorProps> = ({ isOpen, onCl
               </span>
             </div>
 
-            <div className="p-3 rounded-xl bg-black/40 border border-white/[0.06] text-[11px] text-slate-300 space-y-1 max-h-[calc(100vh-210px)] overflow-y-auto">
+            <div className="p-3 rounded-xl bg-black/40 border border-white/[0.06] text-[11px] text-slate-300 space-y-1 max-h-[calc(100vh-210px)] overflow-y-auto overflow-x-hidden">
               {gatewayLogs.length === 0 ? (
                 <span className="text-slate-600">No logs captured yet.</span>
               ) : (
                 gatewayLogs.map((log, i) => (
-                  <div key={i} className="leading-relaxed break-all">
+                  <div key={i} className="leading-relaxed break-words whitespace-pre-wrap">
                     {log}
                   </div>
                 ))

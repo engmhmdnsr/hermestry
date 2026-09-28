@@ -150,9 +150,9 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
               <p className="text-xs font-mono text-teal-400">{installProgress}</p>
             )}
 
-            <div className="rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-3.5 h-52 overflow-y-auto font-mono text-xs text-slate-400 space-y-1">
+            <div className="rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-3.5 h-52 overflow-y-auto overflow-x-hidden font-mono text-xs text-slate-400 space-y-1">
               {gatewayLogs.slice(-20).map((log, i) => (
-                <div key={i} className="leading-relaxed">
+                <div key={i} className="leading-relaxed break-words whitespace-pre-wrap">
                   {log}
                 </div>
               ))}
