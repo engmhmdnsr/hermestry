@@ -39,7 +39,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
   }, [gatewayLogs]);
 
   // Form inputs
-  const [provider, setProvider] = useState(settings.provider || 'deepseek');
+  const [provider, setProvider] = useState(settings.provider || '');
   const [customProvider, setCustomProvider] = useState(false);
   const [apiKey, setApiKey] = useState(settings.apiKey || '');
   const [showKey, setShowKey] = useState(false);
@@ -62,6 +62,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
   const isKeyValid = keysValid(effectiveProvider, apiKey, baseUrl);
 
   const saveBlockReason: string | null = (() => {
+    if (!customProvider && !provider) return t('providerRequired');
     if (customProvider && !provider.trim()) return t('customProviderRequired');
     if (!apiKey.trim() && !isKeyless) return t('keyRequired');
     if (!isKnown && !baseUrl.trim()) return t('customUrlRequired');
@@ -239,10 +240,11 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                   />
                 ) : (
                   <select
-                    value={normed}
+                    value={provider}
                     onChange={(e) => setProvider(e.target.value)}
                     className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
                   >
+                    <option value="">{t('selectProvider')}</option>
                     {PROVIDER_OPTIONS.map(([id, name]) => (
                       <option key={id} value={id}>
                         {name} ({id})

@@ -13,6 +13,8 @@ interface HermesGatewayPlugin {
   stop(): Promise<void>;
   status(): Promise<NativeGatewayStatus>;
   health(): Promise<NativeGatewayStatus>;
+  serverKey(): Promise<{ serverKey: string }>;
+  setProvider(options: { provider: string; apiKey: string; baseUrl: string; model: string }): Promise<void>;
   setAutostart(options: { enabled: boolean }): Promise<void>;
   addListener(
     event: 'installLog' | 'installProgress' | 'installDone',
@@ -106,8 +108,36 @@ export async function nativeHealth(): Promise<boolean> {
   }
 }
 
+// Mirror the active provider/key into the native prefs that renderConfig
+// reads on every gateway (re)start. Without this the on-device gateway keeps
+// running its old provider and chat fails auth.
+export async function nativeSetProvider(opts: {
+  provider: string;
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+}): Promise<void> {
+  const plugin = getPlugin();
+  if (!plugin || typeof plugin.setProvider !== 'function') return;
+  await plugin.setProvider(opts);
+}
+
 export async function nativeSetAutostart(enabled: boolean): Promise<void> {
   const plugin = getPlugin();
   if (!plugin) return;
   await plugin.setAutostart({ enabled });
+}
+
+// Local-API key minted by Bootstrap (SecurePrefs server_key). The WebView
+// can never guess it, so sync it once at boot: without it every /api/*
+// call fails auth and sessions, jobs and model lists stay empty.
+export async function nativeServerKey(): Promise<string> {
+  const plugin = getPlugin();
+  if (!plugin || typeof plugin.serverKey !== 'function') return '';
+  try {
+    const res = await plugin.serverKey();
+    return typeof res.serverKey === 'string' ? res.serverKey : '';
+  } catch {
+    return '';
+  }
 }

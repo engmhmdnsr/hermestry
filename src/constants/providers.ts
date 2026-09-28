@@ -134,7 +134,7 @@ export const DEFAULT_MODELS: Record<string, string[]> = {
     'moa/reasoning-ensemble-v2',
   ],
   deepseek: ['deepseek/deepseek-chat', 'deepseek/deepseek-reasoner'],
-  'opencode-go': ['opencode-go/default', 'opencode-go/auto'],
+  'opencode-go': ['deepseek-v4.1-flash'],
   'opencode-zen': ['opencode-zen/default', 'opencode-zen/auto'],
   xiaomi: ['mimo-v2-flash', 'mimo-v2-thinking-flash'],
   'tencent-tokenhub': ['tokenhub-default', 'tokenhub-plus'],

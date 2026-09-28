@@ -21,6 +21,8 @@ import {
   nativeStop,
   nativeHealth,
   nativeSetAutostart,
+  nativeServerKey,
+  nativeSetProvider,
 } from '../services/nativeGateway';
 import {
   lockVault,
@@ -170,23 +172,12 @@ interface HermesContextType {
 
 const HermesContext = createContext<HermesContextType | null>(null);
 
-const DEFAULT_PROVIDERS: ConfiguredProvider[] = [
-  {
-    id: 'prov_deepseek_default',
-    provider: 'deepseek',
-    name: 'DeepSeek (Default)',
-    apiKey: '',
-    baseUrl: '',
-    defaultModel: 'deepseek/deepseek-chat',
-    enabled: true,
-    validated: true,
-  },
-];
+const DEFAULT_PROVIDERS: ConfiguredProvider[] = [];
 
 const DEFAULT_SETTINGS: HermesSettings = {
-  provider: 'deepseek',
+  provider: '',
   apiKey: '',
-  modelId: 'deepseek/deepseek-chat',
+  modelId: '',
   baseUrl: '',
   tgToken: '',
   discordToken: '',
@@ -200,7 +191,7 @@ const DEFAULT_SETTINGS: HermesSettings = {
   autoApproveGlobal: false,
   approvalScope: 'once',
   providers: DEFAULT_PROVIDERS,
-  activeProviderId: 'prov_deepseek_default',
+  activeProviderId: '',
   themePalette: 'midnight',
   themeMode: 'dark',
   language: 'en',
@@ -221,20 +212,55 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (raw) {
         const parsed = JSON.parse(raw);
         if (!parsed.providers || parsed.providers.length === 0) {
-          parsed.providers = [
-            {
-              id: 'prov_' + (parsed.provider || 'deepseek'),
-              provider: parsed.provider || 'deepseek',
-              name: parsed.provider ? parsed.provider.toUpperCase() : 'DeepSeek',
-              apiKey: parsed.apiKey || '',
-              baseUrl: parsed.baseUrl || '',
-              defaultModel: parsed.modelId || 'deepseek/deepseek-chat',
-              enabled: true,
-              validated: true,
-            },
-          ];
+          // Legacy installs stored a flat provider/key pair; fold it into the
+          // list only when something was actually configured. No seed entries:
+          // empty state stays empty until the user adds a provider.
+          if (parsed.provider || parsed.apiKey) {
+            parsed.providers = [
+              {
+                id: 'prov_' + (parsed.provider || 'custom'),
+                provider: parsed.provider || 'custom',
+                name: parsed.provider ? parsed.provider.toUpperCase() : 'Custom',
+                apiKey: parsed.apiKey || '',
+                baseUrl: parsed.baseUrl || '',
+                defaultModel: parsed.modelId || '',
+                enabled: true,
+                validated: true,
+              },
+            ];
+          } else {
+            parsed.providers = [];
+          }
+        }
+        // One-time cleanup of the old hardcoded DeepSeek seed (no key, never
+        // user data). Real user-configured DeepSeek entries are untouched.
+        if (Array.isArray(parsed.providers)) {
+          parsed.providers = parsed.providers.filter(
+            (p: ConfiguredProvider) => !(p.id === 'prov_deepseek_default' && !p.apiKey)
+          );
         }
         const merged = { ...DEFAULT_SETTINGS, ...parsed };
+        // If the stored active provider has no keyed entry (e.g. the removed
+        // DeepSeek seed), drop the selection instead of showing a dead default.
+        if (merged.provider) {
+          const hasKeyed = (merged.providers || []).some(
+            (p: ConfiguredProvider) => p.provider === merged.provider && !!p.apiKey
+          );
+          if (!hasKeyed) {
+            merged.provider = '';
+            merged.modelId = '';
+          }
+        }
+        // Retire the placeholder model ids the old opencode-go catalog wrote
+        // (they never resolved to a real model). Map to the verified id.
+        if (merged.provider === 'opencode-go' && String(merged.modelId || '').startsWith('opencode-go/')) {
+          merged.modelId = 'deepseek-v4.1-flash';
+          (merged.providers || []).forEach((p: ConfiguredProvider) => {
+            if (p.provider === 'opencode-go' && String(p.defaultModel || '').startsWith('opencode-go/')) {
+              p.defaultModel = 'deepseek-v4.1-flash';
+            }
+          });
+        }
         if (!VALID_APPROVAL_SCOPES.includes(merged.approvalScope)) {
           merged.approvalScope = 'once';
         }
@@ -541,6 +567,23 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     if (next.autostart !== prev.autostart && isNativeGateway()) {
       nativeSetAutostart(next.autostart).catch(() => {});
     }
+    // On-device APK: mirror the active provider/key/model into the native
+    // prefs renderConfig reads on every gateway (re)start. Otherwise the
+    // gateway keeps the old provider and chat fails auth.
+    if (
+      isNativeGateway() &&
+      (next.provider !== prev.provider ||
+        next.apiKey !== prev.apiKey ||
+        next.baseUrl !== prev.baseUrl ||
+        next.modelId !== prev.modelId)
+    ) {
+      nativeSetProvider({
+        provider: next.provider || '',
+        apiKey: next.apiKey || '',
+        baseUrl: next.baseUrl || '',
+        model: next.modelId || '',
+      }).catch(() => {});
+    }
     setSettings(next);
   };
 
@@ -611,9 +654,9 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     autostart: boolean
   ) => {
     const clean = (s: string) => s.trim().replace(/[\r\n]+/g, '');
-    const normed = normProvider(clean(provider)) || 'deepseek';
+    const normed = normProvider(clean(provider)) || '';
     const activeKey = clean(key);
-    const activeModel = clean(model) || DEFAULT_MODELS[normed]?.[0] || 'deepseek/deepseek-chat';
+    const activeModel = clean(model) || DEFAULT_MODELS[normed]?.[0] || '';
 
     // Also sync into configured providers list
     const currentList = settings.providers || [];
@@ -791,6 +834,30 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // configured provider, so it must not refetch when the active provider
   // or model selection changes.
   useEffect(() => {
+    // On-device: pull the minted local-API key into settings once. Without
+    // it every /api/* call fails auth (empty sessions, jobs, model lists).
+    if (isNativeGateway() && !settingsRef.current.serverKey) {
+      nativeServerKey()
+        .then((k) => {
+          if (k) {
+            updateSettings({ serverKey: k });
+            // Re-run with auth: the first refreshNow above went out keyless.
+            refreshNow();
+          }
+        })
+        .catch(() => {});
+    }
+    // On-device: push the already-saved web provider/key into the native
+    // prefs once, so upgrades do not leave the gateway on a stale provider.
+    if (isNativeGateway() && settingsRef.current.provider) {
+      const s = settingsRef.current;
+      nativeSetProvider({
+        provider: s.provider || '',
+        apiKey: s.apiKey || '',
+        baseUrl: s.baseUrl || '',
+        model: s.modelId || '',
+      }).catch(() => {});
+    }
     refreshNow();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

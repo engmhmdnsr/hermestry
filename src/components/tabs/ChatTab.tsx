@@ -895,13 +895,13 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
               <button
                 type="button"
                 onClick={handleSend}
-                disabled={!text.trim() && attachedImages.length === 0}
+                disabled={(!text.trim() && attachedImages.length === 0) || !settings.modelId}
+                title={!settings.modelId ? (t('noModel') || 'Select a model first') : 'Send Message'}
                 className={`w-7.5 h-7.5 rounded-full flex items-center justify-center transition-all cursor-pointer shrink-0 shadow-xs border ${
                   text.trim() || attachedImages.length > 0
                     ? 'bg-white hover:bg-slate-100 text-slate-900 border-white shadow-md active:scale-95'
                     : 'bg-[var(--app-card-subtle,#1A2230)] text-slate-500 border-white/[0.08] opacity-50 cursor-not-allowed'
                 }`}
-                title="Send Message"
               >
                 {/* Slanted Arrow-Paperplane style icon matching user screenshot */}
                 <svg

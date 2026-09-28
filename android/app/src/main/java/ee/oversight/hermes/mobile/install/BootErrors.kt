@@ -3,7 +3,7 @@ package ee.oversight.hermes.mobile.install
 /**
  * Pure boot/install failure classifier for the first-run wizard error step.
  *
- * No Android dependencies — safe to unit-test on the JVM. Feed it the
+ * No Android dependencies, safe to unit-test on the JVM. Feed it the
  * visible log lines (vm.log) or one joined blob; it returns a headline for
  * branching plus a one-line user sentence and a suggested action for display.
  */

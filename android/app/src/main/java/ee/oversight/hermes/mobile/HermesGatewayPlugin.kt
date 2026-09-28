@@ -9,6 +9,7 @@ import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import ee.oversight.hermes.mobile.install.Bootstrap
+import ee.oversight.hermes.mobile.security.SecurePrefs
 import ee.oversight.hermes.mobile.service.MobileGatewayService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -168,6 +169,40 @@ class HermesGatewayPlugin : Plugin() {
       call.resolve(JSObject().put("autostart", enabled))
     } catch (e: Exception) {
       call.reject(e.message ?: "setAutostart failed")
+    }
+  }
+
+  @PluginMethod
+  fun serverKey(call: PluginCall) {
+    // Hand the minted local-API key to the WebView so its /api/* calls
+    // pass auth. Fail closed: blank means Bootstrap has not run yet.
+    try {
+      val key = SecurePrefs.getString(context, SecurePrefs.KEY_SERVER, "")
+      if (key.isBlank()) call.reject("server key not provisioned yet")
+      else call.resolve(JSObject().put("serverKey", key))
+    } catch (e: Exception) {
+      call.reject(e.message ?: "serverKey failed")
+    }
+  }
+
+  @PluginMethod
+  fun setProvider(call: PluginCall) {
+    // Mirror the web-side active provider into the prefs renderConfig reads.
+    // The gateway picks them up on next (re)start, no reinstall needed.
+    try {
+      val provider = call.getString("provider").orEmpty()
+      val apiKey = call.getString("apiKey").orEmpty()
+      val baseUrl = call.getString("baseUrl").orEmpty()
+      val model = call.getString("model").orEmpty()
+      context.getSharedPreferences("hermes_mobile", Context.MODE_PRIVATE).edit()
+        .putString("provider_name", provider)
+        .putString("provider_base_url", baseUrl)
+        .putString("model_id", model)
+        .apply()
+      SecurePrefs.putString(context, SecurePrefs.KEY_PROVIDER, apiKey)
+      call.resolve(JSObject().put("ok", true))
+    } catch (e: Exception) {
+      call.reject(e.message ?: "setProvider failed")
     }
   }
 
