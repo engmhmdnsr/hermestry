@@ -23,7 +23,7 @@ import {
 import { useHermes } from '../../context/HermesContext';
 import { ChatMessage, PendingApproval } from '../../types/hermes';
 import { PROVIDER_OPTIONS, normProvider } from '../../constants/providers';
-import { speechLocaleForLanguage } from '../../constants/languages';
+import { getTranslation, speechLocaleForLanguage } from '../../constants/languages';
 import { processAttachBatch, buildTextChoiceNotice, MAX_IMAGE_COUNT } from '../../services/attachments';
 import type { AttachmentRef } from '../../services/attachmentRefs';
 import {
@@ -50,7 +50,6 @@ interface MessageRowProps {
   isLiveTail: boolean;
   modelLabel: string | null;
   durationLabel: string | null;
-  fontScale: number;
   formulatingLabel: string;
   copied: boolean;
   speaking: boolean;
@@ -62,6 +61,9 @@ interface MessageRowProps {
   estimated: boolean;
   estimatedHint: string;
   copyUnavailableLabel: string;
+  regenerateSource: string;
+  regenerateLabel: string;
+  regenerateBusyHint: string;
   menuContainerRef?: React.RefObject<HTMLDivElement | null>;
   onCopy: (id: string, content: string) => void;
   onSpeak: (id: string, content: string) => void;
@@ -136,7 +138,6 @@ const MessageRow: React.FC<MessageRowProps> = memo(
     isLiveTail,
     modelLabel,
     durationLabel,
-    fontScale,
     formulatingLabel,
     copied,
     speaking,
@@ -148,6 +149,9 @@ const MessageRow: React.FC<MessageRowProps> = memo(
     estimated,
     estimatedHint,
     copyUnavailableLabel,
+    regenerateSource,
+    regenerateLabel,
+    regenerateBusyHint,
     menuContainerRef,
     onCopy,
     onSpeak,
@@ -156,6 +160,12 @@ const MessageRow: React.FC<MessageRowProps> = memo(
     onToggleMenu,
     t,
   }) => {
+  // English fallback for keys the locale bundle does not ship yet, so a
+  // message action never renders a raw key name.
+  const tx = (key: string, fallback: string): string => {
+    const v = t(key);
+    return !v || v === key ? fallback : v;
+  };
     const isUser = msg.sender === 'you';
     // Actions are revealed on tap (or Enter when the row has focus) instead of
     // adding a full action band under every bubble on a phone screen.
@@ -185,8 +195,10 @@ const MessageRow: React.FC<MessageRowProps> = memo(
         className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
         tabIndex={0}
         role="group"
-        aria-label={`${isUser ? 'Your message' : 'Hermes response'}. ${
-          showActions ? 'Actions shown. Press Escape to hide them.' : 'Press Enter for message actions.'
+        aria-label={`${isUser ? tx('yourMessage', 'Your message') : tx('hermesResponse', 'Reply from Hermes')}. ${
+          showActions
+            ? tx('messageActionsShown', 'Actions shown. Press Escape to hide them.')
+            : tx('messageActionsHint', 'Press Enter for message actions.')
         }`}
         onClick={handleBubbleClick}
         onKeyDown={handleBubbleKeyDown}
@@ -194,82 +206,73 @@ const MessageRow: React.FC<MessageRowProps> = memo(
         {/* Bubble Container: user turns size to their content, replies stay full width */}
         <div
           role="article"
-          aria-label={isUser ? 'Your message' : 'Hermes response'}
-          className={`rounded-2xl p-4 transition-all ${
+          aria-label={isUser ? tx('yourMessage', 'Your message') : tx('hermesResponse', 'Reply from Hermes')}
+          className={`r-md t-body p-4 transition-all ${
             isUser
-              ? 'w-fit max-w-[80%] bg-indigo-600/90 text-white shadow-xs'
-              : 'w-full max-w-[94%] sm:max-w-[88%] bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-slate-200'
+              ? 'w-fit max-w-[80%] bg-[var(--app-accent)] text-[var(--app-on-accent)]'
+              : 'w-full max-w-[94%] sm:max-w-[88%] bg-[var(--app-card)] edge text-[var(--app-text)]'
           }`}
           style={{
-            fontSize: `${fontScale * 14}px`,
+            fontSize: 'var(--msg-font-size)',
+            lineHeight: 1.5,
           }}
         >
-          {/* Clean unboxed metadata row */}
-          <div className="flex items-center justify-between gap-4 text-[11px] mb-2 pb-1.5 border-b border-white/[0.08]">
-            <span className="font-semibold text-xs tracking-tight text-white/90">
-              {isUser ? 'You' : 'Hermes'}
+          {/* Unboxed metadata row: no rule brackets the bubble any more, so a
+              one word message reads as a message instead of a truncated table. */}
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <span
+              className={`t-micro font-semibold tracking-tight ${
+                isUser ? 'text-[var(--app-on-accent)]' : 'text-[var(--app-text)]'
+              }`}
+            >
+              {isUser ? tx('you', 'You') : tx('hermes', 'Hermes')}
             </span>
 
-            <div className="flex items-center gap-2 text-slate-400 font-mono text-[10px]">
-              {!isUser && stopped && (
-                <span
-                  className="px-1.5 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300 font-sans"
-                  title={stoppedHint}
-                >
-                  {stoppedLabel}
-                </span>
-              )}
-              {!isUser && (modelLabel || durationLabel) && (
-                <span title={estimated ? estimatedHint : undefined}>
-                  {modelLabel}
-                  {durationLabel && ` · ${durationLabel}`}
-                </span>
-              )}
-              <button
-                onClick={() => onCopy(msg.id, msg.content)}
-                disabled={!msg.content.trim()}
-                className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-white cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ms-1"
-                title={msg.content.trim() ? t('copy') : copyUnavailableLabel}
-                aria-label={msg.content.trim() ? t('copy') : copyUnavailableLabel}
-              >
-                {copied ? (
-                  <Check className="w-3.5 h-3.5 text-emerald-400" />
-                ) : (
-                  <Copy className="w-3.5 h-3.5" />
+            {!isUser && (stopped || modelLabel || durationLabel) && (
+              <div className="flex items-center gap-2">
+                {stopped && (
+                  <span className="pill-warning t-micro font-mono" title={stoppedHint}>
+                    {stoppedLabel}
+                  </span>
                 )}
-              </button>
-            </div>
+                {(modelLabel || durationLabel) && (
+                  <span
+                    className="pill-neutral t-micro font-mono"
+                    title={estimated ? estimatedHint : undefined}
+                  >
+                    {modelLabel}
+                    {durationLabel && ` · ${durationLabel}`}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Thinking Block */}
           {msg.thinking && (
-            <ThinkingAccordion
-              thinking={msg.thinking}
-              isDone={msg.thinkingDone !== false}
-              fontScale={fontScale}
-            />
+            <ThinkingAccordion thinking={msg.thinking} isDone={msg.thinkingDone !== false} />
           )}
 
           {/* Tool Invocations */}
           {msg.tools && msg.tools.length > 0 && (
-            <div className="mb-2.5 space-y-1.5">
-              <div className="flex flex-wrap gap-1.5">
+            <div className="mb-3 space-y-2">
+              <div className="flex flex-wrap gap-2">
                 {msg.tools.map((toolName, idx) => (
                   <span
                     key={idx}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.04] border border-white/[0.08] text-[11px] font-mono text-teal-300"
+                    className="pill-neutral t-micro font-mono inline-flex items-center gap-2"
                   >
-                    <span className="w-1.5 h-1.5 rounded-full bg-teal-400" />
+                    <span className="w-2 h-2 rounded-full bg-[var(--app-accent)]" />
                     <span>{toolName}</span>
                   </span>
                 ))}
               </div>
 
               {msg.toolOutputs && msg.toolOutputs.length > 0 && (
-                <div className="rounded-xl bg-[var(--app-bg,#090B0E)] p-2.5 border border-white/[0.06] text-xs font-mono text-slate-400 space-y-1">
+                <div className="r-sm edge bg-[var(--app-bg)] p-3 t-caption font-mono text-[var(--app-text-muted)] space-y-2">
                   {msg.toolOutputs.map((out, i) => (
                     <div key={i} className="leading-relaxed break-all whitespace-pre-wrap">
-                      <span className="text-teal-400 font-medium">{out.toolName}:</span>{' '}
+                      <span className="text-[var(--app-info)] font-medium">{out.toolName}:</span>{' '}
                       <span>{out.output}</span>
                     </div>
                   ))}
@@ -280,39 +283,55 @@ const MessageRow: React.FC<MessageRowProps> = memo(
 
           {/* Message Body */}
           {msg.content ? (
-            <div className="prose dark:prose-invert max-w-none text-sm leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere] select-text font-sans">
+            <div className="t-body max-w-none whitespace-pre-wrap break-words [overflow-wrap:anywhere] select-text font-sans">
               {msg.content}
               {isLiveTail && !isUser && (
-                <span className="inline-block w-1.5 h-4 ms-1 bg-indigo-400 animate-pulse align-middle" />
+                <span className="inline-block w-1.5 h-4 ms-1 bg-[var(--app-accent)] animate-pulse align-middle" />
               )}
             </div>
           ) : isLiveTail ? (
-            <div className="flex items-center gap-2 text-xs text-slate-400 py-1">
-              <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
+            <div className="flex items-center gap-2 t-caption text-[var(--app-text-muted)] py-1">
+              <span className="w-2 h-2 rounded-full bg-[var(--app-accent)] animate-ping" />
               <span>{formulatingLabel}</span>
             </div>
           ) : null}
 
-          {/* Message Actions: revealed on tap, Regenerate stays visible once open */}
+          {/* Message actions: revealed on tap and separated from the text by
+              spacing only (no rule under the bubble). Regenerate belongs to
+              assistant turns and resends the prompt that produced them; user
+              turns keep copy and the overflow menu. */}
           {showActions && (
-          <div className="relative flex items-center justify-end gap-3 mt-3 pt-2 border-t border-white/[0.06] text-xs">
-            {isUser && (
+          <div className="relative flex items-center justify-end gap-2 mt-3">
+            <button
+              onClick={() => onCopy(msg.id, msg.content)}
+              disabled={!msg.content.trim()}
+              className="min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--app-text-muted)] hover:text-[var(--app-text)] cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              title={msg.content.trim() ? t('copy') : copyUnavailableLabel}
+              aria-label={msg.content.trim() ? t('copy') : copyUnavailableLabel}
+            >
+              {copied ? (
+                <Check className="w-4 h-4 text-[var(--app-success)]" />
+              ) : (
+                <Copy className="w-4 h-4" />
+              )}
+            </button>
+            {!isUser && (
               <button
-                onClick={() => onRegenerate(msg.content)}
-                disabled={streamBusy || !msg.content.trim()}
-                aria-label={streamBusy ? 'Regenerate (disabled while generating)' : 'Regenerate response'}
-                title={streamBusy ? 'Wait for generation to finish' : 'Regenerate response'}
-                className="min-h-[44px] px-2 hover:text-white cursor-pointer flex items-center gap-1 transition text-white/70 disabled:opacity-40 disabled:cursor-not-allowed"
+                onClick={() => onRegenerate(regenerateSource)}
+                disabled={streamBusy || !regenerateSource}
+                aria-label={streamBusy ? regenerateBusyHint : regenerateLabel}
+                title={streamBusy ? regenerateBusyHint : regenerateLabel}
+                className="hm-hit r-xs min-h-[36px] px-3 flex items-center gap-2 t-caption text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                <RefreshCw className="w-3 h-3" />
-                <span>Regenerate</span>
+                <RefreshCw className="w-4 h-4" />
+                <span>{regenerateLabel}</span>
               </button>
             )}
             <button
               onClick={() => onToggleMenu(menuOpen ? null : msg.id)}
-              className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-white transition cursor-pointer"
-              title="More actions"
-              aria-label="More message actions"
+              className="min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition cursor-pointer"
+              title={tx('moreActions', 'More actions')}
+              aria-label={tx('moreMessageActions', 'More message actions')}
               aria-expanded={menuOpen}
             >
               <MoreHorizontal className="w-4 h-4" />
@@ -321,7 +340,7 @@ const MessageRow: React.FC<MessageRowProps> = memo(
               <div
                 ref={menuOpen ? menuContainerRef : undefined}
                 role="menu"
-                className="absolute bottom-full end-0 mb-1.5 min-w-[140px] rounded-xl bg-[var(--app-card-subtle,#1A2230)] border border-white/[0.1] shadow-2xl py-1 z-20"
+                className="absolute bottom-full end-0 mb-2 min-w-[160px] r-sm elev-2 edge bg-[var(--app-card-subtle)] py-1 z-20"
               >
                 {isUser && (
                   <button
@@ -330,10 +349,10 @@ const MessageRow: React.FC<MessageRowProps> = memo(
                       onToggleMenu(null);
                     }}
                     role="menuitem"
-                    className="w-full min-h-[44px] px-3 py-2 flex items-center gap-2 text-start text-slate-300 hover:text-white hover:bg-white/[0.06] transition cursor-pointer"
+                    className="w-full min-h-[44px] px-4 py-2 flex items-center gap-2 text-start t-caption text-[var(--app-text)] hover:bg-[var(--app-card-hover)] transition cursor-pointer"
                   >
-                    <GitFork className="w-3.5 h-3.5" />
-                    <span>{t('fork')}</span>
+                    <GitFork className="w-4 h-4" />
+                    <span>{tx('duplicateChat', 'Duplicate chat')}</span>
                   </button>
                 )}
                 <button
@@ -342,18 +361,18 @@ const MessageRow: React.FC<MessageRowProps> = memo(
                     onToggleMenu(null);
                   }}
                   role="menuitem"
-                  className="w-full min-h-[44px] px-3 py-2 flex items-center gap-2 text-start text-slate-300 hover:text-white hover:bg-white/[0.06] transition cursor-pointer"
-                  title={speaking ? 'Stop audio playback' : 'Read aloud'}
+                  className="w-full min-h-[44px] px-4 py-2 flex items-center gap-2 text-start t-caption text-[var(--app-text)] hover:bg-[var(--app-card-hover)] transition cursor-pointer"
+                  title={speaking ? tx('stopReading', 'Stop reading out loud') : tx('readAloud', 'Read aloud')}
                 >
                   {speaking ? (
                     <>
-                      <VolumeX className="w-3.5 h-3.5 text-rose-400" />
-                      <span className="text-rose-400 font-medium">{t('stopShort')}</span>
+                      <VolumeX className="w-4 h-4 text-[var(--app-danger)]" />
+                      <span className="text-[var(--app-danger)] font-medium">{t('stopShort')}</span>
                     </>
                   ) : (
                     <>
-                      <Volume2 className="w-3.5 h-3.5" />
-                      <span>Read aloud</span>
+                      <Volume2 className="w-4 h-4" />
+                      <span>{tx('readAloud', 'Read aloud')}</span>
                     </>
                   )}
                 </button>
@@ -485,10 +504,10 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   };
   const toastClass =
     toastKind === 'error'
-      ? 'bg-rose-600 text-white'
+      ? 'bg-[var(--app-danger-solid)] text-[var(--app-on-danger)]'
       : toastKind === 'success'
-        ? 'bg-emerald-600 text-white'
-        : 'bg-slate-800 text-slate-100 border border-white/[0.1]';
+        ? 'bg-[var(--app-success-solid)] text-[var(--app-on-success)]'
+        : 'bg-[var(--app-card-subtle)] edge text-[var(--app-text)]';
 
   // Abort in-flight speech recognition, attachment processing, and timers on unmount
   useEffect(() => {
@@ -568,7 +587,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       }
     }
 
-    opts.push({ id: 'ALL', label: 'ALL' });
+    opts.push({ id: 'ALL', label: tx('filterAllProviders', 'All') });
     uniqueMap.forEach((label, id) => {
       opts.push({ id, label });
     });
@@ -742,10 +761,10 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   const describeFailure = (
     info: StreamFailureInfo
   ): { title: string; message: string; actions: Array<{ label: string; onClick: () => void; primary?: boolean }> } => {
-    const title = tx('streamFailedTitle', 'Stream failed');
+    const title = tx('replyFailedTitle', 'Reply failed');
     const startNewChat = () => {
       void newSession().catch(() =>
-        showActionToast(tx('newSessionFailed', 'Could not start a new session. Check the gateway.'), 'error')
+        showActionToast(tx('newChatFailed', 'Could not start a new chat. Check the connection to the Hermes server.'), 'error')
       );
     };
     switch (info.kind) {
@@ -754,7 +773,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           title,
           message: tx(
             'errAuthMessage',
-            `The provider rejected the request${info.status ? ` (HTTP ${info.status})` : ''}. Check the API key and provider profile, then retry.`
+            'The provider rejected the request. Check the API key and provider profile, then retry.'
           ),
           actions: [{ label: tx('openProviderSettings', 'Open provider settings'), onClick: onGoSettings, primary: true }],
         };
@@ -772,7 +791,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           title,
           message: tx(
             'errModelMessage',
-            `The selected model or endpoint was not found${info.status ? ` (HTTP ${info.status})` : ''}. Pick another model, or adjust the provider profile.`
+            'The selected model or endpoint was not found. Pick another model, or adjust the provider profile.'
           ),
           actions: [
             models.length > 0
@@ -794,13 +813,13 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       case 'offline':
         return {
           title,
-          message: tx('errOfflineMessage', 'The app could not reach the gateway. Start or restart it, then retry.'),
-          actions: [{ label: tx('openGatewaySettings', 'Open gateway settings'), onClick: onGoSettings, primary: true }],
+          message: tx('errOfflineMessagePlain', 'The app could not reach the Hermes server. Start or restart it, then retry.'),
+          actions: [{ label: tx('openConnectionSettings', 'Open connection settings'), onClick: onGoSettings, primary: true }],
         };
       case 'server':
         return {
           title,
-          message: tx('errServerMessage', 'The gateway or the provider returned a server error. Retry, and check the gateway status if it repeats.'),
+          message: tx('errServerMessagePlain', 'The Hermes server or the provider returned an error. Retry, and check the connection if it repeats.'),
           actions: [{ label: tx('startNewChat', 'Start a new chat'), onClick: startNewChat }],
         };
       default:
@@ -821,17 +840,17 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       <div
         key={key}
         role="alert"
-        className="mb-2 px-3.5 py-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs"
+        className="mb-2 px-4 py-3 r-md t-caption bg-[var(--app-danger-subtle)] border border-[var(--app-danger-border)]"
       >
-        <p className="text-rose-200 break-words leading-relaxed">
+        <p className="text-[var(--app-danger)] break-words leading-relaxed">
           <span className="font-semibold">{described.title}: </span>
           {described.message}
         </p>
-        <details className="mt-1.5">
-          <summary className="text-[11px] text-rose-300/80 cursor-pointer">
+        <details className="mt-2">
+          <summary className="t-caption text-[var(--app-danger)] cursor-pointer">
             {tx('showErrorDetail', 'Show details')}
           </summary>
-          <p className="mt-1 font-mono text-[11px] text-rose-200/70 break-all">
+          <p className="mt-1 font-mono t-caption text-[var(--app-danger)] break-all">
             {failure.detail || raw}
           </p>
         </details>
@@ -840,10 +859,10 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             <button
               key={action.label}
               onClick={action.onClick}
-              className={`min-h-[44px] px-3 rounded-lg text-xs font-semibold cursor-pointer ${
+              className={`hm-hit r-xs min-h-[36px] px-4 t-caption font-semibold cursor-pointer ${
                 action.primary
-                  ? 'bg-rose-600 hover:bg-rose-500 text-white'
-                  : 'bg-white/[0.05] hover:bg-white/[0.1] text-slate-200 border border-white/[0.1]'
+                  ? 'bg-[var(--app-danger-solid)] hover:brightness-110 text-[var(--app-on-danger)]'
+                  : 'bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] text-[var(--app-text)] edge'
               }`}
             >
               {action.label}
@@ -858,13 +877,13 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
               if (!retryLast()) showActionToast(tx('nothingToRetry', 'Nothing to retry yet'), 'info');
             }}
             disabled={streaming}
-            className="min-h-[44px] px-3 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            className="hm-hit r-xs min-h-[36px] px-4 bg-[var(--app-danger-solid)] hover:brightness-110 text-[var(--app-on-danger)] t-caption font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {tx('retry', 'Retry')}
           </button>
           <button
             onClick={onDismiss}
-            className="min-h-[44px] px-3 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 text-xs cursor-pointer"
+            className="hm-hit r-xs min-h-[36px] px-4 bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] text-[var(--app-text)] t-caption cursor-pointer edge"
           >
             {tx('dismiss', 'Dismiss')}
           </button>
@@ -921,8 +940,8 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       }
       showActionToast(
         tx(
-          'queuedOffline',
-          'Gateway offline. Queued: it sends automatically when the gateway reconnects, or send it from the queue bar.'
+          'queuedOfflinePlain',
+          'Not connected. Kept for later: it sends automatically when the connection is back, or send it from the queue bar.'
         ),
         'info'
       );
@@ -986,7 +1005,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     }
     if (gatewayOffline) {
       showActionToast(
-        tx('offlineCannotSendNow', 'Gateway offline: queued messages send automatically once it reconnects.'),
+        tx('offlineCannotSendNowPlain', 'Not connected. Waiting messages send automatically once the connection is back.'),
         'info'
       );
       return;
@@ -1010,7 +1029,10 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     // Session-allow is broad: require an explicit two-tap confirm.
     if (allow && scope === 'session' && confirmSessionRunId !== approval.runId) {
       setConfirmSessionRunId(approval.runId);
-      showActionToast('Tap Allow Session again to confirm', 'info');
+      showActionToast(
+        tx('approveSessionConfirm', 'Tap Allow for this chat again to confirm.'),
+        'info'
+      );
       return;
     }
     setConfirmSessionRunId(null);
@@ -1025,8 +1047,8 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           setApprovalFailures((prev) => ({
             ...prev,
             [approval.runId]: tx(
-              'approvalNotConfirmed',
-              'The gateway did not confirm this decision, so the approval is still pending. Try again, or check the gateway status.'
+              'approvalNotConfirmedPlain',
+              'Hermes did not confirm this decision, so it is still waiting. Retry it, and check the connection if it repeats.'
             ),
           }));
         }
@@ -1100,7 +1122,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       }
       if (droppedImages.length > 0) {
         showActionToast(
-          `${droppedImages.length} image${droppedImages.length > 1 ? 's' : ''} omitted: ${MAX_IMAGE_COUNT}-image cap reached`,
+          tx('imagesCapReached', '{count} images not added: the limit is {max} per message.')
+            .replace('{count}', String(droppedImages.length))
+            .replace('{max}', String(MAX_IMAGE_COUNT)),
           'error'
         );
       }
@@ -1121,7 +1145,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
         showActionToast(batch.errors.join('\n'), 'error');
       }
     } catch {
-      if (!ctrl.signal.aborted) showActionToast('Could not attach files', 'error');
+      if (!ctrl.signal.aborted) showActionToast(tx('attachFailed', 'Could not add those files. Nothing was attached.'), 'error');
     } finally {
       if (attachAbortRef.current === ctrl) attachAbortRef.current = null;
       setAttaching(false);
@@ -1279,7 +1303,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       }
       if (!content.trim()) return;
       const ok = sendMessage(content.trim());
-      if (!ok) showActionToast(tx('regenerateFailed', 'Regenerate failed. Check the gateway and try again.'), 'error');
+      if (!ok) showActionToast(tx('regenerateFailedPlain', 'Could not write a new reply. Check the connection, then retry.'), 'error');
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sendMessage, streaming]
@@ -1443,9 +1467,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   const effortLabel = effortLabelFor(effortLevel);
 
   const starterChips = [
-    'Search recent developments in AI agent frameworks',
-    'Summarize current system memory & registered tools',
-    'Create an automated daily check job for system state',
+    tx('starterChip1', 'Search for recent AI agent news'),
+    tx('starterChip2', 'Summarize what this phone and its tools can do'),
+    tx('starterChip3', 'Set up a check that runs every morning'),
   ];
 
   // Slash chips are honest about what they do: app actions run locally,
@@ -1461,13 +1485,13 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     {
       label: '/new',
       kind: 'action',
-      hint: tx('slashNewHint', 'App action: starts a new session. Nothing is sent to the model.'),
+      hint: tx('slashNewHintPlain', 'App action: starts a new chat. Nothing is sent to the model.'),
       // Switching sessions mid-stream would split the in-flight turn from the
       // session it belongs to, so this one waits for a stop.
       blockedWhileStreaming: true,
       run: () => {
         void newSession().catch(() =>
-          showActionToast(tx('newSessionFailed', 'Could not start a new session. Check the gateway.'), 'error')
+          showActionToast(tx('newChatFailed', 'Could not start a new chat. Check the connection to the Hermes server.'), 'error')
         );
       },
     },
@@ -1489,7 +1513,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     {
       label: '/find',
       kind: 'action',
-      hint: tx('slashFindHint', 'App action: searches this conversation. Nothing is sent to the model.'),
+      hint: tx('slashFindHintPlain', 'App action: searches this chat. Nothing is sent to the model.'),
       run: () => setSearchOpen(true),
     },
     {
@@ -1525,7 +1549,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     }
     if (gatewayOffline) {
       if (!queueMessage(trimmed, [])) showActionToast(tx('queueFailed', 'Could not queue message'), 'error');
-      else showActionToast(tx('queuedOffline', 'Gateway offline. Queued: send it from the queue bar when it is back.'), 'info');
+      else showActionToast(tx('queuedOfflinePlain', 'Not connected. Kept for later: send it from the queue bar, or it sends when the connection is back.'), 'info');
       return;
     }
     if (streaming) {
@@ -1554,29 +1578,30 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
         <div
           role={toastKind === 'error' ? 'alert' : 'status'}
           aria-live={toastKind === 'error' ? 'assertive' : 'polite'}
-          className={`fixed top-16 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] px-4 py-2 rounded-xl text-xs font-semibold shadow-2xl max-w-[90vw] break-words ${toastClass}`}
+          className={`fixed top-16 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] px-4 py-3 r-sm elev-2 t-caption font-semibold max-w-[90vw] break-words ${toastClass}`}
         >
           {actionToast}
         </div>
       )}
       {/* In-chat Search Input */}
       {searchOpen && (
-        <div className="flex items-center gap-2 p-2 px-3 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] mb-2 shrink-0 animate-in fade-in duration-150">
-          <Search className="w-4 h-4 text-slate-400 shrink-0" />
+        <div className="flex items-center gap-2 px-4 py-2 r-sm edge bg-[var(--app-input-bg)] mb-2 shrink-0 animate-in fade-in duration-150">
+          <Search className="w-4 h-4 text-[var(--app-text-muted)] shrink-0" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search conversation..."
-            className="flex-1 bg-transparent text-xs text-white placeholder-slate-500 focus:outline-none"
+            placeholder={tx('searchChatPlaceholder', 'Search this chat…')}
+            aria-label={tx('searchChatPlaceholder', 'Search this chat…')}
+            className="flex-1 bg-transparent t-caption text-[var(--app-text)] placeholder:text-[var(--app-text-muted)] focus:outline-none"
           />
           {searchQuery && (
             <button
               onClick={() => setSearchQuery('')}
-              aria-label="Clear search"
-              className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-white"
+              aria-label={tx('clearSearch', 'Clear the search')}
+              className="min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
             >
-              <X className="w-3.5 h-3.5" />
+              <X className="w-4 h-4" />
             </button>
           )}
           <button
@@ -1584,9 +1609,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
               setSearchOpen(false);
               setSearchQuery('');
             }}
-            className="min-h-[44px] px-3 text-xs text-slate-400 hover:text-white"
+            className="hm-hit r-xs min-h-[36px] px-4 t-caption text-[var(--app-text-muted)] hover:text-[var(--app-text)] cursor-pointer"
           >
-            Done
+            {tx('done', 'Done')}
           </button>
         </div>
       )}
@@ -1599,7 +1624,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
         aria-live="polite"
         aria-relevant="additions text"
         aria-busy={streaming}
-        aria-label="Conversation messages"
+        aria-label={tx('chatLogLabel', 'Chat messages')}
         className="relative flex-1 min-h-0 overflow-y-auto space-y-4 pe-1 pb-2"
       >
         {bubbleMessages.length === 0 ? (
@@ -1607,43 +1632,46 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             {(!connected || gatewayFailed) && (
               <div
                 role="alert"
-                className="w-full max-w-md px-3.5 py-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-start"
+                className="w-full max-w-md px-4 py-3 r-md bg-[var(--app-danger-subtle)] border border-[var(--app-danger-border)] text-start"
               >
-                <p className="text-xs font-semibold text-rose-300 flex items-center gap-1.5">
+                <p
+                  className="t-caption font-semibold text-[var(--app-danger)] flex items-center gap-2"
+                  title={gatewayFailed && gatewayFailureReason ? gatewayFailureReason : undefined}
+                >
                   <WifiOff className="w-3.5 h-3.5 shrink-0" />
-                  Gateway offline{gatewayFailed && gatewayFailureReason ? `: ${gatewayFailureReason}` : ''}
+                  {tx('notConnected', 'Not connected')}
                 </p>
-                <p className="text-[11px] text-slate-400 mt-0.5">
+                <p className="t-caption text-[var(--app-text-muted)] mt-1">
                   {tx(
-                    'offlineQueuedBody',
-                    'You are offline. Messages you send now are queued, not lost: they send automatically when the gateway reconnects, and you can send them yourself from the queue bar.'
+                    'offlineQueuedBodyPlain',
+                    'Not connected. Messages you send now are kept, not lost. They send automatically when the connection is back, and you can send them yourself from the queue bar.'
                   )}
                 </p>
-                <div className="flex flex-wrap items-center gap-2 mt-1.5">
+                <div className="flex flex-wrap items-center gap-2 mt-2">
                   <button
                     onClick={onGoSettings}
-                    className="min-h-[44px] px-3 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.1] text-xs text-white cursor-pointer"
+                    className="hm-hit r-xs min-h-[36px] px-4 bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] edge t-caption text-[var(--app-text)] cursor-pointer"
                   >
                     {tx('openSettings', 'Open Settings')}
                   </button>
                   <button
                     onClick={() => void refreshNow()}
-                    className="min-h-[44px] px-3 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.1] text-xs text-white cursor-pointer"
+                    className="hm-hit r-xs min-h-[36px] px-4 bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] edge t-caption text-[var(--app-text)] cursor-pointer"
                   >
                     {tx('reconnectNow', 'Reconnect now')}
                   </button>
                 </div>
               </div>
             )}
-            <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-500/20 to-teal-500/20 border border-indigo-500/30 flex items-center justify-center shadow-xs">
-              <Sparkles className="w-6 h-6 text-indigo-400" />
+            <div className="w-12 h-12 r-md bg-gradient-to-tr from-[var(--app-accent-subtle)] to-[var(--app-info-subtle)] border border-[var(--app-accent)] flex items-center justify-center">
+              <Sparkles className="w-6 h-6 text-[var(--app-accent-text)]" />
             </div>
             <div>
-              <h3 className="text-base font-semibold text-white tracking-tight">
+              <h3 className="t-heading font-semibold text-[var(--app-text)] tracking-tight">
                 {t('helpToday')}
               </h3>
-              <p className="text-xs text-slate-400 mt-1 max-w-sm">
-                Ask questions, orchestrate local tools, execute sandboxed code, or schedule workflows.
+              <p className="t-caption text-[var(--app-text-muted)] mt-1 max-w-sm">
+                {tx('emptyStateLead', 'Ask a question, run a command, or set up a task that repeats.')}
               </p>
             </div>
 
@@ -1654,7 +1682,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                   key={idx}
                   onClick={() => quickSend(chip)}
                   title={chip}
-                  className="px-3.5 py-2.5 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] hover:border-indigo-500/30 text-xs text-slate-300 text-start transition hover:bg-white/[0.02] cursor-pointer"
+                  className="px-4 py-3 r-sm elev-0 edge bg-[var(--app-card)] t-caption text-[var(--app-text)] text-start transition hover:bg-[var(--app-card-hover)] cursor-pointer"
                 >
                   {chip}
                 </button>
@@ -1663,28 +1691,30 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             {(!settings.modelId || configuredProviders.length === 0) && (
               <div
                 role="note"
-                className="w-full max-w-md px-3.5 py-2.5 rounded-xl bg-sky-500/10 border border-sky-500/30 text-start"
+                className="w-full max-w-md px-4 py-3 r-md bg-[var(--app-info-subtle)] border border-[var(--app-info-border)] text-start"
               >
-                <p className="text-xs font-semibold text-sky-200">
-                  {!settings.modelId ? 'No model selected' : 'No providers configured'}
-                </p>
-                <p className="text-[11px] text-slate-400 mt-0.5">
+                <p className="t-caption font-semibold text-[var(--app-info)]">
                   {!settings.modelId
-                    ? 'Pick a model to start chatting.'
-                    : 'Add a provider before picking a model.'}
+                    ? tx('noModelSelected', 'No model selected')
+                    : tx('noProvidersConfigured', 'No providers added')}
                 </p>
-                <div className="flex items-center gap-2 mt-1.5">
+                <p className="t-caption text-[var(--app-text-muted)] mt-1">
+                  {!settings.modelId
+                    ? tx('pickModelToChat', 'Pick a model to start chatting.')
+                    : tx('addProviderFirst', 'Add a provider before picking a model.')}
+                </p>
+                <div className="flex items-center gap-2 mt-2">
                   {!settings.modelId && models.length > 0 && (
                     <button
                       onClick={() => setShowModelsSheet(true)}
-                      className="min-h-[44px] px-3 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold cursor-pointer"
+                      className="hm-hit r-xs min-h-[36px] px-4 bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)] t-caption font-semibold cursor-pointer"
                     >
-                      Select a model
+                      {tx('selectModelAction', 'Pick a model')}
                     </button>
                   )}
                   <button
                     onClick={onGoSettings}
-                    className="min-h-[44px] px-3 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.1] text-xs text-white cursor-pointer"
+                    className="hm-hit r-xs min-h-[36px] px-4 bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] edge t-caption text-[var(--app-text)] cursor-pointer"
                   >
                     Open Settings
                   </button>
@@ -1693,7 +1723,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             )}
           </div>
         ) : (
-          bubbleMessages.map((msg) => {
+          bubbleMessages.map((msg, index) => {
             const meta = turnMeta[msg.id];
             const modelLabel =
               meta && msg.sender !== 'you' ? meta.model.split('/').pop() || null : null;
@@ -1701,6 +1731,18 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
               meta && meta.durationMs > 0
                 ? `${meta.estimated ? '~' : ''}${formatDurationMs(meta.durationMs, tx('durUnderOneSecond', '<1s'))}`
                 : null;
+            // Regenerate lives on assistant turns and re-sends the user turn
+            // that produced them, so it can never echo the reply back at the
+            // model. Empty when no preceding user turn exists (then disabled).
+            const regenerateSource =
+              msg.sender === 'you'
+                ? ''
+                : (() => {
+                    for (let i = index - 1; i >= 0; i--) {
+                      if (bubbleMessages[i].sender === 'you') return bubbleMessages[i].content;
+                    }
+                    return '';
+                  })();
             return (
               <MessageRow
                 key={msg.id}
@@ -1708,8 +1750,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                 isLiveTail={msg.id === liveTailId}
                 modelLabel={modelLabel}
                 durationLabel={durationLabel}
-                fontScale={settings.fontScale}
-                formulatingLabel={t('formulating')}
+                formulatingLabel={tx('formulatingLive', 'Writing the reply…')}
                 copied={copiedId === msg.id}
                 speaking={speakingMsgId === msg.id}
                 menuOpen={openMenuId === msg.id}
@@ -1718,8 +1759,11 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                 stoppedLabel={tx('stoppedChip', 'Stopped')}
                 stoppedHint={tx('stoppedHint', 'This response was stopped before it finished.')}
                 estimated={!!meta?.estimated}
-                estimatedHint={tx('estimatedDurationHint', 'Estimated duration: the gateway sent no usage events for this turn.')}
+                estimatedHint={tx('estimatedDurationHintPlain', 'Estimated time: no usage data arrived for this turn.')}
                 copyUnavailableLabel={tx('nothingToCopy', 'Nothing to copy in this message.')}
+                regenerateSource={regenerateSource}
+                regenerateLabel={tx('regenerateResponse', 'Regenerate')}
+                regenerateBusyHint={tx('regenerateBusyHint', 'Wait for generation to finish.')}
                 menuContainerRef={menuRef}
                 onCopy={onCopyMessage}
                 onSpeak={onSpeakMessage}
@@ -1738,11 +1782,11 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
               setStickToBottom(true);
               scrollToBottom(true);
             }}
-            aria-label="Jump to latest messages"
-            className="sticky bottom-2 ms-auto me-2 min-h-[44px] px-3 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-2xl cursor-pointer flex items-center gap-1.5"
+            aria-label={tx('jumpToLatest', 'Jump to the latest messages')}
+            className="hm-hit r-xs min-h-[36px] px-4 sticky bottom-2 ms-auto me-2 bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)] t-caption font-semibold elev-2 cursor-pointer flex items-center gap-2"
           >
             <ChevronDown className="w-3.5 h-3.5" />
-            Latest
+            {tx('latestShort', 'Latest')}
           </button>
         )}
       </div>
@@ -1752,30 +1796,33 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                 visible, the body opens deliberately, and gateway failures
                 render on the card they belong to (never as a chat bubble). */}
             {pendingApprovals.length > 0 && (
-        <div className="mb-2 rounded-2xl bg-amber-500/10 border border-amber-500/30 shadow-lg animate-in slide-in-from-bottom duration-200">
+        <div className="mb-2 r-md bg-[var(--app-warning-subtle)] border border-[var(--app-warning-border)] animate-in slide-in-from-bottom duration-200">
           <button
             type="button"
             onClick={() => setApprovalsExpanded((v) => !v)}
             aria-expanded={approvalsExpanded}
-            className="w-full flex items-center justify-between gap-2 p-3 min-h-[44px] text-start cursor-pointer"
+            className="w-full flex items-center justify-between gap-2 px-4 py-3 min-h-[44px] text-start cursor-pointer"
           >
             <span className="flex items-center gap-2 min-w-0">
-              <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0" />
-              <span className="text-xs font-semibold text-amber-200 tracking-tight truncate">
-                {pendingApprovals.length} {tx('pendingReview', 'pending review')}
+              <AlertTriangle className="w-4 h-4 text-[var(--app-warning)] shrink-0" />
+              <span className="t-caption font-semibold text-[var(--app-warning)] tracking-tight truncate">
+                {tx('approvalsWaitingMany', '{count} approvals waiting for you').replace(
+                '{count}',
+                String(pendingApprovals.length)
+              )}
               </span>
             </span>
-            <span className="flex items-center gap-1.5 shrink-0">
-              <span className="text-[11px] font-mono text-amber-300/80">{t('approvalTitle')}</span>
+            <span className="flex items-center gap-2 shrink-0">
+              <span className="t-caption font-mono text-[var(--app-warning)]">{t('approvalTitle')}</span>
               {approvalsExpanded ? (
-                <ChevronUp className="w-3.5 h-3.5 text-amber-300" />
+                <ChevronUp className="w-3.5 h-3.5 text-[var(--app-warning)]" />
               ) : (
-                <ChevronDown className="w-3.5 h-3.5 text-amber-300" />
+                <ChevronDown className="w-3.5 h-3.5 text-[var(--app-warning)]" />
               )}
             </span>
           </button>
           {!approvalsExpanded && (
-            <p className="px-3 pb-3 text-[11px] text-amber-100/80 truncate" title={pendingApprovals[0].summary}>
+            <p className="px-3 pb-3 t-caption text-[var(--app-warning)] truncate" title={pendingApprovals[0].summary}>
               {pendingApprovals[0].summary}
             </p>
           )}
@@ -1796,7 +1843,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                 <p
                   key={m.id}
                   role="alert"
-                  className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-2 text-[11px] text-rose-200"
+                  className="r-xs border border-[var(--app-danger-border)] bg-[var(--app-danger-subtle)] px-4 py-2 t-caption text-[var(--app-danger)]"
                 >
                   {m.content}
                 </p>
@@ -1808,9 +1855,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
 
       {/* Approval failures whose card is already gone still get surfaced. */}
       {pendingApprovals.length === 0 && approvalFailureBubbles.length > 0 && (
-        <div className="mb-2 px-3.5 py-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs space-y-1.5">
+        <div className="mb-2 px-4 py-3 r-md bg-[var(--app-danger-subtle)] border border-[var(--app-danger-border)] t-caption space-y-2">
           {approvalFailureBubbles.map((m) => (
-            <p key={m.id} role="alert" className="text-rose-200 break-words leading-relaxed">
+            <p key={m.id} role="alert" className="text-[var(--app-danger)] break-words leading-relaxed">
               {m.content}
             </p>
           ))}
@@ -1818,34 +1865,42 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       )}
 
       {/* Queued Messages Ribbon: queued items are visibly pending and can be
-          sent now, so the queue is never a dead end waiting on the gateway. */}
+          sent now, so the queue is never a dead end waiting on the connection. */}
       {queuedMessages.length > 0 && (
         <div
-          aria-label={`${queuedMessages.length} queued: ${queuedMessages[0]?.text || ''}`}
-          className="mb-2 px-3.5 py-2 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-between gap-2 text-xs text-indigo-300"
+          aria-label={tx('queueAriaLabel', 'Messages waiting to send').concat(
+            ': ',
+            String(queuedMessages.length),
+            queuedMessages[0]?.text ? `. ${queuedMessages[0].text.slice(0, 60)}` : ''
+          )}
+          className="mb-2 px-4 py-2 r-md bg-[var(--app-accent-subtle)] border border-[var(--app-accent)] flex items-center justify-between gap-2 t-caption text-[var(--app-accent-text)]"
         >
           <span className="min-w-0 flex flex-col">
             <span className="truncate">
-              {queuedMessages.length} queued{queuedMessages[0]?.text ? `: ${queuedMessages[0].text.slice(0, 60)}` : ` ${t('queuedFor')}`}
+              {tx('queuedCount', '{count} waiting to send').replace('{count}', String(queuedMessages.length))}
+              {queuedMessages[0]?.text ? `: ${queuedMessages[0].text.slice(0, 60)}` : ''}
             </span>
-            <span className="text-[10px] text-indigo-300/70">
+            <span className="t-micro text-[var(--app-text-muted)]">
               {streaming
                 ? tx('queuedAutoHint', 'Pending: sends automatically when this turn finishes.')
-                : tx('queuedManualHint', 'Pending. Sends automatically when the gateway reconnects, or tap Send now.')}
+                : tx('queuedManualHintPlain', 'Waiting. Sends automatically when the connection is back, or tap Send now.')}
             </span>
           </span>
           <span className="flex items-center gap-1 shrink-0">
             <button
               onClick={sendFirstQueued}
               disabled={streaming}
-              className="min-h-[44px] px-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              className="hm-hit r-xs min-h-[36px] px-4 bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)] t-caption font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {tx('sendNow', 'Send now')}
             </button>
             <button
               onClick={cancelQueued}
-              aria-label={`Cancel ${queuedMessages.length} queued messages`}
-              className="text-rose-400 hover:underline cursor-pointer shrink-0 min-h-[44px] px-2"
+              aria-label={tx('cancelQueuedAria', 'Cancel {count} waiting messages').replace(
+                '{count}',
+                String(queuedMessages.length)
+              )}
+              className="hm-hit r-xs min-h-[36px] px-4 text-[var(--app-danger)] hover:underline cursor-pointer shrink-0 t-caption"
             >
               {tx('cancel', 'Cancel')}
             </button>
@@ -1872,46 +1927,57 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       {attachNotice && (
         <div
           role="status"
-          className="mb-2 px-3.5 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs"
+          className="mb-2 px-4 py-3 r-md bg-[var(--app-warning-subtle)] border border-[var(--app-warning-border)] t-caption"
         >
-          <p className="text-amber-200 font-semibold">Large text file truncated</p>
-          <p className="text-slate-300 mt-0.5 whitespace-pre-wrap break-words">{attachNotice}</p>
+          <p className="text-[var(--app-warning)] font-semibold">{tx('largeFileTruncated', 'Large text file shortened')}</p>
+          <p className="text-[var(--app-text)] mt-1 whitespace-pre-wrap break-words">{attachNotice}</p>
           <button
             onClick={() => setAttachNotice(null)}
-            className="mt-1.5 min-h-[44px] px-3 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 text-xs cursor-pointer"
+            className="mt-2 hm-hit r-xs min-h-[36px] px-4 bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] text-[var(--app-text)] t-caption cursor-pointer edge"
           >
-            Dismiss
+            {tx('dismiss', 'Dismiss')}
           </button>
         </div>
       )}
 
       {/* Attached Images preview (object URLs; compressed payloads sent on submit) */}
       {attaching && attached.length === 0 && (
-        <div className="mb-2 px-3.5 py-2 rounded-xl bg-white/[0.03] border border-white/[0.08] text-[11px] text-slate-400">
-          Processing attachments...
+        <div className="mb-2 px-4 py-3 r-sm edge bg-[var(--app-card-subtle)] t-caption text-[var(--app-text-muted)]">
+          {tx('preparingAttachments', 'Preparing attachments…')}
         </div>
       )}
       {attached.length > 0 && (
-        <div className="hm-rail items-center gap-2 mb-2 p-2 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08]">
+        <div className="hm-rail items-center gap-2 mb-2 p-3 r-sm edge bg-[var(--app-card)]">
           {attached.map((item, i) => (
-            <div key={item.ref.id} className="relative w-12 h-12 rounded-lg overflow-hidden shrink-0 border border-white/10 group">
-              <img src={item.previewUrl} alt={item.name || 'Attached'} className="w-full h-full object-cover" />
+            <div key={item.ref.id} className="relative w-12 h-12 r-sm overflow-hidden shrink-0 edge group">
+              <img
+                src={item.previewUrl}
+                alt={item.name || tx('attachedFile', 'Attached file')}
+                className="w-full h-full object-cover"
+              />
               {/* Remove badge: the tap target is the badge plus a small margin
                   (28px), not a 44px box that overlaps the neighbouring tile. */}
               <button
                 type="button"
                 onClick={() => removeAttachment(i)}
-                aria-label={`Remove attachment: ${item.name || `attachment ${i + 1}`}`}
+                aria-label={tx('removeAttachmentAria', 'Remove attachment: {name}').replace(
+                  '{name}',
+                  item.name ||
+                    tx('attachmentFallbackName', 'attachment {number}').replace('{number}', String(i + 1))
+                )}
                 className="absolute -top-1 -end-1 w-7 h-7 rounded-full flex items-center justify-center text-white cursor-pointer"
               >
-                <span className="w-4 h-4 rounded-full bg-black/80 border border-white/20 flex items-center justify-center">
+                <span className="w-4 h-4 rounded-full bg-[var(--app-scrim)] edge flex items-center justify-center">
                   <X className="w-2.5 h-2.5" />
                 </span>
               </button>
             </div>
           ))}
-          <span className="text-[11px] text-slate-400">
-            {attached.length}/{MAX_IMAGE_COUNT} attached{attaching ? '...' : ''}
+          <span className="t-caption text-[var(--app-text-muted)]">
+            {tx('attachedCount', '{count} of {max} attached')
+              .replace('{count}', String(attached.length))
+              .replace('{max}', String(MAX_IMAGE_COUNT))}
+            {attaching ? '…' : ''}
           </span>
         </div>
       )}
@@ -1920,10 +1986,10 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           command is being typed, grouped so app actions are never mistaken for
           messages sent to the model. */}
       {(text === '' || text.startsWith('/')) && visibleSlashCommands.length > 0 && (
-        <div role="toolbar" aria-label="Slash commands" className="mb-2 space-y-1 shrink-0">
+        <div role="toolbar" aria-label={tx('slashCommandsLabel', 'Slash commands')} className="mb-2 space-y-2 shrink-0">
           {slashActions.length > 0 && (
-            <div className="hm-rail items-center gap-1.5 pb-1 text-xs">
-              <span className="shrink-0 font-mono text-[10px] uppercase tracking-wide text-slate-500">
+            <div className="hm-rail items-center gap-4 pb-2 t-caption">
+              <span className="shrink-0 font-mono t-micro text-[var(--app-text-muted)]">
                 {tx('slashAppActions', 'App actions')}
               </span>
               {slashActions.map((cmd) => {
@@ -1937,7 +2003,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                     aria-label={`${cmd.label}: ${
                       blocked ? tx('stopTurnFirst', 'Stop the current turn first.') : cmd.hint
                     }`}
-                    className="px-2.5 min-h-[44px] py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-slate-400 hover:text-white transition cursor-pointer shrink-0 font-mono text-[11px] disabled:opacity-40 disabled:cursor-not-allowed"
+                    className="hm-hit r-xs min-h-[36px] px-4 inline-flex items-center justify-center min-w-[72px] bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] edge text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition cursor-pointer shrink-0 font-mono t-caption disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     {cmd.label}
                   </button>
@@ -1946,8 +2012,8 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             </div>
           )}
           {slashMessages.length > 0 && (
-            <div className="hm-rail items-center gap-1.5 pb-1 text-xs">
-              <span className="shrink-0 font-mono text-[10px] uppercase tracking-wide text-slate-500">
+            <div className="hm-rail items-center gap-4 pb-2 t-caption">
+              <span className="shrink-0 font-mono t-micro text-[var(--app-text-muted)]">
                 {tx('slashSentToModel', 'Sent to model')}
               </span>
               {slashMessages.map((cmd) => (
@@ -1956,7 +2022,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                   onClick={cmd.run}
                   title={cmd.hint}
                   aria-label={`${cmd.label}: ${cmd.hint}`}
-                  className="px-2.5 min-h-[44px] py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-teal-300 hover:text-white transition cursor-pointer shrink-0 font-mono text-[11px]"
+                  className="hm-hit r-xs min-h-[36px] px-4 inline-flex items-center justify-center min-w-[72px] bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] edge text-[var(--app-info)] hover:text-[var(--app-text)] transition cursor-pointer shrink-0 font-mono t-caption"
                 >
                   {cmd.label}
                 </button>
@@ -1974,7 +2040,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       <div
         role="group"
         aria-label={tx('composerSettings', 'Model and reasoning effort')}
-        className="flex items-center gap-4 mb-1.5 px-1 shrink-0"
+        className="flex items-center gap-4 mb-2 px-1 shrink-0"
       >
         <button
           type="button"
@@ -1983,29 +2049,29 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           aria-label={`${tx('activeModel', 'Active model')}: ${
             settings.modelId ? curModelName : t('noModel')
           }. ${tx('opensModelList', 'Opens the model list.')}`}
-          className="hm-hit min-h-[36px] min-w-0 max-w-[62%] flex items-center gap-1 px-3 rounded-full text-[11.5px] font-mono text-slate-200 bg-[var(--app-card-subtle,#1A2230)] border border-white/[0.08] shadow-xs cursor-pointer hover:text-white"
+          className="hm-hit min-h-[36px] min-w-0 max-w-[62%] pill-neutral font-mono cursor-pointer"
         >
           <span className="truncate">{settings.modelId ? curModelName : t('noModel')}</span>
-          <ChevronDown className="w-3 h-3 text-slate-400 shrink-0" />
+          <ChevronDown className="w-4 h-4 shrink-0" />
         </button>
         <button
           type="button"
           onClick={() => setShowEffortSheet(true)}
-          title={tx('reasoningEffort', 'Reasoning effort')}
-          aria-label={`${tx('reasoningEffort', 'Reasoning effort')}: ${effortLabel}. ${tx(
+          title={tx('reasoningEffortPlain', 'Reasoning effort')}
+          aria-label={`${tx('reasoningEffortPlain', 'Reasoning effort')}: ${effortLabel}. ${tx(
             'opensEffortOptions',
             'Opens the reasoning effort options.'
           )}`}
-          className="hm-hit min-h-[36px] flex items-center gap-1 px-3 rounded-full text-[11px] font-mono text-sky-300 bg-sky-950/40 border border-sky-500/30 shadow-xs cursor-pointer hover:text-sky-100"
+          className="hm-hit min-h-[36px] pill-neutral font-mono cursor-pointer"
         >
-          <Sliders className="w-3 h-3 shrink-0" />
+          <Sliders className="w-4 h-4 shrink-0" />
           <span>{effortLabel}</span>
-          <ChevronDown className="w-3 h-3 text-sky-400/70 shrink-0" />
+          <ChevronDown className="w-4 h-4 shrink-0" />
         </button>
       </div>
 
       {/* 4. Desktop/Mobile Composer Surface matching modern Hermes aesthetic */}
-      <div className="rounded-[22px] sm:rounded-[26px] bg-[var(--app-card,#121721)] border border-white/[0.1] px-3.5 sm:px-4 pt-2.5 pb-2 shadow-2xl shrink-0 transition-all focus-within:border-indigo-500/50 focus-within:ring-1 focus-within:ring-indigo-500/20 mb-1">
+      <div className="r-lg elev-2 edge bg-[var(--app-card)] px-4 pt-3 pb-2 shrink-0 transition-all focus-within:ring-1 focus-within:ring-[var(--app-accent)] mb-1">
         <textarea
           ref={textareaRef}
           rows={1}
@@ -2018,18 +2084,18 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
               handleSend('keyboard');
             }
           }}
-          placeholder={t('askHermes') || 'Message Hermes or paste instructions...'}
-          aria-label={t('askHermes') || 'Message Hermes'}
+          placeholder={tx('askHermesPlaceholder', 'Message Hermes or paste instructions…')}
+          aria-label={tx('askHermesLabel', 'Message Hermes')}
           aria-describedby="composer-hint"
-          className="w-full bg-transparent px-1 py-1 text-[13.5px] sm:text-sm text-slate-100 placeholder-slate-400 focus:outline-none resize-none leading-relaxed font-sans min-h-[32px] max-h-[160px]"
+          className="w-full bg-transparent px-1 py-1 t-body text-[var(--app-text)] placeholder:text-[var(--app-text-muted)] focus:outline-none resize-none font-sans min-h-[32px] max-h-[160px]"
         />
         <p id="composer-hint" className="sr-only">
-          Enter sends, Shift plus Enter adds a new line.
+          {tx('composerHint', 'Enter sends. Shift plus Enter adds a new line.')}
         </p>
 
         {/* Action Bar: attach on the left, mic and send on the right. Model and
             effort now live in the compact row above the composer. */}
-        <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-white/[0.04]">
+        <div className="flex items-center justify-between gap-2 pt-2 mt-2 border-t border-[var(--app-border-subtle)]">
           <input
             type="file"
             ref={fileInputRef}
@@ -2041,40 +2107,44 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="min-w-[44px] min-h-[44px] rounded-full flex items-center justify-center text-slate-300 hover:text-white bg-[var(--app-card-subtle,#1A2230)] hover:bg-[var(--app-card-subtle,#232D3F)] active:scale-95 transition-all border border-white/[0.08] cursor-pointer shrink-0 shadow-xs"
-            title="Attach image or text file (.txt/.md/.csv/.json)"
-            aria-label="Attach image or text file (.txt/.md/.csv/.json)"
+            className="min-w-[44px] min-h-[44px] rounded-full flex items-center justify-center text-[var(--app-text)] bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] active:scale-95 transition-all edge cursor-pointer shrink-0"
+            title={tx('attachAction', 'Attach an image or a text file')}
+            aria-label={tx('attachAction', 'Attach an image or a text file')}
           >
             <Plus className="w-4 h-4 stroke-[2.2]" />
           </button>
 
-          {/* Right Action Buttons: Circular Cyan Mic & Send Button */}
-          <div className="flex items-center gap-1.5 shrink-0">
+          {/* Right Action Buttons: neutral mic and the single accent send */}
+          <div className="flex items-center gap-2 shrink-0">
             {/* Voice Dictation (Cyan Mic) */}
             <button
               type="button"
               onClick={toggleVoice}
-              className={`min-w-[44px] min-h-[44px] rounded-full flex items-center justify-center transition-all cursor-pointer border border-white/[0.08] shadow-xs ${
+              className={`min-w-[44px] min-h-[44px] rounded-full flex items-center justify-center transition-all cursor-pointer ${
                 isListening
-                  ? 'bg-rose-500/20 border-rose-500/40 text-rose-300 animate-pulse'
-                  : 'bg-[var(--app-card-subtle,#1A2230)] hover:bg-[var(--app-card-subtle,#232D3F)] text-sky-400 hover:text-sky-300'
+                  ? 'bg-[var(--app-danger-subtle)] border border-[var(--app-danger-border)] text-[var(--app-danger)] animate-pulse'
+                  : 'bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] edge text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
               }`}
-              title={isListening ? 'Listening...' : 'Voice Dictation'}
-              aria-label={isListening ? 'Stop voice dictation' : 'Start voice dictation'}
+              title={isListening ? tx('voiceListening', 'Listening…') : tx('voiceDictation', 'Voice dictation')}
+              aria-label={
+                isListening
+                  ? tx('voiceStop', 'Stop voice dictation')
+                  : tx('voiceStart', 'Start voice dictation')
+              }
               aria-pressed={isListening}
             >
               {isListening ? (
-                <Mic className="w-3.5 h-3.5 text-rose-400" />
+                <Mic className="w-4 h-4 text-[var(--app-danger)]" />
               ) : (
-                <Mic className="w-3.5 h-3.5 text-sky-400" />
+                <Mic className="w-4 h-4" />
               )}
             </button>
 
             {/* Send / Stop Generation Button */}
             {streaming ? (
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10.5px] text-teal-300 font-mono flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-teal-500/10 border border-teal-500/20">
-                  <Clock className="w-2.5 h-2.5 animate-spin" />
+              <div className="flex items-center gap-2">
+                <span className="pill-neutral font-mono">
+                  <Clock className="w-4 h-4 animate-spin" />
                   <span>{streamElapsed < 1 ? tx('durUnderOneSecond', '<1s') : `${streamElapsed}s`}</span>
                 </span>
                 <button
@@ -2082,18 +2152,18 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                   onClick={handleSendNow}
                   aria-label={sendNowHint}
                   title={sendNowHint}
-                  className="px-2 min-h-[44px] py-1 rounded-full text-[11px] font-medium bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25 cursor-pointer"
+                  className="hm-hit r-xs min-h-[36px] px-4 t-caption font-medium bg-[var(--app-accent-subtle)] text-[var(--app-accent-text)] hover:bg-[var(--app-card-hover)] cursor-pointer"
                 >
                   {t('send')}
                 </button>
                 <button
                   type="button"
                   onClick={stopStream}
-                  className="min-w-[44px] min-h-[44px] rounded-full bg-rose-600 hover:bg-rose-500 text-white flex items-center justify-center transition cursor-pointer shrink-0 shadow-md"
-                  title="Stop generation"
-                  aria-label="Stop generation"
+                  className="min-w-[44px] min-h-[44px] rounded-full bg-[var(--app-danger-solid)] hover:brightness-110 text-[var(--app-on-danger)] flex items-center justify-center transition cursor-pointer shrink-0"
+                  title={tx('stopGenerating', 'Stop generating')}
+                  aria-label={tx('stopGenerating', 'Stop generating')}
                 >
-                  <Square className="w-3 h-3 fill-white" />
+                  <Square className="w-3 h-3 fill-[var(--app-on-danger)]" />
                 </button>
               </div>
             ) : (
@@ -2102,10 +2172,10 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                 onClick={() => handleSend('button')}
                 title={sendHint}
                 aria-label={sendHint}
-                className={`min-w-[44px] min-h-[44px] rounded-full flex items-center justify-center transition-all cursor-pointer shrink-0 shadow-xs border ${
+                className={`min-w-[44px] min-h-[44px] rounded-full flex items-center justify-center transition-all cursor-pointer shrink-0 border ${
                   canSendNow
-                    ? 'bg-white hover:bg-slate-100 text-slate-900 border-white shadow-md active:scale-95'
-                    : 'bg-[var(--app-card-subtle,#1A2230)] text-slate-400 border-white/[0.08] opacity-70'
+                    ? 'bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)] border-[var(--app-accent)] active:scale-95'
+                    : 'bg-[var(--app-card-subtle)] text-[var(--app-text-dim)] border-[var(--app-border)]'
                 }`}
               >
                 {/* Slanted Arrow-Paperplane style icon matching user screenshot */}
@@ -2126,56 +2196,58 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
         <div
           role="dialog"
           aria-modal="true"
-          aria-label={t('selectModel') || 'Available Hermes Models'}
-          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm p-0 sm:p-4 animate-in fade-in duration-150"
+          aria-label={tx('modelSheetTitle', 'Pick a model')}
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-[var(--app-scrim)] backdrop-blur-sm p-0 sm:p-4 animate-in fade-in duration-150"
           onClick={(e) => {
             if (e.target === e.currentTarget) setShowModelsSheet(false);
           }}
         >
           <div
             ref={modelsSheetRef}
-            className="w-full sm:max-w-lg bg-[var(--app-bg,#0B0F15)] border border-white/[0.09] rounded-t-[28px] sm:rounded-3xl p-4 sm:p-5 shadow-2xl flex flex-col max-h-[85vh] sm:max-h-[80vh] animate-in slide-in-from-bottom-4 duration-200"
+            className="r-lg elev-3 edge bg-[var(--app-bg)] p-4 sm:p-5 flex flex-col max-h-[85vh] sm:max-h-[80vh] animate-in slide-in-from-bottom-4 duration-200"
           >
             {/* Top Pull Bar / Handle */}
-            <div className="w-10 h-1 bg-slate-500/50 rounded-full mx-auto mb-3 shrink-0 sm:hidden" />
+            <div className="w-10 h-1 bg-[var(--app-border)] rounded-full mx-auto mb-3 shrink-0 sm:hidden" />
 
             {/* Header: Title + Count & Close button */}
             <div className="flex items-start justify-between pb-3 shrink-0">
               <div>
-                <h2 className="text-[#38BDF8] text-[17px] font-mono font-medium tracking-tight">
-                  {t('selectModel') || 'Available Hermes Models'}
+                <h2 className="t-heading text-[var(--app-accent-text)] font-mono font-medium tracking-tight">
+                  {tx('modelSheetTitle', 'Pick a model')}
                 </h2>
-                <p className="text-xs text-slate-400 font-mono mt-0.5">
-                  {filteredModels.length} / {models.length} models
+                <p className="t-caption text-[var(--app-text-muted)] font-mono mt-1">
+                  {tx('modelCount', '{shown} of {total} models')
+                    .replace('{shown}', String(filteredModels.length))
+                    .replace('{total}', String(models.length))}
                 </p>
               </div>
               <button
                 onClick={() => setShowModelsSheet(false)}
-                className="w-7 h-7 min-w-[44px] min-h-[44px] rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.06] transition cursor-pointer"
+                className="min-w-[44px] min-h-[44px] r-xs flex items-center justify-center text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)] transition cursor-pointer"
                 title={t('cancel')}
-                aria-label={t('cancel') || 'Close model selection'}
+                aria-label={tx('closeModelList', 'Close the model list')}
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             {/* Search Input Bar */}
-            <div className="relative flex items-center px-3.5 py-2.5 rounded-xl bg-[var(--app-card-subtle,#141A23)] border border-white/[0.08] focus-within:border-cyan-500/50 transition shrink-0 mb-3">
-              <Search className="w-4 h-4 text-slate-400 me-2.5 shrink-0" />
+            <div className="relative flex items-center px-4 py-3 r-sm edge bg-[var(--app-input-bg)] focus-within:ring-1 focus-within:ring-[var(--app-accent)] transition shrink-0 mb-3">
+              <Search className="w-4 h-4 text-[var(--app-text-muted)] me-3 shrink-0" />
               <input
                 ref={sheetSearchRef}
                 type="text"
                 value={modelSearchQuery}
                 onChange={(e) => setModelSearchQuery(e.target.value)}
-                placeholder={t('searchModels') || 'Search models...'}
-                aria-label={t('searchModels') || 'Search models'}
-                className="flex-1 bg-transparent text-xs sm:text-sm text-slate-200 placeholder-slate-500 focus:outline-none font-mono"
+                placeholder={tx('searchModelsPlaceholder', 'Search models…')}
+                aria-label={tx('searchModelsLabel', 'Search models')}
+                className="flex-1 bg-transparent t-caption text-[var(--app-text)] placeholder:text-[var(--app-text-muted)] focus:outline-none font-mono"
               />
               {modelSearchQuery && (
                 <button
                   onClick={() => setModelSearchQuery('')}
-                  aria-label="Clear model search"
-                  className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-white cursor-pointer"
+                  aria-label={tx('clearModelSearch', 'Clear the model search')}
+                  className="min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--app-text-muted)] hover:text-[var(--app-text)] cursor-pointer"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
@@ -2183,7 +2255,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             </div>
 
             {/* Filter Pills Bar (Horizontal scroll) */}
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-2 mb-2 shrink-0 no-scrollbar">
+            <div className="hm-rail items-center gap-4 pb-2 mb-2 shrink-0">
               {providerFilterOptions.map((opt) => {
                 const isActive = modelFilterProvider === opt.id;
                 return (
@@ -2191,10 +2263,8 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                     key={opt.id}
                     onClick={() => setModelFilterProvider(opt.id)}
                     aria-pressed={isActive}
-                    className={`px-3 min-h-[44px] py-1 rounded-lg text-xs font-mono transition cursor-pointer shrink-0 border whitespace-nowrap ${
-                      isActive
-                        ? 'bg-[var(--app-card-subtle,#0E2938)] text-cyan-400 border-cyan-500/60 font-semibold shadow-xs'
-                        : 'bg-[var(--app-card-subtle,#131924)] text-slate-400 border-white/[0.08] hover:text-slate-200 hover:bg-[var(--app-card-subtle,#1A2230)] font-normal'
+                    className={`hm-hit min-h-[36px] font-mono transition cursor-pointer shrink-0 whitespace-nowrap ${
+                      isActive ? 'pill-accent font-semibold' : 'pill-neutral'
                     }`}
                   >
                     {opt.label}
@@ -2206,7 +2276,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             {/* Models Cards List */}
             <div className="flex-1 overflow-y-auto space-y-2 pe-1 min-h-0">
               {filteredModels.length === 0 ? (
-                <div className="text-center py-10 text-slate-500 text-xs font-mono">
+                <div className="text-center py-10 text-[var(--app-text-muted)] t-caption font-mono">
                   {modelSearchQuery
                     ? `${t('noModelsMatch')} "${modelSearchQuery}"`
                     : t('noModelsProvider')}
@@ -2238,28 +2308,28 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                         }
                         setShowModelsSheet(false);
                       }}
-                      className={`w-full flex flex-col p-3 sm:p-3.5 rounded-2xl border text-start transition cursor-pointer group shadow-xs ${
+                      className={`w-full flex flex-col p-4 r-sm elev-0 border text-start transition cursor-pointer group ${
                         isSelected
-                          ? 'bg-[var(--app-card-subtle,#122232)] border-cyan-500/70 text-white'
-                          : 'bg-[var(--app-card-subtle,#131924)] border-white/[0.06] hover:border-cyan-500/40 text-slate-300'
-                      }`}
+                          ? 'bg-[var(--app-accent-subtle)] border-[var(--app-accent)]'
+                          : 'bg-[var(--app-card-subtle)] border-[var(--app-border)] hover:border-[var(--app-accent)]'
+                      } text-[var(--app-text)]`}
                     >
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2 min-w-0">
-                          <span className="font-semibold text-white text-[13.5px] sm:text-[14px] tracking-tight group-hover:text-cyan-300 transition-colors truncate">
+                          <span className="font-semibold text-[var(--app-text)] t-body tracking-tight group-hover:text-[var(--app-accent-text)] transition-colors truncate">
                             {m.displayName}
                           </span>
-                          <span className="px-2 py-0.5 rounded-md text-[10px] font-mono border border-cyan-500/30 bg-cyan-950/40 text-cyan-400 font-medium shrink-0">
+                          <span className="pill-accent t-micro font-mono font-medium shrink-0">
                             {badgeLabel}
                           </span>
                         </div>
                         {isSelected && (
-                          <div className="flex items-center gap-1 text-cyan-400 text-xs font-mono shrink-0">
+                          <div className="flex items-center gap-1 text-[var(--app-accent-text)] t-caption font-mono shrink-0">
                             <Check className="w-4 h-4 stroke-[2.5]" />
                           </div>
                         )}
                       </div>
-                      <p className="text-xs font-mono text-slate-400 mt-1 truncate">
+                      <p className="t-caption font-mono text-[var(--app-text-muted)] mt-1 truncate">
                         {m.id}
                       </p>
                     </button>
@@ -2269,18 +2339,19 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             </div>
 
             {/* Footer with Manage Settings link */}
-            <div className="pt-3 mt-2 border-t border-white/[0.06] flex items-center justify-between text-xs text-slate-400 shrink-0">
-              <span className="font-mono text-[11px] text-slate-500">
-                Active: <span className="text-slate-300">{settings.modelId.split('/').pop()}</span>
+            <div className="pt-3 mt-2 border-t border-[var(--app-border-subtle)] flex items-center justify-between t-caption text-[var(--app-text-muted)] shrink-0">
+              <span className="font-mono t-caption text-[var(--app-text-muted)]">
+                {tx('inUse', 'In use')}:{' '}
+                <span className="text-[var(--app-text)]">{settings.modelId.split('/').pop()}</span>
               </span>
               <button
                 onClick={() => {
                   setShowModelsSheet(false);
                   onGoSettings();
                 }}
-                className="min-h-[44px] px-2 text-cyan-400 hover:text-cyan-300 font-medium cursor-pointer transition flex items-center"
+                className="hm-hit r-xs min-h-[36px] px-4 t-caption text-[var(--app-accent-text)] font-medium cursor-pointer transition flex items-center"
               >
-                + Manage Providers in Settings
+                {tx('manageProviders', 'Manage providers in Settings')}
               </button>
             </div>
           </div>
@@ -2293,32 +2364,32 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
         <div
           role="dialog"
           aria-modal="true"
-          aria-label={tx('reasoningEffort', 'Reasoning effort')}
-          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm p-0 sm:p-4 animate-in fade-in duration-150"
+          aria-label={tx('reasoningEffortPlain', 'Reasoning effort')}
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-[var(--app-scrim)] backdrop-blur-sm p-0 sm:p-4 animate-in fade-in duration-150"
           onClick={(e) => {
             if (e.target === e.currentTarget) setShowEffortSheet(false);
           }}
         >
           <div
             ref={effortSheetRef}
-            className="w-full sm:max-w-sm bg-[var(--app-bg,#0B0F15)] border border-white/[0.09] rounded-t-[28px] sm:rounded-3xl p-4 sm:p-5 shadow-2xl flex flex-col max-h-[80vh] animate-in slide-in-from-bottom-4 duration-200"
+            className="r-lg elev-3 edge bg-[var(--app-bg)] p-4 sm:p-5 flex flex-col max-h-[80vh] animate-in slide-in-from-bottom-4 duration-200"
           >
-            <div className="w-10 h-1 bg-slate-500/50 rounded-full mx-auto mb-3 shrink-0 sm:hidden" />
+            <div className="w-10 h-1 bg-[var(--app-border)] rounded-full mx-auto mb-3 shrink-0 sm:hidden" />
             <div className="flex items-start justify-between pb-3 shrink-0">
               <div>
-                <h2 className="text-sky-400 text-[17px] font-mono font-medium tracking-tight">
-                  {tx('reasoningEffort', 'Reasoning effort')}
+                <h2 className="t-heading text-[var(--app-accent-text)] font-mono font-medium tracking-tight">
+                  {tx('reasoningEffortPlain', 'Reasoning effort')}
                 </h2>
-                <p className="text-xs text-slate-400 font-mono mt-0.5">
+                <p className="t-caption text-[var(--app-text-muted)] font-mono mt-1">
                   {tx('effortCurrent', 'Current')}: {effortLabel}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => setShowEffortSheet(false)}
-                className="min-w-[44px] min-h-[44px] rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.06] transition cursor-pointer"
+                className="min-w-[44px] min-h-[44px] r-xs flex items-center justify-center text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)] transition cursor-pointer"
                 title={t('cancel')}
-                aria-label={t('cancel') || 'Close reasoning effort options'}
+                aria-label={tx('closeEffortOptions', 'Close the reasoning effort options')}
               >
                 <X className="w-4 h-4" />
               </button>
@@ -2335,15 +2406,15 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                       setShowEffortSheet(false);
                     }}
                     aria-pressed={active}
-                    className={`w-full flex items-center justify-between gap-2 p-3 min-h-[44px] rounded-2xl border text-start transition cursor-pointer ${
+                    className={`w-full flex items-center justify-between gap-2 p-4 r-sm elev-0 border text-start transition cursor-pointer ${
                       active
-                        ? 'bg-sky-950/50 border-sky-500/60 text-white'
-                        : 'bg-[var(--app-card-subtle,#131924)] border-white/[0.06] hover:border-sky-500/40 text-slate-300'
-                    }`}
+                        ? 'bg-[var(--app-accent-subtle)] border-[var(--app-accent)]'
+                        : 'bg-[var(--app-card-subtle)] border-[var(--app-border)] hover:border-[var(--app-accent)]'
+                    } text-[var(--app-text)]`}
                   >
                     <span className="flex flex-col">
-                      <span className="text-[13.5px] font-semibold">{effortLabelFor(level)}</span>
-                      <span className="text-[11px] text-slate-400 mt-0.5">
+                      <span className="t-body font-semibold">{effortLabelFor(level)}</span>
+                      <span className="t-caption text-[var(--app-text-muted)] mt-1">
                         {level === 'none'
                           ? tx('effortNoneHint', 'No reasoning step is requested.')
                           : level === 'low'
@@ -2353,12 +2424,12 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                               : tx('effortHighHint', 'Longest reasoning budget.')}
                       </span>
                     </span>
-                    {active && <Check className="w-4 h-4 text-sky-400 stroke-[2.5] shrink-0" />}
+                    {active && <Check className="w-4 h-4 text-[var(--app-accent-text)] stroke-[2.5] shrink-0" />}
                   </button>
                 );
               })}
             </div>
-            <p className="pt-3 mt-2 border-t border-white/[0.06] text-[11px] text-slate-500 shrink-0">
+            <p className="pt-3 mt-2 border-t border-[var(--app-border-subtle)] t-caption text-[var(--app-text-muted)] shrink-0">
               {tx(
                 'effortSheetHint',
                 'Applies to the next turn. Providers that do not support reasoning effort ignore this setting.'
@@ -2374,11 +2445,19 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
 interface ThinkingAccordionProps {
   thinking: string;
   isDone: boolean;
-  fontScale: number;
 }
 
-const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({ thinking, isDone, fontScale }) => {
+const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({ thinking, isDone }) => {
   const [expanded, setExpanded] = useState(!isDone);
+
+  // The accordion sits outside the i18n provider, so it reads the same bundle
+  // through the document language and keeps an English fallback.
+  const tx = (key: string, fallback: string): string => {
+    const docLang =
+      typeof document !== 'undefined' ? document.documentElement.lang || 'en' : 'en';
+    const value = getTranslation(key, docLang.toLowerCase().split('-')[0] || 'en');
+    return value && value !== key ? value : fallback;
+  };
 
   // Follow the live state: expand while reasoning, auto-collapse when done.
   useEffect(() => {
@@ -2386,27 +2465,31 @@ const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({ thinking, isDone,
   }, [isDone]);
 
   return (
-    <div className="mb-3 rounded-xl bg-white/[0.03] border border-white/[0.06] overflow-hidden">
+    <div className="mb-3 r-sm elev-0 edge bg-[var(--app-card-subtle)] overflow-hidden">
       <button
         onClick={() => setExpanded(!expanded)}
         aria-expanded={expanded}
-        aria-label={`Reasoning process, ${isDone ? 'finished' : 'in progress'}. Tap to ${expanded ? 'collapse' : 'expand'}.`}
-        className="w-full flex items-center justify-between px-3 min-h-[44px] py-2 text-xs text-slate-400 hover:text-white cursor-pointer transition"
+        aria-label={tx('thinkingAria', 'Thinking, {state}. Tap to {action}.')
+          .replace('{state}', isDone ? tx('reasoningDone', 'finished') : tx('reasoningWorking', 'working…'))
+          .replace(
+            '{action}',
+            expanded ? tx('thinkingCollapse', 'hide the details') : tx('thinkingExpand', 'show the details')
+          )}
+        className="w-full flex items-center justify-between px-4 min-h-[44px] py-2 t-caption text-[var(--app-text-muted)] hover:text-[var(--app-text)] cursor-pointer transition"
       >
         <div className="flex items-center gap-2">
-          <span className={isDone ? 'text-emerald-400' : 'text-indigo-400 animate-spin'}>
+          <span className={isDone ? 'text-[var(--app-success)]' : 'text-[var(--app-accent)] animate-spin'}>
             {isDone ? '✓' : '◐'}
           </span>
-          <span className="font-medium text-slate-200">Reasoning Process</span>
-          <span className="text-[11px] text-slate-400">({isDone ? 'finished' : 'reasoning…'})</span>
+          <span className="font-medium text-[var(--app-text)]">{tx('thinkingLabel', 'Thinking')}</span>
+          <span className="t-caption text-[var(--app-text-muted)]">({isDone ? tx('reasoningDone', 'finished') : tx('reasoningWorking', 'working…')})</span>
         </div>
         {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
       </button>
 
       {expanded && (
         <div
-          className="p-3 font-mono text-xs text-slate-400 border-t border-white/[0.06] whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto bg-black/20"
-          style={{ fontSize: `${fontScale * 12}px` }}
+          className="p-4 font-mono t-caption text-[var(--app-text-muted)] border-t border-[var(--app-border-subtle)] whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto bg-[var(--app-bg)]"
         >
           {thinking}
         </div>

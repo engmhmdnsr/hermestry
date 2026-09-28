@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, Check } from 'lucide-react';
 import {
   AUTO_APPROVE_SCOPES,
   type AutoApprovePolicy,
@@ -40,7 +40,7 @@ const documentLang = (): string => {
     const l = typeof document !== 'undefined' ? document.documentElement.lang : '';
     if (l) return l.toLowerCase().split('-')[0];
   } catch {
-    // ignore , default below
+    // ignore, default below
   }
   return 'en';
 };
@@ -100,23 +100,25 @@ export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChan
       <div
         role="status"
         aria-live="polite"
-        className="p-3 rounded-2xl bg-red-500/10 border border-red-500/30 space-y-2"
+        className="p-3 r-md elev-0 edge bg-[var(--app-card)] space-y-3"
       >
         <div className="flex items-center gap-2">
-          <AlertTriangle className="w-4 h-4 text-red-300 shrink-0" />
-          <p className="text-xs font-semibold text-red-200">
+          {/* ON reads through the shared badge vocabulary: success for the
+              enabled state, neutral for the scopes it covers. */}
+          <span className="pill-success t-caption font-semibold inline-flex items-center gap-1">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
             {tr('gateOnFor')}{' '}
             {policy.scopes.length > 0
               ? policy.scopes.map((s) => tr(SCOPE_LABEL_KEYS[s])).join(', ')
               : tr('gateOnNone')}
-          </p>
+          </span>
         </div>
-        <p className="text-[11px] text-slate-400">
+        <p className="t-caption text-[var(--app-text-muted)]">
           {tr('gateAdvice')}
         </p>
         <button
           onClick={handleDisable}
-          className="w-full min-h-[44px] py-2 rounded-xl bg-white/[0.05] text-slate-200 text-xs font-semibold border border-white/[0.08] cursor-pointer"
+          className="w-full min-h-[44px] py-2 r-md bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] edge text-[var(--app-text-muted)] t-caption font-semibold cursor-pointer"
         >
           {tr('gateDisable')}
         </button>
@@ -125,11 +127,11 @@ export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChan
   }
 
   return (
-    <div className="p-3 rounded-2xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] space-y-2">
+    <div className="p-3 r-md elev-0 edge bg-[var(--app-card-subtle)] space-y-3">
       <div className="flex items-center justify-between gap-2">
         <div>
-          <p className="text-xs font-medium text-white">{tr('gateTitle')}</p>
-          <p className="text-[11px] text-slate-400">
+          <p className="t-body font-medium text-[var(--app-text)]">{tr('gateTitle')}</p>
+          <p className="t-caption text-[var(--app-text-muted)]">
             {tr('gateOffDesc')}
           </p>
         </div>
@@ -137,7 +139,7 @@ export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChan
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
           aria-controls="auto-approve-options"
-          className="px-3 min-h-[44px] rounded-lg text-xs font-medium bg-white/[0.04] text-slate-300 border border-white/[0.08] cursor-pointer shrink-0"
+          className="px-3 min-h-[44px] r-sm t-caption font-medium bg-[var(--app-card)] hover:bg-[var(--app-card-hover)] edge text-[var(--app-text-muted)] cursor-pointer shrink-0"
         >
           {expanded ? tr('cancel') : tr('enable')}
         </button>
@@ -145,45 +147,61 @@ export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChan
 
       {expanded && (
         <div id="auto-approve-options" className="space-y-2 pt-1">
-          <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-start gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
-            <p className="text-[11px] text-amber-200 leading-relaxed">
+          <div className="p-2 r-sm flex items-start gap-2 border border-[var(--app-warning-border)] bg-[var(--app-warning-subtle)]">
+            <AlertTriangle className="w-4 h-4 text-[var(--app-warning)] shrink-0 mt-1" />
+            <p className="t-caption text-[var(--app-warning)] leading-relaxed">
               {tr('gateWarning')}
             </p>
           </div>
 
-          <div className="space-y-1.5">
-            {AUTO_APPROVE_SCOPES.map((scope) => (
-              <label
-                key={scope}
-                className="flex items-start gap-2 p-2 rounded-xl bg-black/20 border border-white/[0.06] cursor-pointer"
-              >
-                <input
-                  type="checkbox"
-                  checked={draftScopes.includes(scope)}
-                  onChange={() => toggleScope(scope)}
-                  className="mt-0.5 accent-emerald-500"
-                />
-                <span>
-                  <span className="block text-xs font-medium text-slate-200">{tr(SCOPE_LABEL_KEYS[scope])}</span>
-                  <span className="block text-[11px] text-slate-400">{tr(SCOPE_DESC_KEYS[scope])}</span>
-                </span>
-              </label>
-            ))}
+          <div className="space-y-1">
+            {AUTO_APPROVE_SCOPES.map((scope) => {
+              const selected = draftScopes.includes(scope);
+              return (
+                <label
+                  key={scope}
+                  // Selected state is structural: an accent surface tint plus a
+                  // check, never a straight colour swap.
+                  className={`flex items-start gap-2 p-2 r-sm edge cursor-pointer ${
+                    selected
+                      ? 'bg-[var(--app-accent-subtle)] border-[var(--app-accent)]'
+                      : 'bg-[var(--app-card)]'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selected}
+                    onChange={() => toggleScope(scope)}
+                    className="mt-1 accent-[var(--app-accent)]"
+                  />
+                  <span className="flex-1 min-w-0">
+                    <span className="pill-neutral t-micro font-medium inline-block">
+                      {tr(SCOPE_LABEL_KEYS[scope])}
+                    </span>
+                    <span className="block t-caption text-[var(--app-text-muted)] mt-1">
+                      {tr(SCOPE_DESC_KEYS[scope])}
+                    </span>
+                  </span>
+                  {selected && (
+                    <Check className="w-4 h-4 text-[var(--app-accent-text)] shrink-0 mt-1" />
+                  )}
+                </label>
+              );
+            })}
           </div>
 
-          <label className="flex items-start gap-2 text-[11px] text-slate-300 cursor-pointer">
+          <label className="flex items-start gap-2 t-caption text-[var(--app-text-muted)] cursor-pointer">
             <input
               type="checkbox"
               checked={ackRisk}
               onChange={(e) => setAckRisk(e.target.checked)}
-              className="mt-0.5 accent-amber-500"
+              className="mt-1 accent-[var(--app-warning)]"
             />
             {tr('gateAck')}
           </label>
 
           <div>
-            <p className="text-[11px] text-slate-400 mb-1">
+            <p className="t-caption text-[var(--app-text-muted)] mb-1">
               {withPhrase('gateTypeToConfirm')}
             </p>
             <input
@@ -192,19 +210,19 @@ export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChan
               placeholder={CONFIRM_PHRASE}
               autoComplete="off"
               aria-label={tr('gateConfirmAria')}
-              className="w-full px-3 py-2 rounded-xl bg-black/30 border border-white/[0.08] text-xs text-white placeholder:text-slate-500 outline-none"
+              className="w-full px-3 py-2 r-sm edge bg-[var(--app-input-bg)] t-caption text-[var(--app-text)] placeholder:text-[var(--app-text-dim)] outline-none"
             />
           </div>
 
-          {error && <p className="text-[11px] text-red-300">{error}</p>}
+          {error && <p className="t-caption text-[var(--app-danger)]">{error}</p>}
 
           <button
             onClick={handleEnable}
             disabled={!canEnable}
-            className={`w-full min-h-[44px] py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
+            className={`w-full min-h-[44px] py-2 r-md t-caption font-semibold transition cursor-pointer ${
               canEnable
-                ? 'bg-red-600 hover:bg-red-500 text-white'
-                : 'bg-white/[0.04] text-slate-500 cursor-not-allowed'
+                ? 'bg-[var(--app-danger)] hover:brightness-110 text-[var(--app-bg)]'
+                : 'bg-[var(--app-card-subtle)] text-[var(--app-text-dim)] cursor-not-allowed'
             }`}
           >
             {tr('gateEnableFor')}

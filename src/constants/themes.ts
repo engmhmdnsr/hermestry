@@ -9,43 +9,112 @@ export interface ThemePalette {
     bar2: string;
     pill: string;
   };
-  dark: {
-    bg: string;
-    sidebar: string;
-    card: string;
-    cardSubtle: string;
-    cardHover: string;
-    border: string;
-    borderSubtle: string;
-    accent: string;
-    accentHover: string;
-    accentSubtle: string;
-    accentText: string;
-    text: string;
-    textMuted: string;
-    textDim: string;
-    inputBg: string;
-  };
-  light: {
-    bg: string;
-    sidebar: string;
-    card: string;
-    cardSubtle: string;
-    cardHover: string;
-    border: string;
-    borderSubtle: string;
-    accent: string;
-    accentHover: string;
-    accentSubtle: string;
-    accentText: string;
-    text: string;
-    textMuted: string;
-    textDim: string;
-    inputBg: string;
-  };
+  dark: PaletteColors;
+  light: PaletteColors;
+}
+
+/**
+ * The complete token set. Every field is required and must be defined for BOTH
+ * modes, so a palette can never be dark-only (that was the root cause of the
+ * unusable light theme). Field -> CSS variable mapping lives in
+ * applyThemeToDom; the same variable names are the dark pre-paint defaults in
+ * src/index.css with a light mirror under [data-mode="light"].
+ */
+export interface PaletteColors {
+  bg: string;
+  sidebar: string;
+  card: string;
+  cardSubtle: string;
+  cardHover: string;
+  border: string;
+  borderSubtle: string;
+  accent: string;
+  accentHover: string;
+  accentSubtle: string;
+  /** Border color for accent surfaces (pills, selected chips, focus fills). */
+  accentBorder: string;
+  accentText: string;
+  text: string;
+  textMuted: string;
+  textDim: string;
+  inputBg: string;
+  /**
+   * Text or icon color that sits ON an accent fill (solid primary buttons,
+   * selected chips, the user message bubble). #FFFFFF wherever white clears
+   * 4.5:1 on that palette's accent, otherwise a dark ink, because several
+   * accents (Catppuccin lavender, Everforest green, Nous Alt amber, Ember
+   * orange, Mono white, Solarized teal) are far too light to carry white text.
+   */
+  onAccent: string;
+  /** Solid danger surface (destructive buttons, error toast). */
+  dangerSolid: string;
+  /** Text or icon on --app-danger-solid. */
+  onDanger: string;
+  /** Solid success surface (success toast). */
+  successSolid: string;
+  /** Text or icon on --app-success-solid. */
+  onSuccess: string;
+  /** Solid info surface. */
+  infoSolid: string;
+  /** Text or icon on --app-info-solid. */
+  onInfo: string;
+  /** Solid warning surface. */
+  warningSolid: string;
+  /** Text or icon on --app-warning-solid. */
+  onWarning: string;
+  /** Modal backdrop wash: darker neutral on dark surfaces, stronger slightly
+      blue-black on light pages. */
+  scrim: string;
 }
 
 export type ThemeMode = 'light' | 'dark' | 'system';
+
+/**
+ * Solid status surfaces plus the text/icon that sits on them. Shared by both
+ * modes and by every palette for the same reason STATUS_TOKENS is shared: a
+ * destructive action must read destructive and a success toast must read
+ * success no matter which palette or mode is active. Defined once here and
+ * spread into every palette and mode, so the PaletteColors type still forces
+ * each palette to define them. WCAG contrast of the on-* text on its own
+ * fill: #FFFFFF on #E11D48 = 4.70, on #047857 = 5.48, on #0369A1 = 5.93, on
+ * #B45309 = 5.02, all clear 4.5:1 in both modes, which is why the light and
+ * dark halves are intentionally identical.
+ */
+const SOLID_STATUS_SURFACE = {
+  dangerSolid: '#E11D48',
+  onDanger: '#FFFFFF',
+  successSolid: '#047857',
+  onSuccess: '#FFFFFF',
+  infoSolid: '#0369A1',
+  onInfo: '#FFFFFF',
+  warningSolid: '#B45309',
+  onWarning: '#FFFFFF',
+} as const;
+
+/**
+ * Modal backdrop wash. rgba(4, 6, 12, 0.62) is a quiet neutral dim over dark
+ * surfaces; light pages take a stronger, slightly blue-black
+ * rgba(10, 14, 30, 0.72) so the cream and white palettes never sit behind a
+ * washed out black scrim. Verified as a visible separation from every palette
+ * background: the subtle dark dim separates from dark surfaces by 1.01:1
+ * (Mono #080808, the darkest) up to 1.23:1 (Nous Alt), and the stronger light
+ * wash separates from light pages by 7.34:1 (Catppuccin #EFF1F5, the lightest
+ * wash result) up to 7.87:1 (GitHub and Mono #FFFFFF), so a cream or white
+ * page always shows a real backdrop instead of a broken black rectangle.
+ */
+const SCRIM_DARK = 'rgba(4, 6, 12, 0.62)';
+const SCRIM_LIGHT = 'rgba(10, 14, 30, 0.72)';
+
+/**
+ * Dark ink for accents too light to carry white text. #0B0F17 clears 4.5:1 on
+ * every accent that uses it (dark: Catppuccin #CBA6F7 9.44, Everforest
+ * #A7C080 9.58, Solarized #2AA198 6.07, Nous Alt #F59E0B 8.93, Ember #F97316
+ * 6.84, Mono #E5E5E5 15.23; light: Everforest #8DA101 6.60, Solarized
+ * #268BD2 5.21, Nous Alt #D97706 6.02, Ember #EA580C 5.39). Midnight keeps
+ * white: white on its #6366F1 accent is 4.47 and the ink there is worse at
+ * 4.29, so white stays (unchanged from the old hardcoded text-white look).
+ */
+const ON_ACCENT_INK = '#0B0F17';
 
 export const THEME_PALETTES: ThemePalette[] = [
   {
@@ -70,11 +139,15 @@ export const THEME_PALETTES: ThemePalette[] = [
       accent: '#6366F1',
       accentHover: '#4F46E5',
       accentSubtle: 'rgba(99, 102, 241, 0.16)',
+      accentBorder: 'rgba(99, 102, 241, 0.45)',
       accentText: '#A5B4FC',
+      onAccent: '#FFFFFF',
+      ...SOLID_STATUS_SURFACE,
+      scrim: SCRIM_DARK,
       text: '#F8FAFC',
       textMuted: '#94A3B8',
       textDim: '#8296B1',
-            inputBg: '#101426',
+      inputBg: '#101426',
     },
     light: {
       bg: '#F1F5F9',
@@ -87,15 +160,19 @@ export const THEME_PALETTES: ThemePalette[] = [
       accent: '#4F46E5',
       accentHover: '#4338CA',
       accentSubtle: 'rgba(79, 70, 229, 0.12)',
+      accentBorder: '#C7D2FE',
       accentText: '#4338CA',
+      onAccent: '#FFFFFF',
+      ...SOLID_STATUS_SURFACE,
+      scrim: SCRIM_LIGHT,
       text: '#0F172A',
       textMuted: '#475569',
-            textDim: '#64748B',
-            inputBg: '#FFFFFF',
-          },
-        },
-        {
-          id: 'nous',
+      textDim: '#64748B',
+      inputBg: '#FFFFFF',
+    },
+  },
+  {
+    id: 'nous',
     name: 'Nous',
     description: 'Engineering dark slate, electric blue accents',
     preview: {
@@ -116,11 +193,15 @@ export const THEME_PALETTES: ThemePalette[] = [
       accent: '#2563EB',
       accentHover: '#1D4ED8',
       accentSubtle: 'rgba(37, 99, 235, 0.15)',
+      accentBorder: 'rgba(37, 99, 235, 0.45)',
       accentText: '#93C5FD',
+      onAccent: '#FFFFFF',
+      ...SOLID_STATUS_SURFACE,
+      scrim: SCRIM_DARK,
       text: '#F9FAFB',
       textMuted: '#9CA3AF',
       textDim: '#8B94A7',
-            inputBg: '#141D2E',
+      inputBg: '#141D2E',
     },
     light: {
       bg: '#F8FAFC',
@@ -133,10 +214,14 @@ export const THEME_PALETTES: ThemePalette[] = [
       accent: '#2563EB',
       accentHover: '#1D4ED8',
       accentSubtle: 'rgba(37, 99, 235, 0.1)',
+      accentBorder: '#BFDBFE',
       accentText: '#1D4ED8',
-            text: '#0F172A',
-            textMuted: '#475569',
-            textDim: '#64748B',
+      onAccent: '#FFFFFF',
+      ...SOLID_STATUS_SURFACE,
+      scrim: SCRIM_LIGHT,
+      text: '#0F172A',
+      textMuted: '#475569',
+      textDim: '#64748B',
       inputBg: '#FFFFFF',
     },
   },
@@ -162,7 +247,11 @@ export const THEME_PALETTES: ThemePalette[] = [
       accent: '#238636',
       accentHover: '#2EA043',
       accentSubtle: 'rgba(35, 134, 54, 0.18)',
+      accentBorder: 'rgba(35, 134, 54, 0.5)',
       accentText: '#7EE787',
+      onAccent: '#FFFFFF',
+      ...SOLID_STATUS_SURFACE,
+      scrim: SCRIM_DARK,
       text: '#F0F6FC',
       textMuted: '#8B949E',
       textDim: '#939BA5',
@@ -179,7 +268,11 @@ export const THEME_PALETTES: ThemePalette[] = [
       accent: '#1F883D',
       accentHover: '#1A7F37',
       accentSubtle: 'rgba(31, 136, 61, 0.12)',
+      accentBorder: '#B7E4C7',
       accentText: '#1F883D',
+      onAccent: '#FFFFFF',
+      ...SOLID_STATUS_SURFACE,
+      scrim: SCRIM_LIGHT,
       text: '#1F2328',
       textMuted: '#656D76',
       textDim: '#656D76',
@@ -208,7 +301,11 @@ export const THEME_PALETTES: ThemePalette[] = [
       accent: '#CBA6F7',
       accentHover: '#B4BEFE',
       accentSubtle: 'rgba(203, 166, 247, 0.18)',
+      accentBorder: 'rgba(203, 166, 247, 0.45)',
       accentText: '#CBA6F7',
+      onAccent: ON_ACCENT_INK,
+      ...SOLID_STATUS_SURFACE,
+      scrim: SCRIM_DARK,
       text: '#CDD6F4',
       textMuted: '#A6ADC8',
       textDim: '#8B91A9',
@@ -225,7 +322,11 @@ export const THEME_PALETTES: ThemePalette[] = [
       accent: '#8839EF',
       accentHover: '#7287FD',
       accentSubtle: 'rgba(136, 57, 239, 0.12)',
+      accentBorder: '#DDD0F7',
       accentText: '#8839EF',
+      onAccent: '#FFFFFF',
+      ...SOLID_STATUS_SURFACE,
+      scrim: SCRIM_LIGHT,
       text: '#4C4F69',
       textMuted: '#6C6F85',
       textDim: '#6C6F85',
@@ -254,7 +355,11 @@ export const THEME_PALETTES: ThemePalette[] = [
       accent: '#A7C080',
       accentHover: '#83C092',
       accentSubtle: 'rgba(167, 192, 128, 0.16)',
+      accentBorder: 'rgba(167, 192, 128, 0.45)',
       accentText: '#D3C6AA',
+      onAccent: ON_ACCENT_INK,
+      ...SOLID_STATUS_SURFACE,
+      scrim: SCRIM_DARK,
       text: '#D3C6AA',
       textMuted: '#9DA9A0',
       textDim: '#8B978D',
@@ -271,7 +376,11 @@ export const THEME_PALETTES: ThemePalette[] = [
       accent: '#8DA101',
       accentHover: '#3A944C',
       accentSubtle: 'rgba(141, 161, 1, 0.14)',
+      accentBorder: '#C9D6A8',
       accentText: '#4A5528',
+      onAccent: ON_ACCENT_INK,
+      ...SOLID_STATUS_SURFACE,
+      scrim: SCRIM_LIGHT,
       text: '#3C4841',
       textMuted: '#5C6A72',
       textDim: '#5C6A72',
@@ -300,11 +409,15 @@ export const THEME_PALETTES: ThemePalette[] = [
       accent: '#2AA198',
       accentHover: '#268BD2',
       accentSubtle: 'rgba(42, 161, 152, 0.18)',
+      accentBorder: 'rgba(42, 161, 152, 0.5)',
       accentText: '#93A1A1',
+      onAccent: ON_ACCENT_INK,
+      ...SOLID_STATUS_SURFACE,
+      scrim: SCRIM_DARK,
       text: '#93A1A1',
       textMuted: '#839496',
       textDim: '#759AA0',
-            inputBg: '#002630',
+      inputBg: '#002630',
     },
     light: {
       bg: '#FDF6E3',
@@ -317,7 +430,11 @@ export const THEME_PALETTES: ThemePalette[] = [
       accent: '#268BD2',
       accentHover: '#2AA198',
       accentSubtle: 'rgba(38, 139, 210, 0.14)',
+      accentBorder: '#9FD5CE',
       accentText: '#073642',
+      onAccent: ON_ACCENT_INK,
+      ...SOLID_STATUS_SURFACE,
+      scrim: SCRIM_LIGHT,
       text: '#073642',
       textMuted: '#586E75',
       textDim: '#586E75',
@@ -346,7 +463,11 @@ export const THEME_PALETTES: ThemePalette[] = [
       accent: '#F59E0B',
       accentHover: '#D97706',
       accentSubtle: 'rgba(245, 158, 11, 0.18)',
+      accentBorder: 'rgba(245, 158, 11, 0.5)',
       accentText: '#FDE68A',
+      onAccent: ON_ACCENT_INK,
+      ...SOLID_STATUS_SURFACE,
+      scrim: SCRIM_DARK,
       text: '#F0F9FF',
       textMuted: '#BAE6FD',
       textDim: '#7DD3FC',
@@ -363,7 +484,11 @@ export const THEME_PALETTES: ThemePalette[] = [
       accent: '#D97706',
       accentHover: '#B45309',
       accentSubtle: 'rgba(217, 119, 6, 0.12)',
+      accentBorder: '#FCD9A0',
       accentText: '#92400E',
+      onAccent: ON_ACCENT_INK,
+      ...SOLID_STATUS_SURFACE,
+      scrim: SCRIM_LIGHT,
       text: '#082F49',
       textMuted: '#0369A1',
       textDim: '#1970A2',
@@ -392,7 +517,11 @@ export const THEME_PALETTES: ThemePalette[] = [
       accent: '#F97316',
       accentHover: '#EA580C',
       accentSubtle: 'rgba(249, 115, 22, 0.18)',
+      accentBorder: 'rgba(249, 115, 22, 0.5)',
       accentText: '#FDBA74',
+      onAccent: ON_ACCENT_INK,
+      ...SOLID_STATUS_SURFACE,
+      scrim: SCRIM_DARK,
       text: '#FFF7ED',
       textMuted: '#FDBA74',
       textDim: '#EA580C',
@@ -409,7 +538,11 @@ export const THEME_PALETTES: ThemePalette[] = [
       accent: '#EA580C',
       accentHover: '#C2410C',
       accentSubtle: 'rgba(234, 88, 12, 0.12)',
+      accentBorder: '#FDD0A2',
       accentText: '#9A3412',
+      onAccent: ON_ACCENT_INK,
+      ...SOLID_STATUS_SURFACE,
+      scrim: SCRIM_LIGHT,
       text: '#431407',
       textMuted: '#9A3412',
       textDim: '#C2410C',
@@ -438,11 +571,15 @@ export const THEME_PALETTES: ThemePalette[] = [
       accent: '#E5E5E5',
       accentHover: '#FFFFFF',
       accentSubtle: 'rgba(255, 255, 255, 0.12)',
+      accentBorder: 'rgba(255, 255, 255, 0.28)',
       accentText: '#FFFFFF',
+      onAccent: ON_ACCENT_INK,
+      ...SOLID_STATUS_SURFACE,
+      scrim: SCRIM_DARK,
       text: '#FAFAFA',
       textMuted: '#A3A3A3',
       textDim: '#8F8F8F',
-            inputBg: '#101010',
+      inputBg: '#101010',
     },
     light: {
       bg: '#FFFFFF',
@@ -455,7 +592,11 @@ export const THEME_PALETTES: ThemePalette[] = [
       accent: '#171717',
       accentHover: '#000000',
       accentSubtle: 'rgba(0, 0, 0, 0.08)',
+      accentBorder: '#C4C4C4',
       accentText: '#000000',
+      onAccent: '#FFFFFF',
+      ...SOLID_STATUS_SURFACE,
+      scrim: SCRIM_LIGHT,
       text: '#171717',
       textMuted: '#525252',
       textDim: '#737373',
@@ -467,9 +608,9 @@ export const THEME_PALETTES: ThemePalette[] = [
 export interface StatusRole {
   /** Light-safe text/icon color for this status (>=4.5:1 on card in both modes). */
   fg: string;
-  /** Tint background for alert banners (replaces bg-*-500/10 washes in light mode). */
+  /** Tint background for alert banners and .pill-* badges. */
   subtleBg: string;
-  /** Tint border for alert banners. */
+  /** Tint border for alert banners and .pill-* badges. */
   border: string;
 }
 
@@ -481,12 +622,14 @@ export interface StatusTokens {
 }
 
 /**
- * Shared, palette-independent status tokens. Status hues intentionally do NOT
- * vary per theme: success/warning/danger/info must stay recognizable across
- * palettes, and only the fg ramp switches per mode so light-mode text keeps
- * >=4.5:1 contrast on light cards. Components should prefer these vars over
- * raw emerald/rose/amber/sky classes; index.css remaps the legacy status-text
- * classes onto these tokens (and unifies the rose/red split onto danger).
+ * Shared, palette-independent status tokens, defined for BOTH modes (the light
+ * half is what makes light mode readable: dark translucent washes are
+ * near-invisible on white, so light uses opaque tints with dark fg text).
+ * Status hues intentionally do NOT vary per theme: success/warning/danger/info
+ * must stay recognizable across palettes, and only the fg ramp switches per
+ * mode so light-mode text keeps >=4.5:1 contrast on light cards. Components
+ * must consume these through the .pill-* utilities or the --app-*-subtle /
+ * --app-* / --app-*-border variables, never raw emerald/rose/amber/sky classes.
  */
 export const STATUS_TOKENS: Record<'dark' | 'light', StatusTokens> = {
   dark: {
@@ -505,7 +648,7 @@ export const STATUS_TOKENS: Record<'dark' | 'light', StatusTokens> = {
 
 export const applyThemeToDom = (paletteId: string, mode: ThemeMode) => {
   const palette = THEME_PALETTES.find((p) => p.id === paletteId) || THEME_PALETTES[0];
-  
+
   let resolvedDark = true;
   if (mode === 'light') {
     resolvedDark = false;
@@ -526,11 +669,22 @@ export const applyThemeToDom = (paletteId: string, mode: ThemeMode) => {
   root.style.setProperty('--app-accent', themeColors.accent);
   root.style.setProperty('--app-accent-hover', themeColors.accentHover);
   root.style.setProperty('--app-accent-subtle', themeColors.accentSubtle);
+  root.style.setProperty('--app-accent-border', themeColors.accentBorder);
   root.style.setProperty('--app-accent-text', themeColors.accentText);
   root.style.setProperty('--app-text', themeColors.text);
   root.style.setProperty('--app-text-muted', themeColors.textMuted);
   root.style.setProperty('--app-text-dim', themeColors.textDim);
   root.style.setProperty('--app-input-bg', themeColors.inputBg);
+  root.style.setProperty('--app-on-accent', themeColors.onAccent);
+  root.style.setProperty('--app-danger-solid', themeColors.dangerSolid);
+  root.style.setProperty('--app-on-danger', themeColors.onDanger);
+  root.style.setProperty('--app-success-solid', themeColors.successSolid);
+  root.style.setProperty('--app-on-success', themeColors.onSuccess);
+  root.style.setProperty('--app-info-solid', themeColors.infoSolid);
+  root.style.setProperty('--app-on-info', themeColors.onInfo);
+  root.style.setProperty('--app-warning-solid', themeColors.warningSolid);
+  root.style.setProperty('--app-on-warning', themeColors.onWarning);
+  root.style.setProperty('--app-scrim', themeColors.scrim);
 
   const status = resolvedDark ? STATUS_TOKENS.dark : STATUS_TOKENS.light;
   root.style.setProperty('--app-success', status.success.fg);

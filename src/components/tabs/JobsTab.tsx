@@ -12,10 +12,12 @@ import {
   Square,
   ChevronDown,
   ChevronUp,
+  MoreVertical,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import { localizedMessage, toAppError } from '../../services/appErrors';
 import { CronJob, CronRun } from '../../types/hermes';
+import { useOverlayBehavior } from '../../hooks/useOverlayBehavior';
 import {
   COMMON_TIMEZONES,
   ServerFieldError,
@@ -42,10 +44,38 @@ const friendlyGatewayError = (detail: string | undefined, lang: string): string 
   return localizedMessage(toAppError(new Error(raw)), lang);
 };
 
+// A timezone id is data, not copy. The chip shows the place ("Riyadh"), the
+// raw id stays in the title and in the technical disclosure.
+const timezoneLabel = (tz: string): string => {
+  const seg = (tz || '').split('/').pop() || '';
+  return seg.replace(/_/g, ' ') || tz;
+};
+
+// One plain sentence per rejection scope. The raw field, code and server
+// message are technical and stay behind the disclosure instead.
+const REJECTION_KEYS: Record<'create' | 'update' | 'action', { key: string; fallback: string }> = {
+  create: {
+    key: 'taskCreateRejected',
+    fallback: 'Hermes did not accept this task, so nothing was created. Try again, or change the timing.',
+  },
+  update: {
+    key: 'taskUpdateRejected',
+    fallback: 'Hermes did not accept the change, so nothing was updated.',
+  },
+  action: {
+    key: 'taskActionRejected',
+    fallback: 'Hermes did not accept that, so the task is unchanged.',
+  },
+};
+
+// The create button renders a real Plus icon, so its label carries no leading
+// "+" glyph. Every label on this screen is a plain translated word.
+
 // Run status mapping. Success is an explicit allowlist: any status that is
 // not on it must never render as a success badge, and unknown values stay
-// neutral instead of borrowing the emerald tone.
-type RunTone = 'success' | 'failure' | 'active' | 'neutral';
+// neutral instead of borrowing the emerald tone. Running and queued are kept
+// as separate tones so an in-flight run never looks like a waiting one.
+type RunTone = 'success' | 'failure' | 'running' | 'queued' | 'inactive';
 
 const RUN_SUCCESS_STATUSES = new Set([
   'success',
@@ -65,14 +95,10 @@ const RUN_FAILURE_STATUSES = new Set([
   'timed-out',
   'timed out',
 ]);
-const RUN_ACTIVE_STATUSES = new Set([
-  'running',
-  'pending',
-  'queued',
-  'starting',
-  'in_progress',
-  'in progress',
-]);
+const RUN_RUNNING_STATUSES = new Set(['running', 'in_progress', 'in progress']);
+const RUN_QUEUED_STATUSES = new Set(['pending', 'queued', 'starting']);
+// Anything still in flight, used to offer Stop for the newest such run.
+const RUN_ACTIVE_STATUSES = new Set([...RUN_RUNNING_STATUSES, ...RUN_QUEUED_STATUSES]);
 
 const RUN_STATUS_KEYS: Record<string, { key: string; fallback: string }> = {
   success: { key: 'runStatusSuccess', fallback: 'Success' },
@@ -101,11 +127,16 @@ const RUN_STATUS_KEYS: Record<string, { key: string; fallback: string }> = {
   starting: { key: 'runStatusPending', fallback: 'Pending' },
 };
 
+// Vocabulary badge classes: one geometry for every status chip. Running is
+// info and queued is warning, so an in-flight run is visually distinct from a
+// waiting one; success and failure keep their semantic tones; any unknown or
+// settled-without-verdict status is neutral (never green).
 const RUN_TONE_CLASS: Record<RunTone, string> = {
-  success: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20',
-  failure: 'bg-rose-500/10 text-rose-300 border-rose-500/20',
-  active: 'bg-amber-500/10 text-amber-300 border-amber-500/20',
-  neutral: 'bg-white/[0.04] text-slate-300 border-white/[0.08]',
+  success: 'pill-success',
+  failure: 'pill-danger',
+  running: 'pill-info',
+  queued: 'pill-warning',
+  inactive: 'pill-neutral',
 };
 
 const runStatusInfo = (
@@ -119,21 +150,16 @@ const runStatusInfo = (
     ? 'success'
     : RUN_FAILURE_STATUSES.has(status)
       ? 'failure'
-      : RUN_ACTIVE_STATUSES.has(status)
-        ? 'active'
-        : 'neutral';
+      : RUN_RUNNING_STATUSES.has(status)
+        ? 'running'
+        : RUN_QUEUED_STATUSES.has(status)
+          ? 'queued'
+          : 'inactive';
   return { label, tone };
 };
 
 const isRunActive = (run: CronRun): boolean =>
   RUN_ACTIVE_STATUSES.has((run.status || '').trim().toLowerCase());
-
-// Most recent in-flight run for a job, so Stop targets the run the history
-// shows as running rather than an arbitrary row.
-const latestActiveRun = (runs: CronRun[]): CronRun | undefined =>
-  [...runs]
-    .sort((a, b) => parseRunDate(b.startedAt) - parseRunDate(a.startedAt))
-    .find(isRunActive);
 
 const parseRunDate = (s: string): number => {
   if (!s) return NaN;
@@ -141,6 +167,11 @@ const parseRunDate = (s: string): number => {
   if (!Number.isNaN(t)) return t;
   return new Date(s.replace(' ', 'T')).getTime();
 };
+
+// Most recent in-flight run for a job, so Stop targets the run the history
+// shows as running rather than an arbitrary row.
+const latestActiveRun = (runs: CronRun[]): CronRun | undefined =>
+  [...runs].sort((a, b) => parseRunDate(b.startedAt) - parseRunDate(a.startedAt)).find(isRunActive);
 
 const formatDuration = (startedAt: string, finishedAt: string): string => {
   const a = parseRunDate(startedAt);
@@ -152,21 +183,6 @@ const formatDuration = (startedAt: string, finishedAt: string): string => {
   if (mins < 60) return `${mins}m ${secs % 60}s`;
   const hrs = Math.floor(mins / 60);
   return `${hrs}h ${mins % 60}m`;
-};
-
-const renderFieldErrors = (errors: ServerFieldError[]) => {
-  if (errors.length === 0) return null;
-  return (
-    <div className="space-y-1.5" role="alert">
-      {errors.map((e, i) => (
-        <p key={`${e.field}-${e.code}-${i}`} className="text-xs text-rose-400">
-          <span className="font-semibold">{e.field}</span>
-          <span className="text-rose-400/70"> [{e.code}] </span>
-          {e.message}
-        </p>
-      ))}
-    </div>
-  );
 };
 
 export const JobsTab: React.FC = () => {
@@ -196,6 +212,9 @@ export const JobsTab: React.FC = () => {
   // carries no timezone field, so schedules run on gateway time and all
   // times on this screen are rendered in this zone.
   const [displayTz, setDisplayTz] = useState(deviceTz);
+  // The display-only timezone explanation is long; keep it behind a
+  // disclosure so the create card never reads as a wall of grey text.
+  const [showTzNote, setShowTzNote] = useState(false);
   const [createError, setCreateError] = useState('');
   const [createFieldErrors, setCreateFieldErrors] = useState<ServerFieldError[]>([]);
   const [createMissing, setCreateMissing] = useState<string[]>([]);
@@ -229,6 +248,10 @@ export const JobsTab: React.FC = () => {
   const [runsLoading, setRunsLoading] = useState<Record<string, boolean>>({});
   const [pendingDeleteJob, setPendingDeleteJob] = useState<CronJob | null>(null);
   const [expandedPrompts, setExpandedPrompts] = useState<Record<string, boolean>>({});
+  // Per-row action overflow. On a 360dp phone the old inline row of five
+  // labelled actions clipped; the two common actions stay inline and the rest
+  // live in a bottom sheet.
+  const [menuJobId, setMenuJobId] = useState<string | null>(null);
   const toastTimeouts = useRef<ReturnType<typeof setTimeout>[]>([]);
   const toastId = useRef(0);
 
@@ -239,6 +262,11 @@ export const JobsTab: React.FC = () => {
   const [hiddenIds, setHiddenIds] = useState<Record<string, true>>({});
   const [actionError, setActionError] = useState('');
 
+  // The overflow sheet is an overlay: Escape and the Android back button
+  // close it through the shared overlay stack, the same contract as every
+  // other sheet in the app.
+  const menuRef = useOverlayBehavior(Boolean(menuJobId), () => setMenuJobId(null));
+
   useEffect(() => {
     const timeouts = toastTimeouts.current;
     return () => {
@@ -247,10 +275,10 @@ export const JobsTab: React.FC = () => {
   }, []);
 
   const presets = [
-    { label: 'Run Once', val: 'once' },
-    { label: 'Daily at 9am', val: 'every day 9am' },
-    { label: 'Weekdays at 9am', val: 'every weekday 9am' },
-    { label: 'Every 1 Hour', val: 'every 1h' },
+    { label: tx('presetOnce', 'Run once'), val: 'once' },
+    { label: tx('presetDaily9', 'Daily at 9am'), val: 'every day 9am' },
+    { label: tx('presetWeekdays9', 'Weekdays at 9am'), val: 'every weekday 9am' },
+    { label: tx('presetHourly', 'Every hour'), val: 'every 1h' },
   ];
 
   const presetVals = presets.map((p) => p.val);
@@ -260,6 +288,27 @@ export const JobsTab: React.FC = () => {
   const editHint = editingJob ? cronHint(editSchedule, presetVals) : null;
   const createSummary = scheduleSummary(schedule);
   const editSummary = editingJob ? scheduleSummary(editSchedule) : null;
+
+  // The client hint is one plain sentence, never a lecture about a format.
+  const scheduleHintText = tx(
+    'scheduleFormatHint',
+    'That timing is not one of the presets. Tap a preset above, or write a pattern like 0 9 * * * for 9am daily.'
+  );
+
+  // scheduleSummary falls back to developer wording for an unknown pattern
+  // ("Cron expression. The gateway decides..."). Never show that on screen.
+  const plainSummary = (summary: string | null): string | null => {
+    if (!summary) return null;
+    return /cron|gateway/i.test(summary)
+      ? tx('customTiming', 'Custom timing. Hermes runs it on the pattern you gave.')
+      : summary;
+  };
+
+  // Times are shown in the picked zone, so swap the raw id for its place name.
+  const friendlyTime = (value: string): string =>
+    displayTz && value.includes(displayTz)
+      ? value.split(displayTz).join(timezoneLabel(displayTz))
+      : value;
 
   const timezoneOptions = useMemo(() => {
     if (COMMON_TIMEZONES.includes(deviceTz)) return COMMON_TIMEZONES;
@@ -336,7 +385,7 @@ export const JobsTab: React.FC = () => {
     const missing = missingFields({ name, schedule, prompt });
     setCreateMissing(missing);
     if (missing.length > 0) {
-      setCreateError('Please fill in the missing fields below.');
+      setCreateError(tx('taskFormIncomplete', 'Fill in the missing fields below.'));
       setCreateFieldErrors([]);
       return;
     }
@@ -355,11 +404,13 @@ export const JobsTab: React.FC = () => {
       setPrompt('');
       setCreateMissing([]);
       await handleRetryJobs();
-      showToast(`Job created. Times shown in ${displayTz}.`);
+      showToast(
+        `${tx('taskCreated', 'Task scheduled.')} ${tx('timesShownIn', 'Times shown in')} ${timezoneLabel(displayTz)}.`
+      );
     } else {
       const errs = rejectionErrors('create');
       setCreateFieldErrors(errs);
-      setCreateError(errs[0].message);
+      setCreateError(tx(REJECTION_KEYS.create.key, REJECTION_KEYS.create.fallback));
     }
   };
 
@@ -379,11 +430,13 @@ export const JobsTab: React.FC = () => {
     const missing = missingFields({ name: editName, schedule: editSchedule, prompt: editPrompt });
     setEditMissing(missing);
     if (missing.length > 0) {
-      setEditError('Please fill in the missing fields below.');
+      setEditError(tx('taskFormIncomplete', 'Fill in the missing fields below.'));
       return;
     }
     if (typeof updateJob !== 'function') {
-      setEditError('Editing is not supported by this gateway version.');
+      setEditError(
+        tx('editingUnsupported', 'This version cannot edit a task. Delete it and create a new one.')
+      );
       return;
     }
     setEditError('');
@@ -398,11 +451,13 @@ export const JobsTab: React.FC = () => {
     if (ok) {
       setEditingJob(null);
       setEditMissing([]);
-      showToast(`Job updated. Times shown in ${displayTz}.`);
+      showToast(
+        `${tx('taskUpdated', 'Task updated.')} ${tx('timesShownIn', 'Times shown in')} ${timezoneLabel(displayTz)}.`
+      );
     } else {
       const errs = rejectionErrors('update');
       setEditFieldErrors(errs);
-      setEditError(errs[0].message);
+      setEditError(tx(REJECTION_KEYS.update.key, REJECTION_KEYS.update.fallback));
     }
   };
 
@@ -424,21 +479,20 @@ export const JobsTab: React.FC = () => {
         delete next[j.id];
         return next;
       });
-      showToast(action === 'pause' ? 'Job paused' : 'Job resumed');
+      showToast(action === 'pause' ? tx('taskPaused', 'Task paused.') : tx('taskResumed', 'Task resumed.'));
     } else {
       setOptimisticEnabled((p) => {
         const next = { ...p };
         delete next[j.id];
         return next;
       });
-      const errs = rejectionErrors('action');
-      setActionError(errs[0].message);
+      setActionError(tx(REJECTION_KEYS.action.key, REJECTION_KEYS.action.fallback));
       const verb =
         action === 'pause'
           ? tx('jobPauseFailed', 'Could not pause')
           : tx('jobResumeFailed', 'Could not resume');
       showToast(
-        `${verb} "${j.name}". ${tx('jobUnchanged', 'The gateway did not accept it, so the job was left unchanged.')} ${tx('retryOrCheckGateway', 'Try again, or check the gateway status.')}`,
+        `${verb} "${j.name}". ${tx('nothingChanged', 'Nothing changed, so the task was left as it was.')} ${tx('tryAgainShort', 'Try again.')}`,
         'error'
       );
     }
@@ -458,12 +512,13 @@ export const JobsTab: React.FC = () => {
       // becomes visible instead of leaving the user with a bare toast.
       setHistoryForId(j.id);
       await handleRetryRuns(j.id);
-      showToast(`Run triggered for "${j.name}". History opened below.`);
-    } else {
-      const errs = rejectionErrors('action');
-      setActionError(errs[0].message);
       showToast(
-        `${tx('jobRunFailed', 'Could not start')} "${j.name}". ${tx('jobUnchanged', 'The gateway did not accept it, so the job was left unchanged.')} ${tx('retryOrCheckGateway', 'Try again, or check the gateway status.')}`,
+        `${tx('runStarted', 'Run started for')} "${j.name}". ${tx('historyOpenBelow', 'Run history is open below.')}`
+      );
+    } else {
+      setActionError(tx(REJECTION_KEYS.action.key, REJECTION_KEYS.action.fallback));
+      showToast(
+        `${tx('jobRunFailed', 'Could not start')} "${j.name}". ${tx('nothingChanged', 'Nothing changed, so the task was left as it was.')} ${tx('tryAgainShort', 'Try again.')}`,
         'error'
       );
     }
@@ -488,10 +543,9 @@ export const JobsTab: React.FC = () => {
       setHistoryForId(j.id);
       await handleRetryRuns(j.id);
     } else {
-      const errs = rejectionErrors('action');
-      setActionError(errs[0].message);
+      setActionError(tx(REJECTION_KEYS.action.key, REJECTION_KEYS.action.fallback));
       showToast(
-        `${tx('jobStopFailed', 'Could not stop')} "${j.name}". ${errs[0].message} ${tx('retryOrCheckGateway', 'Try again, or check the gateway status.')}`,
+        `${tx('jobStopFailed', 'Could not stop')} "${j.name}". ${tx('nothingChanged', 'Nothing changed, so the task was left as it was.')} ${tx('tryAgainShort', 'Try again.')}`,
         'error'
       );
     }
@@ -511,17 +565,16 @@ export const JobsTab: React.FC = () => {
       return next;
     });
     if (ok) {
-      showToast('Job deleted');
+      showToast(tx('taskDeleted', 'Task deleted.'));
     } else {
       setHiddenIds((p) => {
         const next = { ...p };
         delete next[j.id];
         return next;
       });
-      const errs = rejectionErrors('action');
-      setActionError(errs[0].message);
+      setActionError(tx(REJECTION_KEYS.action.key, REJECTION_KEYS.action.fallback));
       showToast(
-        `${tx('jobDeleteFailed', 'Could not delete')} "${j.name}". ${tx('jobRestored', 'The job was restored.')} ${tx('retryOrCheckGateway', 'Try again, or check the gateway status.')}`,
+        `${tx('jobDeleteFailed', 'Could not delete')} "${j.name}". ${tx('taskStillHere', 'The task is still here.')} ${tx('tryAgainShort', 'Try again.')}`,
         'error'
       );
     }
@@ -586,9 +639,44 @@ export const JobsTab: React.FC = () => {
     );
   }, [displayJobs, query]);
 
+  // The job whose overflow sheet is open, plus its newest in-flight run (so
+  // the sheet can offer Stop for the run the history is showing).
+  const menuJob = menuJobId ? jobs.find((j) => j.id === menuJobId) ?? null : null;
+  const menuActiveRun = menuJob ? latestActiveRun(cronRuns[menuJob.id] || []) : undefined;
+
+  const closeMenu = () => setMenuJobId(null);
+
+  const fieldClass = (invalid: boolean) =>
+    `w-full px-3 py-2 min-h-[44px] r-sm bg-[var(--app-input-bg)] t-body text-[var(--app-text)] focus:outline-none transition ${
+      invalid ? 'border border-[var(--app-danger-border)]' : 'edge'
+    }`;
+
+  const presetChipClass =
+    'hm-hit h-9 px-3 r-xs edge bg-[var(--app-card-subtle)] t-caption text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition cursor-pointer whitespace-nowrap';
+
+  // Raw field path, error code and server text are technical, so they stay
+  // behind a disclosure and never become the sentence on the surface.
+  const renderFieldErrors = (errors: ServerFieldError[]) => {
+    if (errors.length === 0) return null;
+    return (
+      <details className="r-sm">
+        <summary className="cursor-pointer t-caption text-[var(--app-text-dim)]">
+          {tx('technicalDetails', 'Technical details')}
+        </summary>
+        <div className="space-y-2 pt-2" role="alert">
+          {errors.map((e, i) => (
+            <p key={`${e.field}-${e.code}-${i}`} className="t-caption font-mono break-words text-[var(--app-text-muted)]">
+              {e.field} [{e.code}] {e.message}
+            </p>
+          ))}
+        </div>
+      </details>
+    );
+  };
+
   return (
-    <div className="space-y-6 max-w-2xl mx-auto px-4 pt-4 pb-20">
-      {/* Toast stack */}
+    <div className="space-y-6 max-w-2xl mx-auto px-4 pt-4 hm-tab-bottom">
+      {/* Toast stack: overlays sit at elev-3, never a raw shadow. */}
       {toasts.length > 0 && (
         <div className="fixed top-16 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] space-y-2 w-max max-w-[calc(100vw-2rem)]">
           {toasts.map((toastItem) => (
@@ -596,10 +684,10 @@ export const JobsTab: React.FC = () => {
               key={toastItem.id}
               role={toastItem.tone === 'error' ? 'alert' : 'status'}
               aria-live={toastItem.tone === 'error' ? 'assertive' : 'polite'}
-              className={`px-4 py-2 rounded-xl text-white text-xs font-semibold shadow-2xl animate-in fade-in slide-in-from-top-2 text-center ${
+              className={`px-4 py-2 r-sm elev-3 t-caption font-semibold text-center ${
                 toastItem.tone === 'error'
-                  ? 'bg-rose-600 border border-rose-400/50'
-                  : 'bg-indigo-600'
+                  ? 'bg-[var(--app-danger)] text-[var(--app-bg)]'
+                  : 'bg-[var(--app-accent)] text-[var(--app-bg)]'
               }`}
             >
               {toastItem.msg}
@@ -607,68 +695,77 @@ export const JobsTab: React.FC = () => {
           ))}
         </div>
       )}
-      {/* 1. New Automation Schedule Builder Card */}
-      <div className="rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-5 space-y-4 shadow-xs">
+
+      {/* 1. New task builder card */}
+      <div className="r-md edge elev-0 bg-[var(--app-card)] p-5 space-y-4">
         <div>
-          <h2 className="text-sm font-semibold text-white tracking-tight">{t('scheduledJobsTitle')}</h2>
-          <p className="text-xs text-slate-400 mt-0.5">
-            {t('scheduledJobsDesc')}
+          <h2 className="t-heading text-[var(--app-text)]">{tx('jobsCreateTitle', 'Schedule a task')}</h2>
+          <p className="t-caption text-[var(--app-text-muted)] mt-1">
+            {tx('jobsCreateDesc', 'Choose when it runs and write what Hermes should do each time.')}
           </p>
         </div>
 
-        <div className="space-y-3">
+        <div className="space-y-4">
           <div>
-            <label className="block text-xs text-slate-400 font-medium mb-1">
-              {t('jobName')}
+            <label htmlFor="job-name" className="block t-label text-[var(--app-text-muted)] mb-1">
+              {tx('taskNameLabel', 'Task name')}
             </label>
             <input
+              id="job-name"
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Morning Briefing"
+              placeholder={tx('taskNamePlaceholder', 'e.g. Morning briefing')}
               aria-invalid={createMissing.includes('name')}
-              className={`w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition ${createMissing.includes('name') ? 'border-rose-500/60' : 'border-white/[0.08]'}`}
+              className={fieldClass(createMissing.includes('name'))}
             />
             {createMissing.includes('name') && (
-              <p className="text-[11px] text-rose-400 mt-1">Job title is required.</p>
+              <p className="t-caption text-[var(--app-danger)] mt-1">
+                {tx('taskNameRequired', 'Give this task a name.')}
+              </p>
             )}
           </div>
 
           <div>
-            <label className="block text-xs text-slate-400 font-medium mb-1">
-              {t('cronSchedule')}
+            <label htmlFor="job-schedule" className="block t-label text-[var(--app-text-muted)] mb-1">
+              {tx('jobScheduleLabel', 'When should it run')}
             </label>
             <input
+              id="job-schedule"
               type="text"
               value={schedule}
               onChange={(e) => setSchedule(e.target.value)}
-              placeholder="e.g. every 1h, every day 9am, or 0 9 * * *"
+              placeholder={tx('jobSchedulePlaceholder', 'e.g. every day 9am')}
               aria-invalid={createMissing.includes('schedule')}
-              className={`w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition ${createMissing.includes('schedule') ? 'border-rose-500/60' : 'border-white/[0.08]'}`}
+              className={fieldClass(createMissing.includes('schedule'))}
             />
             {createMissing.includes('schedule') && (
-              <p className="text-[11px] text-rose-400 mt-1">Schedule is required.</p>
+              <p className="t-caption text-[var(--app-danger)] mt-1">
+                {tx('jobScheduleRequired', 'Add a timing for this task.')}
+              </p>
             )}
-            {createSummary && (
-              <p className="text-[11px] text-slate-400 mt-1">
-                {createSummary}{' '}
-                <span className="text-slate-500">Local reading only; the gateway decides.</span>
+            {plainSummary(createSummary) && (
+              <p className="t-caption text-[var(--app-text-muted)] mt-1">
+                {plainSummary(createSummary)}
               </p>
             )}
             {createHint && (
-              <p className="text-[11px] text-amber-300/90 mt-1">
-                Hint: {createHint}
-              </p>
+              <p className="t-caption text-[var(--app-warning)] mt-1">{scheduleHintText}</p>
             )}
-            {/* Quick Presets */}
-            <div className="flex flex-wrap gap-1.5 mt-2">
+            {/* Quick presets: one scrollable rail of equal chips, so nothing
+                wraps and leaves a lone chip orphaned on a second row. */}
+            <div
+              className="hm-rail gap-2 mt-2 -mx-1 px-1"
+              role="group"
+              aria-label={tx('quickPresets', 'Quick presets')}
+            >
               {presets.map((p) => (
                 <button
                   key={p.label}
                   type="button"
                   onClick={() => setSchedule(p.val)}
-                  title={p.val === 'once' ? 'Runs a single time, then stops' : p.val}
-                  className="px-2.5 py-1 min-h-[44px] rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-xs text-slate-300 hover:text-white transition cursor-pointer"
+                  title={p.val === 'once' ? tx('presetOnceNote', 'Runs one time, then stops.') : undefined}
+                  className={presetChipClass}
                 >
                   {p.label}
                 </button>
@@ -677,13 +774,14 @@ export const JobsTab: React.FC = () => {
           </div>
 
           <div>
-            <label className="block text-xs text-slate-400 font-medium mb-1">
-              Display timezone
+            <label htmlFor="job-tz" className="block t-label text-[var(--app-text-muted)] mb-1">
+              {tx('displayTimezone', 'Timezone for times shown')}
             </label>
             <select
+              id="job-tz"
               value={displayTz}
               onChange={(e) => setDisplayTz(e.target.value)}
-              className="w-full px-3.5 py-2 min-h-[44px] rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 transition"
+              className="w-full px-3 py-2 min-h-[44px] r-sm edge bg-[var(--app-input-bg)] t-body text-[var(--app-text)] focus:outline-none transition"
             >
               {timezoneOptions.map((tz) => (
                 <option key={tz} value={tz}>
@@ -691,72 +789,90 @@ export const JobsTab: React.FC = () => {
                 </option>
               ))}
             </select>
-            <p className="text-[11px] text-slate-500 mt-1">
-              Display only: the gateway stores no timezone and runs schedules on gateway time.
-              Next-run and history times below render in {displayTz}.
-            </p>
+            <button
+              type="button"
+              onClick={() => setShowTzNote((v) => !v)}
+              aria-expanded={showTzNote}
+              className="mt-1 inline-flex items-center gap-1 t-caption text-[var(--app-accent-text)] min-h-[40px] cursor-pointer"
+            >
+              {showTzNote ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+              <span>{tx('timezoneNoteTitle', 'How times are shown')}</span>
+            </button>
+            {showTzNote && (
+              <p className="t-caption text-[var(--app-text-dim)]">
+                {tx(
+                  'timezoneNote',
+                  'This only changes how times look on this screen. The task keeps running on the time Hermes already uses.'
+                )}
+              </p>
+            )}
           </div>
 
           <div>
-            <label className="block text-xs text-slate-400 font-medium mb-1">
-              {t('instructions')}
+            <label htmlFor="job-prompt" className="block t-label text-[var(--app-text-muted)] mb-1">
+              {tx('jobPromptLabel', 'What should it do')}
             </label>
             <textarea
-              rows={2}
+              id="job-prompt"
+              rows={3}
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
-              placeholder="Task instructions to execute at each scheduled interval..."
+              placeholder={tx(
+                'jobPromptPlaceholder',
+                'Write the message or instruction Hermes gets each time it runs.'
+              )}
               aria-invalid={createMissing.includes('prompt')}
-              className={`w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition resize-none ${createMissing.includes('prompt') ? 'border-rose-500/60' : 'border-white/[0.08]'}`}
+              className={`${fieldClass(createMissing.includes('prompt'))} resize-none`}
             />
             {createMissing.includes('prompt') && (
-              <p className="text-[11px] text-rose-400 mt-1">Execution prompt is required.</p>
+              <p className="t-caption text-[var(--app-danger)] mt-1">
+                {tx('jobPromptRequired', 'Write what Hermes should do.')}
+              </p>
             )}
           </div>
         </div>
 
-        {createError && (
-          <p className="text-xs text-rose-400">{createError}</p>
-        )}
+        {createError && <p className="t-caption text-[var(--app-danger)]">{createError}</p>}
         {renderFieldErrors(createFieldErrors)}
 
         <button
           onClick={handleCreate}
           disabled={isCreating}
-          className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold shadow-xs transition cursor-pointer flex items-center justify-center gap-2"
+          className="w-full min-h-[48px] px-4 r-sm bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] disabled:opacity-50 text-[var(--app-bg)] t-body font-semibold transition cursor-pointer flex items-center justify-center gap-2"
         >
           <Plus className="w-4 h-4" />
-          <span>{isCreating ? 'Creating...' : t('newJob')}</span>
+          <span>{isCreating ? tx('creating', 'Scheduling…') : tx('jobsCreateTitle', 'Schedule a task')}</span>
         </button>
       </div>
 
-      {/* 2. Search & Filter Bar */}
+      {/* 2. Search & filter bar */}
       {jobs.length > 0 && (
         <div>
           <div className="relative">
-            <Search className="w-4 h-4 absolute start-3.5 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+            <Search className="w-4 h-4 absolute start-3 top-1/2 -translate-y-1/2 text-[var(--app-text-dim)] pointer-events-none" />
             <input
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder={t('search')}
               aria-label={t('search')}
-              className="w-full ps-10 pe-12 py-2 min-h-[44px] rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
+              className="w-full ps-10 pe-12 py-2 min-h-[44px] r-sm edge bg-[var(--app-card)] t-body text-[var(--app-text)] focus:outline-none transition"
             />
             {query && (
               <button
                 type="button"
                 onClick={() => setQuery('')}
                 aria-label="Clear job search"
-                className="absolute end-1 top-1/2 -translate-y-1/2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg text-slate-500 hover:text-white transition"
+                className="absolute end-0 top-1/2 -translate-y-1/2 w-11 h-11 flex items-center justify-center r-sm text-[var(--app-text-dim)] hover:text-[var(--app-text)] transition"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
             )}
           </div>
           {query.trim() && (
-            <p className="text-[11px] text-slate-500 mt-1.5" role="status">
-              {visibleJobs.length} of {jobs.length} jobs match
+            <p className="t-caption text-[var(--app-text-dim)] mt-2" role="status">
+              {visibleJobs.length} {tx('ofWord', 'of')} {jobs.length}{' '}
+              {jobs.length === 1 ? tx('taskMatches', 'task matches') : tx('tasksMatch', 'tasks match')}
             </p>
           )}
         </div>
@@ -764,71 +880,105 @@ export const JobsTab: React.FC = () => {
 
       {/* Action-level rollback notice */}
       {actionError && (
-        <div className="p-3 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-300 flex items-start justify-between gap-3" role="alert">
+        <div
+          className="p-3 r-sm bg-[var(--app-danger-subtle)] border border-[var(--app-danger-border)] t-caption text-[var(--app-danger)] flex items-start justify-between gap-3"
+          role="alert"
+        >
           <span>{actionError}</span>
           <button
             type="button"
             onClick={() => setActionError('')}
-            className="text-rose-300/70 hover:text-rose-200 cursor-pointer min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg"
-            aria-label="Dismiss action error"
+            className="text-[var(--app-danger)] cursor-pointer w-11 h-11 flex items-center justify-center r-sm shrink-0"
+            aria-label={tx('dismissNotice', 'Dismiss this notice')}
           >
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
       )}
 
-      {/* 3. Schedules List */}
+      {/* 3. Schedules list */}
       <div className="space-y-3">
-        <h3 className="text-xs font-semibold text-slate-400 tracking-wider uppercase">
+        <h3 className="t-micro text-[var(--app-text-dim)]">
           {/* Count is only meaningful for a live list: a failed load must not
               print a fabricated (0) next to an "unavailable" message. */}
-          {t('scheduledJobsTitle')}
-          {jobsLive ? ` (${visibleJobs.length})` : ''}
+          {tx('scheduledTasksHeading', 'Scheduled tasks')}
+          {jobsLive
+            ? ` (${visibleJobs.length} ${
+                visibleJobs.length === 1 ? tx('taskWord', 'task') : tx('tasksWord', 'tasks')
+              })`
+            : ''}
         </h3>
 
-        {/* Not live with rows on screen: the list is a cached snapshot. */}
+        {/* Not live with rows on screen: the list is a cached snapshot. The
+            transport detail stays behind the disclosure. */}
         {!jobsLive && !jobsLoading && jobs.length > 0 && (
           <div
             role="status"
-            className="px-3.5 py-2.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300 space-y-1"
+            className="p-3 r-md bg-[var(--app-warning-subtle)] border border-[var(--app-warning-border)] space-y-1"
           >
-            <p className="font-semibold">
+            <p className="t-label text-[var(--app-warning)]">
               {jobsStale
-                ? tx('jobsStaleTitle', 'Not live: showing saved jobs')
-                : tx('jobsNotLiveTitle', 'Not live: the gateway did not confirm this list')}
+                ? tx('tasksStaleTitle', 'Showing saved tasks')
+                : tx('tasksNotLiveTitle', 'Showing saved tasks, not confirmed')}
             </p>
-            <p className="text-amber-200/80">{jobsError}</p>
+            <details className="r-sm">
+              <summary className="cursor-pointer t-caption text-[var(--app-warning)] opacity-80">
+                {tx('technicalDetails', 'Technical details')}
+              </summary>
+              <p className="t-caption font-mono break-words text-[var(--app-warning)] opacity-80">
+                {jobsError}
+              </p>
+            </details>
           </div>
         )}
 
         {jobsLoading && jobs.length === 0 ? (
-          <div className="p-8 rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] text-center text-xs text-slate-400" role="status">
-            Loading scheduled jobs...
+          <div
+            className="p-6 r-md edge elev-0 bg-[var(--app-card)] text-center t-caption text-[var(--app-text-muted)]"
+            role="status"
+          >
+            {tx('jobsLoading', 'Loading your tasks…')}
           </div>
         ) : !jobsLive && jobs.length === 0 ? (
-          <div className="p-8 rounded-3xl bg-[var(--app-card,#0E1217)] border border-rose-500/20 text-center text-xs text-rose-300 space-y-3" role="alert">
-            <p className="font-medium text-white">
-              {tx('jobsUnavailableTitle', 'Could not load scheduled jobs')}
+          <div
+            className="p-6 r-md bg-[var(--app-danger-subtle)] border border-[var(--app-danger-border)] text-center space-y-3"
+            role="alert"
+          >
+            <p className="t-heading text-[var(--app-text)]">
+              {tx('tasksUnavailableTitle', 'Could not load your scheduled tasks')}
             </p>
-            <p className="text-slate-400">
-              {jobsError || tx('jobsUnavailableBody', 'The gateway is unreachable. Make sure it is running, then try again.')}
+            <p className="t-caption text-[var(--app-text-muted)]">
+              {tx('tasksUnavailableBody', 'Nothing was lost. Check that Hermes is running, then try again.')}
             </p>
+            {jobsError && (
+              <details className="r-sm text-start">
+                <summary className="cursor-pointer t-caption text-[var(--app-text-dim)]">
+                  {tx('technicalDetails', 'Technical details')}
+                </summary>
+                <p className="t-caption font-mono break-words text-[var(--app-text-muted)]">{jobsError}</p>
+              </details>
+            )}
             <button
               type="button"
               onClick={() => void handleRetryJobs()}
               disabled={jobsLoading}
-              className="px-4 min-h-[44px] py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 disabled:opacity-50 text-rose-200 font-semibold cursor-pointer transition"
+              className="px-4 min-h-[44px] r-sm bg-[var(--app-danger)] disabled:opacity-50 text-[var(--app-bg)] t-caption font-semibold cursor-pointer transition"
             >
-              {jobsLoading ? 'Retrying...' : tx('retry', 'Retry')}
+              {jobsLoading ? tx('retrying', 'Retrying…') : tx('retry', 'Retry')}
             </button>
           </div>
         ) : jobs.length === 0 ? (
-          <div className="p-8 rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] text-center text-xs text-slate-400">
-            No scheduled automation jobs configured. Create your first job above using standard cadence or cron expressions.
+          <div className="p-6 r-md edge elev-0 bg-[var(--app-card)] text-center space-y-2">
+            <p className="t-body font-semibold text-[var(--app-text)]">
+              {tx('jobsEmptyTitle', 'No scheduled tasks yet')}
+            </p>
+            <p className="t-caption text-[var(--app-text-muted)]">
+              {tx('jobsEmptyBody', 'Fill in the form above to create your first task. It runs on the timing you choose.')}
+            </p>
           </div>
         ) : visibleJobs.length === 0 ? (
-          <div className="p-8 rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] text-center text-xs text-slate-400">
-            {`No tasks match "${query}".`}
+          <div className="p-6 r-md edge elev-0 bg-[var(--app-card)] text-center t-caption text-[var(--app-text-muted)]">
+            {tx('jobsNoMatch', 'No tasks match that search.')}
           </div>
         ) : (
           visibleJobs.map((j) => {
@@ -844,8 +994,6 @@ export const JobsTab: React.FC = () => {
             const isRunsLoading = Boolean(runsLoading[j.id]);
             const runsFetchFailed = runsRaw !== undefined && runsLive === false;
             const pending = pendingOps[j.id];
-            // In-flight run for this job, so Stop can be offered for it.
-            const activeRun = latestActiveRun(runs);
             const nextRunLabel = j.nextRunAt
               ? formatTimeWithZone(j.nextRunAt, displayTz)
               : '';
@@ -856,61 +1004,71 @@ export const JobsTab: React.FC = () => {
             return (
               <div
                 key={j.id}
-                className={`rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.07] p-4 space-y-3 transition hover:border-white/[0.14] ${pending ? 'opacity-70' : ''}`}
+                className={`r-md edge elev-0 bg-[var(--app-card)] p-4 space-y-3 transition ${pending ? 'opacity-70' : ''}`}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <h4 className="text-sm font-semibold text-white truncate">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h4 className="t-body font-semibold text-[var(--app-text)] truncate">
                         {j.name}
                       </h4>
-                      {overdue && (
-                        <span className="px-2 py-0.5 rounded-md bg-rose-500/10 text-rose-300 border border-rose-500/20 text-[10px] font-medium">
-                          Overdue
-                        </span>
-                      )}
+                      {overdue && <span className="pill-danger">{tx('overdue', 'Overdue')}</span>}
                       {pending && (
-                        <span className="px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[10px] font-medium">
-                          Pending...
-                        </span>
+                        <span className="pill-warning">{tx('pendingWord', 'Pending')}…</span>
                       )}
                     </div>
-                    <div className="flex items-center gap-2 text-xs text-slate-400 mt-0.5 flex-wrap">
-                      <span>{j.scheduleDisplay}</span>
-                      <span className="px-1.5 py-0.5 rounded-md bg-white/[0.04] border border-white/[0.06] text-[10px] font-mono text-slate-300">
-                        {displayTz}
+                    <div className="flex items-center gap-2 mt-1 flex-wrap">
+                      <span
+                        className="t-caption text-[var(--app-text-muted)]"
+                        title={j.scheduleDisplay}
+                      >
+                        {plainSummary(scheduleSummary(j.scheduleDisplay)) ||
+                          tx('customSchedule', 'Custom schedule')}
+                      </span>
+                      <span className="pill-neutral" title={displayTz}>
+                        {timezoneLabel(displayTz)}
                       </span>
                     </div>
                   </div>
 
+                  {/* Job state badge. Enabled uses the accent tone (never the
+                      success tone a run chip uses); Paused is neutral: Off is
+                      always neutral. */}
                   <span
                     aria-label={`${j.name}: ${j.enabled ? t('enabled') : tx('paused', 'Paused')}`}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-medium ${
-                      j.enabled
-                        ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20'
-                        : 'bg-white/[0.04] text-slate-400 border border-white/[0.06]'
-                    }`}
+                    className={j.enabled ? 'pill-accent' : 'pill-neutral'}
                   >
                     {j.enabled ? t('enabled') : tx('paused', 'Paused')}
                   </span>
                 </div>
 
                 {j.nextRunAt && (
-                  <div className="flex items-center gap-2 text-xs text-slate-400 font-mono" title={nextRunFull}>
-                    <Clock className="w-3.5 h-3.5 text-slate-500" />
-                    <span>{t('nextRun')}: {nextRunLabel}</span>
+                  <div
+                    className="flex items-center gap-2 t-caption text-[var(--app-text-muted)] font-mono"
+                    title={nextRunFull}
+                  >
+                    <Clock className="w-3.5 h-3.5 text-[var(--app-text-dim)]" />
+                    <span>{tx('nextRunPlain', 'Next run')}: {friendlyTime(nextRunLabel)}</span>
                   </div>
                 )}
 
                 {isFailed && (
-                  <div className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-300">
-                    {j.lastError || 'Last execution encountered an exception'}
+                  <div className="p-3 r-sm bg-[var(--app-danger-subtle)] border border-[var(--app-danger-border)] t-caption text-[var(--app-danger)] space-y-1">
+                    <p>{tx('lastRunFailedLine', 'The last run failed.')}</p>
+                    {j.lastError && (
+                      <details className="r-sm">
+                        <summary className="cursor-pointer opacity-80">
+                          {tx('technicalDetails', 'Technical details')}
+                        </summary>
+                        <p className="font-mono break-words opacity-80">{j.lastError}</p>
+                      </details>
+                    )}
                   </div>
                 )}
 
                 {/* Selectable prompt text with a separate expand toggle so
                     selection/copy is never hijacked by a button wrapper. */}
-                <div className="text-xs text-slate-300 bg-[var(--app-card-subtle,#141920)] rounded-xl border border-white/[0.06]">
+                <div className="t-body text-[var(--app-text-muted)] bg-[var(--app-card-subtle)] r-sm hairline">
                   <p
                     title={j.prompt}
                     className={`px-3 pt-3 font-mono leading-relaxed select-text ${expandedPrompts[j.id] ? 'whitespace-pre-wrap break-words' : 'line-clamp-6'}`}
@@ -921,162 +1079,155 @@ export const JobsTab: React.FC = () => {
                     type="button"
                     onClick={() => setExpandedPrompts((prev) => ({ ...prev, [j.id]: !prev[j.id] }))}
                     aria-expanded={!!expandedPrompts[j.id]}
-                    aria-label={expandedPrompts[j.id] ? `Collapse prompt for ${j.name}` : `Expand prompt for ${j.name}`}
-                    className="w-full min-h-[44px] px-3 flex items-center gap-1.5 text-[11px] text-slate-500 hover:text-slate-200 transition cursor-pointer"
+                    aria-label={
+                      expandedPrompts[j.id]
+                        ? `${tx('collapsePrompt', 'Collapse')}: ${j.name}`
+                        : `${tx('expandPrompt', 'Expand')}: ${j.name}`
+                    }
+                    className="w-full min-h-[44px] px-3 flex items-center gap-2 t-caption text-[var(--app-text-dim)] hover:text-[var(--app-text)] transition cursor-pointer"
                   >
                     {expandedPrompts[j.id] ? (
                       <ChevronUp className="w-3.5 h-3.5" />
                     ) : (
                       <ChevronDown className="w-3.5 h-3.5" />
                     )}
-                    <span>{expandedPrompts[j.id] ? 'Show less' : 'Show more'}</span>
+                    <span>{expandedPrompts[j.id] ? tx('showLess', 'Show less') : tx('showMore', 'Show more')}</span>
                   </button>
                 </div>
 
-                {/* Job Action Controls */}
-                <div className="flex items-center justify-between pt-2 border-t border-white/[0.06] text-xs">
-                  <div className="flex items-center gap-3">
+                {/* Job action controls: the two common actions stay inline and
+                    the rest move into the overflow sheet so nothing clips at
+                    360dp. */}
+                <div className="flex items-center justify-between gap-2 pt-3 border-t border-[var(--app-border-subtle)]">
+                  <div className="flex items-center gap-2 min-w-0">
                     {j.enabled ? (
                       <button
                         onClick={() => handleTogglePause(j)}
                         disabled={Boolean(pending)}
-                        className="text-slate-400 hover:text-white disabled:opacity-50 cursor-pointer flex items-center gap-1.5 transition min-h-[44px]"
+                        className="h-11 px-3 r-sm inline-flex items-center gap-2 t-caption text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)] disabled:opacity-50 cursor-pointer transition whitespace-nowrap"
                       >
                         <Pause className="w-3.5 h-3.5" />
-                        <span>{pending === 'pause' ? 'Pausing...' : 'Pause'}</span>
+                        <span>{pending === 'pause' ? tx('pausing', 'Pausing…') : tx('pause', 'Pause')}</span>
                       </button>
                     ) : (
                       <button
                         onClick={() => handleTogglePause(j)}
                         disabled={Boolean(pending)}
-                        className="text-indigo-400 hover:text-indigo-300 disabled:opacity-50 cursor-pointer flex items-center gap-1.5 transition min-h-[44px]"
+                        className="h-11 px-3 r-sm inline-flex items-center gap-2 t-caption text-[var(--app-accent-text)] hover:bg-[var(--app-card-hover)] disabled:opacity-50 cursor-pointer transition whitespace-nowrap"
                       >
                         <Play className="w-3.5 h-3.5" />
-                        <span>{pending === 'resume' ? 'Resuming...' : 'Resume'}</span>
+                        <span>{pending === 'resume' ? tx('resuming', 'Resuming…') : tx('resume', 'Resume')}</span>
                       </button>
                     )}
 
                     <button
                       onClick={() => handleRunNow(j)}
                       disabled={Boolean(pending)}
-                      className="text-indigo-400 hover:text-indigo-300 disabled:opacity-50 cursor-pointer flex items-center gap-1.5 transition font-medium min-h-[44px]"
+                      className="h-11 px-3 r-sm inline-flex items-center gap-2 t-caption font-semibold text-[var(--app-accent-text)] hover:bg-[var(--app-card-hover)] disabled:opacity-50 cursor-pointer transition whitespace-nowrap"
                     >
                       <Play className="w-3.5 h-3.5" />
-                      <span>{pending === 'run' ? `${t('running')}...` : t('runNow')}</span>
-                    </button>
-
-                    {/* Stop an in-flight run. Only offered while the run
-                        history reports a run that has not settled. */}
-                    {activeRun && (
-                      <button
-                        onClick={() => handleStopRun(j, activeRun.id)}
-                        disabled={Boolean(pending)}
-                        className="text-rose-300 hover:text-rose-200 disabled:opacity-50 cursor-pointer flex items-center gap-1.5 transition font-medium min-h-[44px]"
-                        aria-label={`${tx('stopRun', 'Stop run')} ${j.name}`}
-                      >
-                        <Square className="w-3.5 h-3.5" />
-                        <span>{pending === 'stop' ? tx('stopping', 'Stopping...') : tx('stopRun', 'Stop run')}</span>
-                      </button>
-                    )}
-
-                    <button
-                      onClick={() => openEdit(j)}
-                      disabled={Boolean(pending)}
-                      className="text-slate-400 hover:text-white disabled:opacity-50 cursor-pointer flex items-center gap-1.5 transition min-h-[44px]"
-                    >
-                      <Pencil className="w-3.5 h-3.5" />
-                      <span>{t('edit')}</span>
-                    </button>
-
-                    <button
-                      onClick={() => handleToggleHistory(j)}
-                      aria-expanded={isHistoryOpen}
-                      className="text-slate-400 hover:text-white cursor-pointer flex items-center gap-1.5 transition min-h-[44px]"
-                    >
-                      <History className="w-3.5 h-3.5" />
-                      <span>{isHistoryOpen ? `Close ${t('runsHistory')}` : t('runsHistory')}</span>
+                      <span>{pending === 'run' ? `${tx('runningPlain', 'Running')}…` : tx('runNowPlain', 'Run now')}</span>
                     </button>
                   </div>
 
                   <button
-                    onClick={() => setPendingDeleteJob(j)}
+                    onClick={() => setMenuJobId(j.id)}
                     disabled={Boolean(pending)}
-                    className="text-slate-500 hover:text-rose-400 disabled:opacity-50 cursor-pointer min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg hover:bg-white/[0.04] transition"
-                    title={t('delete')}
-                    aria-label={`${t('delete')} ${j.name}`}
+                    aria-haspopup="dialog"
+                    aria-label={`${tx('jobActionsMore', 'More actions')} ${j.name}`}
+                    className="w-11 h-11 flex items-center justify-center r-sm text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)] disabled:opacity-50 cursor-pointer transition shrink-0"
                   >
-                    <Trash2 className="w-4 h-4" />
+                    <MoreVertical className="w-4 h-4" />
                   </button>
                 </div>
 
-                {/* Run History Expansion */}
+                {/* Run history expansion */}
                 {isHistoryOpen && (
-                  <div className="mt-3 pt-3 border-t border-white/[0.06] space-y-2 animate-in fade-in duration-150">
-                    <span className="text-xs font-semibold text-slate-300 block" aria-label={`${t('runsHistory')}: ${runs.length}`}>
-                      {t('runsHistory')}{runs.length > 0 ? ` (${runs.length})` : ''}
+                  <div className="mt-3 pt-3 border-t border-[var(--app-border-subtle)] space-y-2 animate-in fade-in duration-150">
+                    <span
+                      className="t-label text-[var(--app-text)] block"
+                      aria-label={`${tx('runHistoryPlain', 'Run history')}: ${runs.length}`}
+                    >
+                      {tx('runHistoryPlain', 'Run history')}{runs.length > 0 ? ` (${runs.length})` : ''}
                     </span>
                     {isRunsLoading && runsRaw === undefined ? (
-                      <p className="text-xs text-slate-500" role="status">
-                        Loading run history...
+                      <p className="t-caption text-[var(--app-text-dim)]" role="status">
+                        {tx('runsLoading', 'Loading run history…')}
                       </p>
                     ) : runsFetchFailed && runs.length === 0 ? (
-                      <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 space-y-2" role="alert">
-                        <p className="text-xs text-rose-300">
-                          Could not load run history. The gateway may be offline.
+                      <div
+                        className="p-3 r-sm bg-[var(--app-danger-subtle)] border border-[var(--app-danger-border)] space-y-2"
+                        role="alert"
+                      >
+                        <p className="t-caption text-[var(--app-danger)]">
+                          {tx('runsUnavailable', 'Could not load run history. Nothing was lost.')}
                         </p>
                         <button
                           type="button"
                           onClick={() => handleRetryRuns(j.id)}
                           disabled={isRunsLoading}
-                          className="px-3 min-h-[44px] py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.08] text-xs text-slate-200 disabled:opacity-50 cursor-pointer transition"
+                          className="px-3 min-h-[44px] r-sm bg-[var(--app-card-subtle)] edge t-caption text-[var(--app-text)] disabled:opacity-50 cursor-pointer transition"
                         >
-                          {isRunsLoading ? 'Retrying...' : tx('retry', 'Retry')}
+                          {isRunsLoading ? tx('retrying', 'Retrying…') : tx('retry', 'Retry')}
                         </button>
                       </div>
                     ) : runs.length === 0 ? (
-                      <p className="text-xs text-slate-500">
-                        No previous runs logged for this job yet.
+                      <p className="t-caption text-[var(--app-text-dim)]">
+                        {tx('runsEmpty', 'No runs yet for this task.')}
                       </p>
                     ) : (
                       <>
                         {runs.length > 10 && (
-                          <p className="text-[11px] text-slate-500">
-                            Showing the 10 most recent of {runs.length} runs.
+                          <p className="t-caption text-[var(--app-text-dim)]">
+                            {tx('runsShowingRecent', 'Showing the 10 most recent runs.')} ({runs.length})
                           </p>
                         )}
-                        {[...runs].sort((a, b) => parseRunDate(b.startedAt) - parseRunDate(a.startedAt)).slice(0, 10).map((r, i) => {
-                          const duration = formatDuration(r.startedAt, r.finishedAt);
-                          const startedLabel = r.startedAt
-                            ? formatRunTimestamp(r.startedAt, displayTz)
-                            : '';
-                          const endedLabel = r.finishedAt
-                            ? formatRunTimestamp(r.finishedAt, displayTz)
-                            : '';
-                          // Explicit allowlist: known success values read as
-                          // success, everything else is neutral or failing.
-                          const runInfo = runStatusInfo(r.status, tx);
-                          const badgeClass = RUN_TONE_CLASS[runInfo.tone];
-                          return (
-                            <div
-                              key={r.id || i}
-                              className="p-2.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] text-xs space-y-1"
-                            >
-                              <div className="flex items-center justify-between gap-2 text-slate-300">
-                                <span className={`px-2 py-0.5 rounded-md border text-[10px] font-medium ${badgeClass}`} aria-label={`${tx('runStatusLabel', 'Run status')}: ${runInfo.label}`}>
-                                  {runInfo.label}
-                                </span>
-                                <span className="text-slate-500 text-[11px] font-mono" title={r.startedAt}>{startedLabel}</span>
+                        {[...runs]
+                          .sort((a, b) => parseRunDate(b.startedAt) - parseRunDate(a.startedAt))
+                          .slice(0, 10)
+                          .map((r, i) => {
+                            const duration = formatDuration(r.startedAt, r.finishedAt);
+                            const startedLabel = r.startedAt ? formatRunTimestamp(r.startedAt, displayTz) : '';
+                            const endedLabel = r.finishedAt ? formatRunTimestamp(r.finishedAt, displayTz) : '';
+                            // Explicit allowlist: known success values read as
+                            // success, everything else is neutral or failing.
+                            const runInfo = runStatusInfo(r.status, tx);
+                            const badgeClass = RUN_TONE_CLASS[runInfo.tone];
+                            return (
+                              <div key={r.id || i} className="p-3 r-sm bg-[var(--app-card-subtle)] hairline space-y-1">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span
+                                    className={badgeClass}
+                                    aria-label={`${tx('runStatusLabel', 'Run status')}: ${runInfo.label}`}
+                                  >
+                                    {runInfo.label}
+                                  </span>
+                                  <span
+                                    className="t-caption text-[var(--app-text-dim)] font-mono"
+                                    title={r.startedAt}
+                                  >
+                                    {friendlyTime(startedLabel)}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-2 t-caption text-[var(--app-text-dim)] font-mono">
+                                  {endedLabel && (
+                                    <span>{tx('endedWord', 'Ended')} {friendlyTime(endedLabel)}</span>
+                                  )}
+                                  {duration && <span>· {duration}</span>}
+                                </div>
+                                {r.error && (
+                                  <details className="r-sm">
+                                    <summary className="cursor-pointer t-caption text-[var(--app-danger)]">
+                                      {tx('runFailedLine', 'This run reported an error.')}
+                                    </summary>
+                                    <p className="t-caption font-mono text-[var(--app-danger)] whitespace-pre-wrap break-words">
+                                      {r.error}
+                                    </p>
+                                  </details>
+                                )}
                               </div>
-                              <div className="flex items-center gap-2 text-[11px] text-slate-500 font-mono">
-                                {endedLabel && <span>Ended {endedLabel}</span>}
-                                {duration && <span>· {duration}</span>}
-                              </div>
-                              {r.error && (
-                                <p className="text-rose-400 text-[11px] whitespace-pre-wrap break-words">{r.error}</p>
-                              )}
-                            </div>
-                          );
-                        })}
+                            );
+                          })}
                       </>
                     )}
                   </div>
@@ -1087,37 +1238,127 @@ export const JobsTab: React.FC = () => {
         )}
       </div>
 
-      {/* Delete Modal */}
+      {/* Per-row action overflow sheet. Bottom sheet so every item is a full
+          48px target and the destructive action is set off on its own. */}
+      {menuJob && (
+        <div
+          className="fixed inset-0 z-[70] flex items-end justify-center bg-[var(--app-scrim)] animate-in fade-in duration-150"
+          onClick={closeMenu}
+        >
+          <div
+            ref={menuRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={`${tx('jobActionsMore', 'More actions')}: ${menuJob.name}`}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md r-lg elev-3 edge bg-[var(--app-card)] p-3 space-y-1 pb-[calc(12px+var(--safe-bottom))]"
+          >
+            <div className="px-3 pt-1 pb-2 border-b border-[var(--app-border-subtle)]">
+              <p className="t-label text-[var(--app-text)] truncate">{menuJob.name}</p>
+              <p
+                className="t-caption text-[var(--app-text-dim)] truncate mt-1"
+                title={`${menuJob.scheduleDisplay} · ${displayTz}`}
+              >
+                {plainSummary(scheduleSummary(menuJob.scheduleDisplay)) ||
+                  tx('customSchedule', 'Custom schedule')}{' '}
+                · {timezoneLabel(displayTz)}
+              </p>
+            </div>
+
+            <button
+              onClick={() => {
+                const target = menuJob;
+                closeMenu();
+                openEdit(target);
+              }}
+              className="w-full min-h-[48px] px-3 r-sm flex items-center gap-3 text-start t-body text-[var(--app-text)] hover:bg-[var(--app-card-hover)] cursor-pointer transition-colors"
+            >
+              <Pencil className="w-4 h-4 text-[var(--app-text-muted)] shrink-0" />
+              <span>{t('edit')}</span>
+            </button>
+
+            <button
+              onClick={() => {
+                const target = menuJob;
+                closeMenu();
+                void handleToggleHistory(target);
+              }}
+              className="w-full min-h-[48px] px-3 r-sm flex items-center gap-3 text-start t-body text-[var(--app-text)] hover:bg-[var(--app-card-hover)] cursor-pointer transition-colors"
+            >
+              <History className="w-4 h-4 text-[var(--app-text-muted)] shrink-0" />
+              <span>
+                {historyForId === menuJob.id
+                  ? tx('closeRunsHistory', 'Close run history')
+                  : tx('runHistoryPlain', 'Run history')}
+              </span>
+            </button>
+
+            {menuActiveRun && (
+              <button
+                onClick={() => {
+                  const target = menuJob;
+                  const run = menuActiveRun;
+                  closeMenu();
+                  void handleStopRun(target, run.id);
+                }}
+                className="w-full min-h-[48px] px-3 r-sm flex items-center gap-3 text-start t-body text-[var(--app-warning)] hover:bg-[var(--app-card-hover)] cursor-pointer transition-colors"
+              >
+                <Square className="w-4 h-4 shrink-0" />
+                <span>{tx('stopRun', 'Stop run')}</span>
+              </button>
+            )}
+
+            {/* Destructive action, set off by a rule and never adjacent to a
+                primary action. */}
+            <div className="pt-1 mt-1 border-t border-[var(--app-border-subtle)]">
+              <button
+                onClick={() => {
+                  const target = menuJob;
+                  closeMenu();
+                  setPendingDeleteJob(target);
+                }}
+                className="w-full min-h-[48px] px-3 r-sm flex items-center gap-3 text-start t-body font-semibold text-[var(--app-danger)] hover:bg-[var(--app-danger-subtle)] cursor-pointer transition-colors"
+              >
+                <Trash2 className="w-4 h-4 shrink-0" />
+                <span>{t('delete')}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete confirm modal */}
       {pendingDeleteJob && (
         <div
           role="dialog"
           aria-modal="true"
-          aria-label={`Delete ${pendingDeleteJob.name}`}
-          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+          aria-label={`${tx('deleteTaskTitle', 'Delete this task')}: ${pendingDeleteJob.name}`}
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-[var(--app-scrim)] animate-in fade-in duration-150"
           onClick={(e) => {
             if (e.target === e.currentTarget) setPendingDeleteJob(null);
           }}
         >
           <div
-            className="w-full max-w-sm rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-4"
+            className="w-full max-w-sm r-lg elev-3 edge bg-[var(--app-card)] p-5 space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 className="text-base font-semibold text-white">
-              Delete Schedule?
+            <h3 className="t-heading text-[var(--app-text)]">
+              {tx('deleteTaskTitle', 'Delete this task?')}
             </h3>
-            <p className="text-xs text-slate-400 leading-relaxed">
-              Are you sure you want to permanently delete &ldquo;{pendingDeleteJob.name}&rdquo;? This cannot be undone.
+            <p className="t-body text-[var(--app-text-muted)]">
+              {tx('deleteTaskBody', 'This removes the task for good, so it cannot be undone.')}{' '}
+              &ldquo;{pendingDeleteJob.name}&rdquo;
             </p>
-            <div className="flex justify-end gap-2.5 pt-2">
+            <div className="flex justify-end gap-2 pt-2">
               <button
                 onClick={() => setPendingDeleteJob(null)}
-                className="px-4 min-h-[44px] py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white hover:bg-white/[0.06] cursor-pointer"
+                className="px-4 min-h-[44px] r-sm t-caption text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)] cursor-pointer transition"
               >
                 {t('cancel')}
               </button>
               <button
                 onClick={() => handleDeleteConfirm(pendingDeleteJob)}
-                className="px-4 min-h-[44px] py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold cursor-pointer transition"
+                className="px-4 min-h-[44px] r-sm bg-[var(--app-danger)] hover:opacity-90 text-[var(--app-bg)] t-caption font-semibold cursor-pointer transition"
               >
                 {t('delete')}
               </button>
@@ -1126,82 +1367,91 @@ export const JobsTab: React.FC = () => {
         </div>
       )}
 
-      {/* Edit Modal */}
+      {/* Edit modal */}
       {editingJob && (
         <div
           role="dialog"
           aria-modal="true"
           aria-label={`Edit ${editingJob.name}`}
-          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-[var(--app-scrim)] animate-in fade-in duration-150"
           onClick={(e) => {
             if (e.target === e.currentTarget) setEditingJob(null);
           }}
         >
           <div
-            className="w-full max-w-sm rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-4"
+            className="w-full max-w-sm r-lg elev-3 edge bg-[var(--app-card)] p-5 space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between pb-2 border-b border-white/[0.08]">
-              <span className="text-sm font-semibold text-white">Edit Schedule</span>
+            <div className="flex items-center justify-between pb-2 border-b border-[var(--app-border-subtle)]">
+              <span className="t-heading text-[var(--app-text)]">
+                {tx('editTaskTitle', 'Edit task')}
+              </span>
               <button
                 onClick={() => setEditingJob(null)}
-                aria-label="Close edit dialog"
-                className="min-w-[44px] min-h-[44px] rounded-lg flex items-center justify-center text-slate-400 hover:text-white"
+                aria-label={tx('closeDialog', 'Close')}
+                className="w-11 h-11 r-sm flex items-center justify-center text-[var(--app-text-muted)] hover:text-[var(--app-text)] cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="space-y-3">
+            <div className="space-y-4">
               <div>
-                <label className="block text-xs text-slate-400 font-medium mb-1">
-                  {t('jobName')}
+                <label htmlFor="edit-name" className="block t-label text-[var(--app-text-muted)] mb-1">
+                  {tx('taskNameLabel', 'Task name')}
                 </label>
                 <input
+                  id="edit-name"
                   type="text"
                   value={editName}
                   onChange={(e) => setEditName(e.target.value)}
                   aria-invalid={editMissing.includes('name')}
-                  className={`w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border text-xs text-white focus:outline-none focus:border-indigo-500 transition ${editMissing.includes('name') ? 'border-rose-500/60' : 'border-white/[0.08]'}`}
+                  className={fieldClass(editMissing.includes('name'))}
                 />
                 {editMissing.includes('name') && (
-                  <p className="text-[11px] text-rose-400 mt-1">Job title is required.</p>
+                  <p className="t-caption text-[var(--app-danger)] mt-1">
+                    {tx('taskNameRequired', 'Give this task a name.')}
+                  </p>
                 )}
               </div>
               <div>
-                <label className="block text-xs text-slate-400 font-medium mb-1">
-                  {t('cronSchedule')}
+                <label htmlFor="edit-schedule" className="block t-label text-[var(--app-text-muted)] mb-1">
+                  {tx('jobScheduleLabel', 'When should it run')}
                 </label>
                 <input
+                  id="edit-schedule"
                   type="text"
                   value={editSchedule}
                   onChange={(e) => setEditSchedule(e.target.value)}
-                  placeholder="e.g. every 1h, every day 9am, or 0 9 * * *"
+                  placeholder={tx('jobSchedulePlaceholder', 'e.g. every day 9am')}
                   aria-invalid={editMissing.includes('schedule')}
-                  className={`w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border text-xs text-white focus:outline-none focus:border-indigo-500 transition ${editMissing.includes('schedule') ? 'border-rose-500/60' : 'border-white/[0.08]'}`}
+                  className={fieldClass(editMissing.includes('schedule'))}
                 />
                 {editMissing.includes('schedule') && (
-                  <p className="text-[11px] text-rose-400 mt-1">Schedule is required.</p>
+                  <p className="t-caption text-[var(--app-danger)] mt-1">
+                    {tx('jobScheduleRequired', 'Add a timing for this task.')}
+                  </p>
                 )}
-                {editSummary && (
-                  <p className="text-[11px] text-slate-400 mt-1">
-                    {editSummary}{' '}
-                    <span className="text-slate-500">Local reading only; the gateway decides.</span>
+                {plainSummary(editSummary) && (
+                  <p className="t-caption text-[var(--app-text-muted)] mt-1">
+                    {plainSummary(editSummary)}
                   </p>
                 )}
                 {editHint && (
-                  <p className="text-[11px] text-amber-300/90 mt-1">
-                    Hint: {editHint}
-                  </p>
+                  <p className="t-caption text-[var(--app-warning)] mt-1">{scheduleHintText}</p>
                 )}
-                <div className="flex flex-wrap gap-1.5 mt-2">
+                <div
+                  className="hm-rail gap-2 mt-2 -mx-1 px-1"
+                  role="group"
+                  aria-label={tx('quickPresets', 'Quick presets')}
+                >
                   {presets.map((p) => (
                     <button
                       key={p.label}
                       type="button"
                       onClick={() => setEditSchedule(p.val)}
-                      title={p.val === 'once' ? 'Runs a single time, then stops' : p.val}
-                      className="px-2.5 py-1 min-h-[44px] rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-xs text-slate-300 hover:text-white transition cursor-pointer"
+                      title={p.val === 'once' ? tx('presetOnceNote', 'Runs one time, then stops.') : undefined}
+                      className={presetChipClass}
                     >
                       {p.label}
                     </button>
@@ -1209,13 +1459,14 @@ export const JobsTab: React.FC = () => {
                 </div>
               </div>
               <div>
-                <label className="block text-xs text-slate-400 font-medium mb-1">
-                  Display timezone
+                <label htmlFor="edit-tz" className="block t-label text-[var(--app-text-muted)] mb-1">
+                  {tx('displayTimezone', 'Timezone for times shown')}
                 </label>
                 <select
+                  id="edit-tz"
                   value={displayTz}
                   onChange={(e) => setDisplayTz(e.target.value)}
-                  className="w-full px-3.5 py-2 min-h-[44px] rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 transition"
+                  className="w-full px-3 py-2 min-h-[44px] r-sm edge bg-[var(--app-input-bg)] t-body text-[var(--app-text)] focus:outline-none transition"
                 >
                   {timezoneOptions.map((tz) => (
                     <option key={tz} value={tz}>
@@ -1223,45 +1474,43 @@ export const JobsTab: React.FC = () => {
                     </option>
                   ))}
                 </select>
-                <p className="text-[11px] text-slate-500 mt-1">
-                  Display only: the gateway stores no timezone. Times render in {displayTz}.
-                </p>
               </div>
               <div>
-                <label className="block text-xs text-slate-400 font-medium mb-1">
-                  {t('instructions')}
+                <label htmlFor="edit-prompt" className="block t-label text-[var(--app-text-muted)] mb-1">
+                  {tx('jobPromptLabel', 'What should it do')}
                 </label>
                 <textarea
-                  rows={2}
+                  id="edit-prompt"
+                  rows={3}
                   value={editPrompt}
                   onChange={(e) => setEditPrompt(e.target.value)}
                   aria-invalid={editMissing.includes('prompt')}
-                  className={`w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border text-xs text-white focus:outline-none focus:border-indigo-500 transition resize-none ${editMissing.includes('prompt') ? 'border-rose-500/60' : 'border-white/[0.08]'}`}
+                  className={`${fieldClass(editMissing.includes('prompt'))} resize-none`}
                 />
                 {editMissing.includes('prompt') && (
-                  <p className="text-[11px] text-rose-400 mt-1">Execution prompt is required.</p>
+                  <p className="t-caption text-[var(--app-danger)] mt-1">
+                    {tx('jobPromptRequired', 'Write what Hermes should do.')}
+                  </p>
                 )}
               </div>
             </div>
 
-            {editError && (
-              <p className="text-xs text-rose-400">{editError}</p>
-            )}
+            {editError && <p className="t-caption text-[var(--app-danger)]">{editError}</p>}
             {renderFieldErrors(editFieldErrors)}
 
-            <div className="flex justify-end gap-2.5 pt-2">
+            <div className="flex justify-end gap-2 pt-2">
               <button
                 onClick={() => setEditingJob(null)}
-                className="px-4 min-h-[44px] py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white hover:bg-white/[0.06] cursor-pointer"
+                className="px-4 min-h-[44px] r-sm t-caption text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)] cursor-pointer transition"
               >
                 {t('cancel')}
               </button>
               <button
                 onClick={handleSaveEdit}
                 disabled={isSavingEdit}
-                className="px-4 min-h-[44px] py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer transition"
+                className="px-4 min-h-[44px] r-sm bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] disabled:opacity-50 text-[var(--app-bg)] t-caption font-semibold cursor-pointer transition"
               >
-                {isSavingEdit ? 'Saving...' : t('save')}
+                {isSavingEdit ? tx('saving', 'Saving…') : tx('saveShort', 'Save')}
               </button>
             </div>
           </div>

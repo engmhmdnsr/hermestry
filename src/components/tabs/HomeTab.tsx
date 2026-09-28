@@ -14,6 +14,7 @@ import { useHermes } from '../../context/HermesContext';
 import { resolveListUiState } from '../../services/pagination';
 import { AgentStatus } from '../../types/hermes';
 import { formatHomeAgo } from '../../constants/languages';
+import { scheduleSummary } from '../../utils/jobTime';
 
 interface HomeTabProps {
   onGoChat: () => void;
@@ -83,6 +84,14 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     return !v || v === key ? fallback : v;
   };
 
+  // Opening prompts for the empty state. Translated, because they are both
+  // the chip label and the message Hermes receives.
+  const tryPrompts = [
+    tx('tryPromptStatus', 'Check that everything is running'),
+    tx('tryPromptSessions', 'Summarize my recent chats'),
+    tx('tryPromptPlan', 'Help me plan my day'),
+  ];
+
   // Native start failures surface machine strings ("not_installed: run
   // install() first"). Never print those verbatim: map the known causes to
   // user copy, and only pass through reasons that are already human-facing.
@@ -90,13 +99,10 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     const s = (raw || '').trim();
     if (!s) return null;
     if (/not[_\s-]?installed/i.test(s)) {
-      return tx(
-        'gatewayNotInstalled',
-        'The gateway is not installed on this device yet. Install it to continue.'
-      );
+      return tx('setupNeededNow', 'Hermes is not set up on this device yet.');
     }
     if (/install\(\)/i.test(s)) {
-      return tx('gatewayNeedsInstall', 'The gateway needs an install step before it can start.');
+      return tx('setupStepNeeded', 'Hermes needs one setup step before it can start.');
     }
     return s;
   };
@@ -149,70 +155,62 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     return 'ONLINE';
   }, [gatewayFailed, install, authFailure, connected, approvals.length, streaming, chat]);
 
+  // Status is carried by the semantic status tokens (dot) plus plain copy,
+  // never a decorative palette wash. The dot keeps the motion it had before:
+  // pulse while waiting to connect, ping while a turn is running.
   const statusConfig = {
     ONLINE: {
-      accent: 'text-emerald-400',
-      bgGlow: 'from-emerald-500/10 via-transparent to-transparent',
-      borderColor: 'border-emerald-500/20',
-      badgeBg: 'bg-emerald-400/10 text-emerald-300 border-emerald-500/30',
-      title: t('agentStatusOnline'),
-      desc: t('agentStatusOnlineDesc'),
+      dot: 'bg-[var(--app-success)]',
+      dotAnim: 'animate-pulse',
+      title: tx('agentStatusOnlinePlain', 'Hermes is running'),
+      desc: tx('agentStatusOnlineDescPlain', 'Ready for chat and scheduled tasks.'),
     },
     THINKING: {
-      accent: 'text-teal-400',
-      bgGlow: 'from-teal-500/10 via-transparent to-transparent',
-      borderColor: 'border-teal-500/20',
-      badgeBg: 'bg-teal-400/10 text-teal-300 border-teal-500/30',
+      dot: 'bg-[var(--app-accent)]',
+      dotAnim: 'animate-ping',
       title: t('agentStatusThinking'),
-      desc: t('agentStatusThinkingDesc'),
+      desc: tx('agentStatusThinkingDescPlain', 'Working out the next step.'),
     },
     EXECUTING: {
-      accent: 'text-indigo-400',
-      bgGlow: 'from-indigo-500/10 via-transparent to-transparent',
-      borderColor: 'border-indigo-500/20',
-      badgeBg: 'bg-indigo-400/10 text-indigo-300 border-indigo-500/30',
-      title: t('agentStatusExecuting'),
-      desc: t('agentStatusExecutingDesc'),
+      dot: 'bg-[var(--app-accent)]',
+      dotAnim: 'animate-ping',
+      title: tx('agentStatusExecutingPlain', 'Working'),
+      desc: tx('agentStatusExecutingDescPlain', 'Running a task and reporting back.'),
     },
     WAITING: {
-      accent: 'text-amber-400',
-      bgGlow: 'from-amber-500/10 via-transparent to-transparent',
-      borderColor: 'border-amber-500/20',
-      badgeBg: 'bg-amber-400/10 text-amber-300 border-amber-500/30',
-      title: t('agentStatusWaiting'),
+      dot: 'bg-[var(--app-warning)]',
+      dotAnim: '',
+      title: tx('agentStatusWaitingPlain', 'Needs your review'),
       desc:
         approvals.length === 1
-          ? tx('approvalOneNeedsReview', '1 action needs your review')
-          : `${approvals.length} ${tx('approvalsNeedReview', 'actions need your review')}`,
+          ? tx('approvalOneNeedsReview', '1 item needs your review')
+          : `${approvals.length} ${tx('approvalsNeedReview', 'items need your review')}`,
     },
     OFFLINE: {
-      accent: 'text-slate-400',
-      bgGlow: 'from-slate-500/5 via-transparent to-transparent',
-      borderColor: 'border-white/[0.08]',
-      badgeBg: 'bg-white/5 text-slate-400 border-white/10',
-      title: t('agentStatusOffline'),
+      dot: 'bg-[var(--app-text-dim)]',
+      dotAnim: '',
+      title: tx('agentStatusOfflinePlain', 'Not running'),
       desc: t('offline'),
     },
     CONNECTING: {
-      accent: 'text-sky-400',
-      bgGlow: 'from-sky-500/10 via-transparent to-transparent',
-      borderColor: 'border-sky-500/20',
-      badgeBg: 'bg-sky-400/10 text-sky-300 border-sky-500/30',
-      title: t('agentStatusConnecting'),
-      desc: t('starting'),
+      dot: 'bg-[var(--app-info)]',
+      dotAnim: 'animate-pulse',
+      title: tx('agentStatusConnectingPlain', 'Starting'),
+      desc: tx('agentStatusConnectingDescPlain', 'Bringing Hermes up. This can take a moment.'),
     },
     ERROR: {
-      accent: 'text-rose-400',
-      bgGlow: 'from-rose-500/10 via-transparent to-transparent',
-      borderColor: 'border-rose-500/20',
-      badgeBg: 'bg-rose-400/10 text-rose-300 border-rose-500/30',
-      title: authFailure ? tx('agentStatusAuthError', 'Access Denied') : t('agentStatusError'),
+      dot: 'bg-[var(--app-danger)]',
+      dotAnim: '',
+      title: authFailure
+        ? tx('agentStatusAuthErrorPlain', 'Connection rejected')
+        : tx('agentStatusErrorPlain', 'Could not connect'),
       desc: authFailure
         ? tx(
-            'agentStatusAuthErrorDesc',
-            'The gateway rejected the API key. Check the key under Ops & Settings.'
+            'agentStatusAuthErrorDescPlain',
+            'Hermes rejected the API key. Add or fix it under Settings.'
           )
-        : describeGatewayFailure(gatewayFailureReason) || t('agentStatusError'),
+        : describeGatewayFailure(gatewayFailureReason) ||
+          tx('agentStatusErrorDescPlain', 'Hermes did not respond. Check that it is running.'),
     },
   }[agentStatus];
 
@@ -222,8 +220,8 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     agentStatus === 'ONLINE' && (!!sessionMeta?.error || !!jobMeta?.error);
   const heroDesc = someDataUnavailable
     ? tx(
-        'agentStatusPartialDesc',
-        'Gateway is up, but some data could not be loaded. Refresh or open Diagnostics.'
+        'agentStatusPartialPlain',
+        'Hermes is running, but some lists did not load. Refresh to try again.'
       )
     : statusConfig.desc;
 
@@ -275,7 +273,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
       await newSession();
       onGoChat();
     } catch {
-      setActionError('Could not create session. Gateway unreachable.');
+      setActionError(tx('chatStartFailed', 'Could not start a new chat. Hermes is not reachable.'));
     }
   };
 
@@ -288,7 +286,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
       sendMessage(prompt);
       onGoChat();
     } catch {
-      setActionError('Could not create session. Gateway unreachable.');
+      setActionError(tx('chatStartFailed', 'Could not start a new chat. Hermes is not reachable.'));
     }
   };
 
@@ -298,6 +296,10 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     () => jobs.filter((j) => j.enabled).length,
     [jobs]
   );
+
+  // One convention for the scheduled-task count everywhere on this screen:
+  // enabled of total, so Home and the Jobs tab never disagree.
+  const jobsCountText = `${enabledJobsCount} ${tx('ofWord', 'of')} ${jobs.length} ${tx('enabledWord', 'enabled')}`;
 
   // Recent-session truthfulness: cached list while offline (or while the list
   // endpoint itself failed) is stale, not live. Reads the sync envelope so a
@@ -309,7 +311,9 @@ export const HomeTab: React.FC<HomeTabProps> = ({
       stale: sessionMeta ? sessionMeta.stale === true : !connected && sessions.length > 0,
       error:
         sessionMeta?.error ||
-        (!connected && sessions.length === 0 ? 'Gateway unreachable' : undefined),
+        (!connected && sessions.length === 0
+          ? tx('notReachable', 'Hermes is not reachable.')
+          : undefined),
     },
     sessions.length,
     { offline: browserOffline || !connected }
@@ -322,7 +326,9 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     {
       live: jobMeta ? jobMeta.live === true : connected,
       stale: jobMeta ? jobMeta.stale === true : !connected && jobs.length > 0,
-      error: jobMeta?.error || (!connected ? 'Gateway unreachable' : undefined),
+      error:
+        jobMeta?.error ||
+        (!connected ? tx('notReachable', 'Hermes is not reachable.') : undefined),
     },
     jobs.length,
     { offline: browserOffline || !connected }
@@ -350,7 +356,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     try {
       await refreshNow();
     } catch {
-      setActionError('Retry failed. The gateway is still unreachable.');
+      setActionError(tx('refreshFailedPlain', 'Could not refresh. Hermes is still not reachable.'));
     }
   };
 
@@ -359,7 +365,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     try {
       await refreshNow();
     } catch {
-      setActionError('Retry failed. The gateway is still unreachable.');
+      setActionError(tx('refreshFailedPlain', 'Could not refresh. Hermes is still not reachable.'));
     }
   };
 
@@ -370,14 +376,15 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     try {
       await startGateway();
     } catch {
-      setActionError('Could not start the gateway. Try again.');
+      setActionError(tx('startFailedPlain', 'Could not start Hermes. Try again.'));
     } finally {
       setGatewayBusy(false);
     }
   };
 
-  // Real restart: stop the process first (a hung daemon is not fixed by a
-  // second start), then start it. Both halves report through the context.
+  // Real restart: stop the process first (a process that is stuck does not
+  // recover from a second start), then start it. Both halves report through
+  // the context.
   const handleRestartGateway = async () => {
     if (gatewayBusy) return;
     setActionError(null);
@@ -386,7 +393,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
       await stopGateway();
       await startGateway();
     } catch {
-      setActionError('Restart failed. The gateway was not restarted.');
+      setActionError(tx('restartFailedPlain', 'Restart failed. Hermes is still not running.'));
     } finally {
       setGatewayBusy(false);
     }
@@ -399,7 +406,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     try {
       await installGateway();
     } catch {
-      setActionError('Install failed. Try again.');
+      setActionError(tx('setupFailedPlain', 'Setup did not finish. Try again.'));
     } finally {
       setGatewayBusy(false);
     }
@@ -408,247 +415,272 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   const errorCardCta = needsInstall || install === 'FAILED' ? 'install' : 'restart';
 
   return (
-    <div className="space-y-6 max-w-2xl mx-auto px-4 pt-4 pb-20">
-      {/* 1. Hero Presence Banner */}
-      <div
-        className={`relative overflow-hidden rounded-2xl bg-gradient-to-br ${statusConfig.bgGlow} bg-[var(--app-card,#0E1217)] border ${statusConfig.borderColor} p-5 shadow-sm transition-all`}
-      >
+    <div className="mx-auto flex max-w-2xl flex-col gap-6 px-4 pt-4 pb-20">
+      {/* 1. Hero presence banner: flat card plus edge, status carried by the
+          dot and the copy, not by a decorative hue wash. */}
+      <div className="r-md edge elev-0 overflow-hidden bg-[var(--app-card)] p-5">
         <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2 text-xs">
-              <span className={`w-2 h-2 rounded-full ${
-                agentStatus === 'ONLINE' ? 'bg-emerald-400 animate-pulse' :
-                agentStatus === 'WAITING' ? 'bg-amber-400' :
-                agentStatus === 'CONNECTING' ? 'bg-sky-400 animate-pulse' :
-                agentStatus === 'EXECUTING' || agentStatus === 'THINKING' ? 'bg-teal-400 animate-ping' :
-                agentStatus === 'ERROR' ? 'bg-rose-400' :
-                'bg-slate-400'
-              }`} />
-              <span className="font-semibold text-white tracking-tight">
+          <div className="flex min-w-0 flex-col gap-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <span
+                className={`h-2 w-2 shrink-0 rounded-full ${statusConfig.dot} ${statusConfig.dotAnim}`}
+              />
+              <span className="t-title truncate text-[var(--app-text)]">
                 {statusConfig.title}
               </span>
-              <span className="text-slate-500">·</span>
+              <span className="shrink-0 text-[var(--app-text-dim)]">·</span>
               <ExpandablePill
-                value={settings.modelId.split('/').pop() || ''}
+                value={modelAlias(settings.modelId)}
                 full={settings.modelId}
-                className="max-w-[120px]"
+                label={tx('modelLabel', 'Model')}
+                expandHint={tx('tapToExpand', 'Tap to expand')}
+                collapseHint={tx('tapToCollapse', 'Tap to collapse')}
+                className="max-w-[140px]"
               />
             </div>
-            <p className="text-xs text-slate-400 leading-relaxed pe-2">
-              {heroDesc}
-            </p>
+            <p className="t-body pe-2 text-[var(--app-text-muted)]">{heroDesc}</p>
           </div>
 
           {agentStatus === 'WAITING' && (
             <button
               onClick={onGoChat}
-              className="flex items-center gap-1.5 px-3.5 min-h-[44px] py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-200 text-xs font-semibold border border-amber-500/30 active:scale-95 transition cursor-pointer shrink-0"
+              className="r-sm flex min-h-[36px] shrink-0 items-center gap-1 border border-[var(--app-warning-border)] bg-[var(--app-warning-subtle)] px-3 t-label text-[var(--app-warning)] transition cursor-pointer active:scale-95"
             >
               <span>{tx('review', 'Review')} ({approvals.length})</span>
-              <ChevronRight className="w-3.5 h-3.5 rtl-flip" />
+              <ChevronRight className="h-3.5 w-3.5 rtl-flip" />
             </button>
           )}
         </div>
 
         {/* Session strip: "Current task" only while a turn is running */}
         {showTaskStrip && (
-          <div className="mt-4 pt-3 border-t border-white/[0.06] flex items-center justify-between text-xs">
-            <div className="flex items-center gap-2 min-w-0">
-              <span className="text-[11px] text-slate-400 font-medium shrink-0">
+          <>
+          {/* In-card divider: .hairline is a full 1px subtle border, so it sits
+              on its own zero-height rule element rather than on the strip. */}
+          <div className="mt-4 hairline" aria-hidden="true" />
+          <div className="flex items-center justify-between gap-3 pt-4">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="t-label shrink-0 text-[var(--app-text-muted)]">
                 {taskStripLabel}:
               </span>
               <ExpandablePill
                 value={stripValue}
                 full={stripValue}
-                className="max-w-[280px] text-slate-200"
+                label={taskStripLabel}
+                expandHint={tx('tapToExpand', 'Tap to expand')}
+                collapseHint={tx('tapToCollapse', 'Tap to collapse')}
+                className="max-w-[280px]"
               />
             </div>
             {streaming && (
-              <span className="text-[10px] font-mono text-teal-400 uppercase tracking-wider shrink-0 flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-teal-400 animate-ping" />
-                {tx('live', 'Live')}
+              <span className="flex shrink-0 items-center gap-1">
+                <span className="h-2 w-2 rounded-full bg-[var(--app-info)] animate-ping" />
+                <span className="pill-info">{tx('live', 'Live')}</span>
               </span>
             )}
           </div>
+          </>
         )}
       </div>
 
       {/* Gateway state card: error alarm OR first-run setup, never both */}
       {isError && (
-        <div className="rounded-2xl bg-rose-950/20 border border-rose-500/20 p-4 space-y-3">
-          <div>
-            <h3 className="text-sm font-semibold text-rose-300">
-              {authFailure ? tx('agentStatusAuthError', 'Access Denied') : t('agentStatusError')}
+        <div
+          role="alert"
+          className="r-md elev-0 flex flex-col gap-4 border border-[var(--app-danger-border)] bg-[var(--app-card)] p-4"
+        >
+          <div className="flex flex-col gap-1">
+            <h3 className="t-heading text-[var(--app-danger)]">
+              {authFailure
+                ? tx('agentStatusAuthErrorPlain', 'Connection rejected')
+                : tx('agentStatusErrorPlain', 'Could not connect')}
             </h3>
-            <p className="text-xs text-slate-400 mt-0.5">
+            <p className="t-caption text-[var(--app-text-muted)]">
               {authFailure
                 ? tx(
-                    'agentStatusAuthErrorDesc',
-                    'The gateway rejected the API key. Check the key under Ops & Settings.'
+                    'agentStatusAuthErrorDescPlain',
+                    'Hermes rejected the API key. Add or fix it under Settings.'
                   )
-                : describeGatewayFailure(gatewayFailureReason) || t('agentStatusError')}
+                : describeGatewayFailure(gatewayFailureReason) ||
+                  tx('agentStatusErrorDescPlain', 'Hermes did not respond. Check that it is running.')}
             </p>
           </div>
-          <div className="flex items-center gap-2 pt-1">
+          <div className="flex items-center gap-2">
             <button
               onClick={() =>
                 void (errorCardCta === 'install' ? handleInstallGateway() : handleRestartGateway())
               }
               disabled={gatewayBusy}
-              className="flex-1 min-h-[44px] flex items-center justify-center gap-2 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
+              className="r-sm flex min-h-[40px] flex-1 items-center justify-center gap-2 bg-[var(--app-accent)] px-4 t-label text-[var(--app-text)] transition cursor-pointer hover:bg-[var(--app-accent-hover)] disabled:opacity-60"
             >
               {errorCardCta === 'install' ? (
-                <Download className={`w-3.5 h-3.5 ${gatewayBusy ? 'animate-pulse' : ''}`} />
+                <Download className={`h-4 w-4 ${gatewayBusy ? 'animate-pulse' : ''}`} />
               ) : (
-                <RefreshCw className={`w-3.5 h-3.5 ${gatewayBusy ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`h-4 w-4 ${gatewayBusy ? 'animate-spin' : ''}`} />
               )}
               <span>
                 {errorCardCta === 'install'
                   ? gatewayBusy
                     ? t('installing')
                     : install === 'FAILED'
-                      ? tx('retrySetup', 'Retry Setup')
-                      : tx('installGateway', 'Install Gateway')
+                      ? tx('retrySetupPlain', 'Try setup again')
+                      : tx('setupHermesAction', 'Set up Hermes')
                   : gatewayBusy
-                    ? `${t('starting')}...`
-                    : tx('restartDaemon', 'Restart Daemon')}
+                    ? `${t('starting')}…`
+                    : tx('restartHermes', 'Restart Hermes')}
               </span>
             </button>
             <button
               onClick={onGoSettings}
-              className="px-4 min-h-[44px] py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] text-slate-300 text-xs font-medium border border-white/[0.08] transition cursor-pointer"
+              className="r-sm edge elev-0 flex min-h-[40px] items-center justify-center bg-[var(--app-card-subtle)] px-4 t-label text-[var(--app-text-muted)] transition cursor-pointer hover:text-[var(--app-text)]"
             >
-              {t('settings')}
+              {tx('settingsTitle', 'Settings')}
             </button>
           </div>
         </div>
       )}
 
       {showSetupCard && (
-        <div className="rounded-2xl bg-indigo-950/20 border border-indigo-500/20 p-4 space-y-3">
-          <div>
-            <h3 className="text-sm font-semibold text-white">
-              {needsInstall ? tx('gatewaySetupTitle', 'Set up the gateway') : 'Get started'}
+        <div className="r-md edge elev-0 flex flex-col gap-4 bg-[var(--app-card)] p-4">
+          <div className="flex flex-col gap-1">
+            <h3 className="t-heading text-[var(--app-text)]">
+              {needsInstall ? tx('setupHermesTitle', 'Set up Hermes') : tx('getStarted', 'Get started')}
             </h3>
-            <p className="text-xs text-slate-400 mt-0.5">
+            <p className="t-caption text-[var(--app-text-muted)]">
               {needsInstall
                 ? tx(
-                    'installGatewayHint',
-                    'Install the gateway on this device to begin chatting with Hermes.'
+                    'setupHermesHint',
+                    'Set up Hermes on this device to start your first chat.'
                   )
-                : tx('startGatewayHint', 'Start the gateway to begin chatting with Hermes.')}
+                : tx('startHermesHint', 'Start Hermes to begin your first chat.')}
             </p>
           </div>
-          <div className="flex items-center gap-2 pt-1">
+          <div className="flex items-center gap-2">
             <button
               onClick={() => void (needsInstall ? handleInstallGateway() : handleStartGateway())}
               disabled={gatewayBusy}
-              className="flex-1 min-h-[44px] flex items-center justify-center gap-2 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
+              className="r-sm flex min-h-[40px] flex-1 items-center justify-center gap-2 bg-[var(--app-accent)] px-4 t-label text-[var(--app-text)] transition cursor-pointer hover:bg-[var(--app-accent-hover)] disabled:opacity-60"
             >
               {needsInstall ? (
-                <Download className={`w-3.5 h-3.5 ${gatewayBusy ? 'animate-pulse' : ''}`} />
+                <Download className={`h-4 w-4 ${gatewayBusy ? 'animate-pulse' : ''}`} />
               ) : (
-                <RefreshCw className={`w-3.5 h-3.5 ${gatewayBusy ? 'animate-spin' : ''}`} />
+                <RefreshCw className={`h-4 w-4 ${gatewayBusy ? 'animate-spin' : ''}`} />
               )}
               <span>
                 {needsInstall
                   ? gatewayBusy
                     ? t('installing')
-                    : tx('installGateway', 'Install Gateway')
+                    : tx('setupHermesAction', 'Set up Hermes')
                   : gatewayBusy
-                    ? `${t('starting')}...`
-                    : tx('startDaemon', 'Start Daemon')}
+                    ? `${t('starting')}…`
+                    : tx('startHermes', 'Start Hermes')}
               </span>
             </button>
             <button
               onClick={onGoSettings}
-              className="px-4 min-h-[44px] py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] text-slate-300 text-xs font-medium border border-white/[0.08] transition cursor-pointer"
+              className="r-sm edge elev-0 flex min-h-[40px] items-center justify-center bg-[var(--app-card-subtle)] px-4 t-label text-[var(--app-text-muted)] transition cursor-pointer hover:text-[var(--app-text)]"
             >
-              {t('settings')}
+              {tx('settingsTitle', 'Settings')}
             </button>
           </div>
         </div>
       )}
 
-      {/* 2. Primary Fast-Action Grid */}
-      <section className="space-y-3">
-        <h2 className="text-xs font-semibold text-slate-400 tracking-wider uppercase">
-          {t('quickActions')}
-        </h2>
+      {/* 2. Fast actions: one row shape for all four (title plus a single
+          caption line), accent reserved for the primary action. */}
+      <section className="flex flex-col gap-3">
+        <h2 className="t-micro text-[var(--app-text-muted)]">{tx('quickActionsTitle', 'Quick actions')}</h2>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-          {/* New Chat */}
+        <div className="flex flex-col gap-2">
+          {/* New Chat is the one primary action: accent surface. */}
           <button
             onClick={() => void handleNewSessionGoChat()}
-            className="flex flex-col items-start p-3.5 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.07] hover:border-indigo-500/40 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-start"
+            className="r-sm edge elev-0 flex w-full items-center gap-3 bg-[var(--app-accent-subtle)] p-3 text-start transition cursor-pointer active:scale-[0.99]"
           >
-            <div className="w-8 h-8 rounded-xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
-              <MessageSquare className="w-4 h-4" />
-            </div>
-            <span className="text-xs font-semibold text-white">{t('newSession')}</span>
-            <span className="text-[11px] text-slate-400 mt-0.5">Start a conversation with Hermes</span>
+            <span className="r-sm flex h-10 w-10 shrink-0 items-center justify-center bg-[var(--app-accent)] text-[var(--app-text)]">
+              <MessageSquare className="h-5 w-5" />
+            </span>
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="t-heading truncate text-[var(--app-text)]">
+                {tx('newChat', 'New chat')}
+              </span>
+              <span className="t-caption truncate text-[var(--app-text-muted)]">
+                {tx('chatActionDesc', 'Start a conversation with Hermes')}
+              </span>
+            </span>
+            <ChevronRight className="h-4 w-4 shrink-0 text-[var(--app-text-dim)] rtl-flip" />
           </button>
 
-          {/* Diagnostics: this card opens Ops & Settings, so it says so. */}
+          {/* Diagnostics: this row opens the Settings tab, so it says so. */}
           <button
             onClick={onGoDiagnostics}
-            aria-label={tx(
-              'diagnosticsAction',
-              'Verify Gateway Diagnostics'
-            )}
-            className="flex flex-col items-start p-3.5 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.07] hover:border-teal-500/40 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-start"
+            aria-label={tx('connectionCheckTitle', 'Check connection')}
+            className="r-sm edge elev-0 flex w-full items-center gap-3 bg-[var(--app-card)] p-3 text-start transition cursor-pointer hover:bg-[var(--app-card-hover)] active:scale-[0.99]"
           >
-            <div className="w-8 h-8 rounded-xl bg-teal-500/10 text-teal-400 flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
-              <Terminal className="w-4 h-4" />
-            </div>
-            <span className="text-xs font-semibold text-white">
-              {tx('diagnosticsAction', 'Verify Gateway Diagnostics')}
+            <span className="r-sm flex h-10 w-10 shrink-0 items-center justify-center bg-[var(--app-card-subtle)] text-[var(--app-text-muted)]">
+              <Terminal className="h-5 w-5" />
             </span>
-            <span className="text-[11px] text-slate-400 mt-0.5">
-              {tx('diagnosticsActionDesc', 'Gateway status, logs, and connection')}
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="t-heading truncate text-[var(--app-text)]">
+                {tx('connectionCheckTitle', 'Check connection')}
+              </span>
+              <span className="t-caption truncate text-[var(--app-text-muted)]">
+                {tx('connectionCheckDesc', 'Connection state and recent details')}
+              </span>
             </span>
+            <ChevronRight className="h-4 w-4 shrink-0 text-[var(--app-text-dim)] rtl-flip" />
           </button>
 
-          {/* Automation Jobs */}
+          {/* Scheduled tasks: same count convention as the section header. */}
           <button
             onClick={onGoActivity}
-            className="flex flex-col items-start p-3.5 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.07] hover:border-violet-500/40 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-start"
+            className="r-sm edge elev-0 flex w-full items-center gap-3 bg-[var(--app-card)] p-3 text-start transition cursor-pointer hover:bg-[var(--app-card-hover)] active:scale-[0.99]"
           >
-            <div className="w-8 h-8 rounded-xl bg-violet-500/10 text-violet-400 flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
-              <CalendarClock className="w-4 h-4" />
-            </div>
-            <span className="text-xs font-semibold text-white">Scheduled jobs</span>
-            <span className="text-[11px] text-slate-400 mt-0.5">
-              {jobsCountKnown
-                ? `${enabledJobsCount} ${t('active')} · ${jobs.length} ${tx('total', 'total')}`
-                : tx('countsUnavailable', 'Counts unavailable')}
+            <span className="r-sm flex h-10 w-10 shrink-0 items-center justify-center bg-[var(--app-card-subtle)] text-[var(--app-text-muted)]">
+              <CalendarClock className="h-5 w-5" />
             </span>
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="t-heading truncate text-[var(--app-text)]">
+                {tx('scheduledTasksTitle', 'Scheduled tasks')}
+              </span>
+              <span className="t-caption truncate text-[var(--app-text-muted)]">
+                {jobsCountKnown
+                  ? jobsCountText
+                  : tx('countsUnknownPlain', 'Not available yet')}
+              </span>
+            </span>
+            <ChevronRight className="h-4 w-4 shrink-0 text-[var(--app-text-dim)] rtl-flip" />
           </button>
 
           {/* Settings / Ops */}
           <button
             onClick={onGoSettings}
-            className="flex flex-col items-start p-3.5 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.07] hover:border-white/20 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-start"
+            className="r-sm edge elev-0 flex w-full items-center gap-3 bg-[var(--app-card)] p-3 text-start transition cursor-pointer hover:bg-[var(--app-card-hover)] active:scale-[0.99]"
           >
-            <div className="w-8 h-8 rounded-xl bg-slate-500/10 text-slate-300 flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
-              <SlidersHorizontal className="w-4 h-4" />
-            </div>
-            <span className="text-xs font-semibold text-white">Settings</span>
-            <span className="text-[11px] text-slate-400 mt-0.5">Models, appearance, and connections</span>
+            <span className="r-sm flex h-10 w-10 shrink-0 items-center justify-center bg-[var(--app-card-subtle)] text-[var(--app-text-muted)]">
+              <SlidersHorizontal className="h-5 w-5" />
+            </span>
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="t-heading truncate text-[var(--app-text)]">
+                {tx('settingsTitle', 'Settings')}
+              </span>
+              <span className="t-caption truncate text-[var(--app-text-muted)]">
+                {tx('settingsActionDescPlain', 'Models, appearance, and connections')}
+              </span>
+            </span>
+            <ChevronRight className="h-4 w-4 shrink-0 text-[var(--app-text-dim)] rtl-flip" />
           </button>
         </div>
       </section>
 
       {/* 3. Recent Sessions & Activity Section */}
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-xs font-semibold text-slate-400 tracking-wider uppercase">
-            {t('recentSessions')}
-          </h2>
+      <section className="flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="t-micro text-[var(--app-text-muted)]">{tx('recentSessionsTitle', 'Recent chats')}</h2>
           {sessions.length > 0 && (
             <button
               onClick={onGoSessions}
-              className="min-h-[44px] px-2 inline-flex items-center text-xs text-indigo-400 hover:text-indigo-300 transition-colors font-medium cursor-pointer"
+              className="inline-flex min-h-[36px] items-center px-2 t-label text-[var(--app-accent-text)] transition-colors cursor-pointer hover:text-[var(--app-accent)]"
             >
               {tx('viewAll', 'View all')}
             </button>
@@ -656,13 +688,19 @@ export const HomeTab: React.FC<HomeTabProps> = ({
         </div>
 
         {actionError && (
-          <div role="alert" className="px-3.5 py-2.5 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-xs text-rose-300">
+          <div
+            role="alert"
+            className="r-sm border border-[var(--app-danger-border)] bg-[var(--app-danger-subtle)] px-4 py-3 t-caption text-[var(--app-danger)]"
+          >
             <p>{actionError}</p>
           </div>
         )}
         {!actionError && (recentListState === 'stale' || recentListState === 'offline') && (
-          <div role="status" className="px-3.5 py-2.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300">
-            <p className="font-semibold">
+          <div
+            role="status"
+            className="r-sm border border-[var(--app-warning-border)] bg-[var(--app-warning-subtle)] px-4 py-3 t-caption text-[var(--app-warning)]"
+          >
+            <p>
               {t('offline')}: {tx('showingSavedSessions', 'showing saved sessions')}
               {sessionsSyncedLabel ? ` · ${sessionsSyncedLabel}` : ''}
             </p>
@@ -670,41 +708,57 @@ export const HomeTab: React.FC<HomeTabProps> = ({
         )}
 
         {recentListState === 'error' ? (
-          <div className={`p-8 rounded-2xl bg-[var(--app-card,#0E1217)] border text-center space-y-3 ${isError ? 'border-white/[0.06]' : 'border-rose-500/20'}`} role="alert">
-            <p className="text-xs font-medium text-white">Could not load sessions.</p>
-            <p className="text-[11px] text-slate-400">The gateway is unreachable.</p>
+          <div
+            role="alert"
+            className={`r-md elev-0 flex flex-col gap-4 border bg-[var(--app-card)] p-6 text-center ${
+              isError ? 'edge' : 'border-[var(--app-danger-border)]'
+            }`}
+          >
+            <div className="flex flex-col gap-1">
+              <p className="t-heading text-[var(--app-text)]">
+                {tx('sessionsUnavailableTitle', 'Could not load your chats')}
+              </p>
+              <p className="t-caption text-[var(--app-text-muted)]">
+                {tx(
+                  'sessionsUnavailableBody',
+                  'Nothing was lost. Check that Hermes is running, then try again.'
+                )}
+              </p>
+            </div>
             <button
               onClick={() => void handleRetrySessions()}
-              className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition cursor-pointer"
+              className="r-sm mx-auto flex min-h-[36px] items-center justify-center bg-[var(--app-accent)] px-4 t-label text-[var(--app-text)] transition cursor-pointer hover:bg-[var(--app-accent-hover)]"
             >
               {t('refresh')}
             </button>
           </div>
         ) : recentSessions.length === 0 ? (
-          <div className="p-8 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] text-center space-y-3">
-            <div className="w-10 h-10 rounded-2xl bg-white/[0.03] text-slate-400 flex items-center justify-center mx-auto">
-              <MessageSquare className="w-5 h-5" />
+          <div className="r-md edge elev-0 flex flex-col gap-4 bg-[var(--app-card)] p-6 text-center">
+            <div className="r-md mx-auto flex h-12 w-12 items-center justify-center bg-[var(--app-card-subtle)] text-[var(--app-text-muted)]">
+              <MessageSquare className="h-5 w-5" />
             </div>
-            <div>
-              <p className="text-xs font-medium text-white">{t('noSessionsYet')}</p>
-              <p className="text-[11px] text-slate-400 mt-0.5">
-                Start a conversation with Hermes.
+            <div className="flex flex-col gap-1">
+              <p className="t-heading text-[var(--app-text)]">
+                {tx('noChatsYet', 'No chats yet')}
+              </p>
+              <p className="t-caption text-[var(--app-text-muted)]">
+                {tx('noChatsYetBody', 'Start a conversation and it will show up here.')}
               </p>
             </div>
             <button
               onClick={() => void handleNewSessionGoChat()}
-              className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition cursor-pointer"
+              className="r-sm mx-auto flex min-h-[36px] items-center justify-center bg-[var(--app-accent)] px-4 t-label text-[var(--app-text)] transition cursor-pointer hover:bg-[var(--app-accent-hover)]"
             >
-              {t('newSession')}
+              {tx('newChat', 'New chat')}
             </button>
-            <div className="pt-1">
-              <p className="text-[11px] text-slate-500 mb-2">Try asking:</p>
+            <div className="flex flex-col gap-2 pt-1">
+              <p className="t-caption text-[var(--app-text-dim)]">{tx('tryAsking', 'Try asking:')}</p>
               <div className="flex flex-wrap justify-center gap-2">
-                {['Check my system health', 'Summarize my recent sessions', 'Help me plan my day'].map((prompt) => (
+                {tryPrompts.map((prompt) => (
                   <button
                     key={prompt}
                     onClick={() => void handleChipPromptGoChat(prompt)}
-                    className="px-3 py-1.5 rounded-full bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] text-[11px] text-slate-300 transition cursor-pointer"
+                    className="r-xs edge flex min-h-[36px] items-center bg-[var(--app-card-subtle)] px-3 t-caption text-[var(--app-text-muted)] transition cursor-pointer hover:text-[var(--app-text)]"
                   >
                     {prompt}
                   </button>
@@ -713,7 +767,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             </div>
           </div>
         ) : (
-          <div className="space-y-2">
+          <div className="flex flex-col gap-2">
             {recentSessions.map((s) => {
               const isSelected = s.id === currentSessionId;
               const isLive = streaming && isSelected;
@@ -735,23 +789,35 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                       onGoChat();
                     }
                   }}
-                  className={`p-3.5 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                  className={`r-sm edge relative flex cursor-pointer items-center justify-between gap-3 overflow-hidden p-3 transition ${
                     isSelected
-                      ? 'bg-[var(--app-card-subtle,#141920)] border-indigo-500/40 shadow-xs'
-                      : 'bg-[var(--app-card,#0E1217)] border-white/[0.06] hover:border-white/[0.12] hover:bg-white/[0.02]'
+                      ? 'bg-[var(--app-card-subtle)]'
+                      : 'bg-[var(--app-card)] hover:bg-[var(--app-card-hover)]'
                   }`}
                 >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
-                      isLive ? 'bg-teal-500/15 text-teal-400' : 'bg-white/[0.04] text-slate-400'
-                    }`}>
-                      <MessageSquare className="w-4 h-4" />
+                  {/* Selection is a surface tint plus a leading accent bar,
+                      never a ring that reads as focus or as an error. */}
+                  {isSelected && (
+                    <span
+                      aria-hidden
+                      className="absolute inset-y-0 start-0 w-[3px] bg-[var(--app-accent)]"
+                    />
+                  )}
+                  <div className="flex min-w-0 items-center gap-3 ps-2">
+                    <div
+                      className={`r-sm flex h-10 w-10 shrink-0 items-center justify-center ${
+                        isLive
+                          ? 'bg-[var(--app-accent-subtle)] text-[var(--app-accent-text)]'
+                          : 'bg-[var(--app-card-subtle)] text-[var(--app-text-muted)]'
+                      }`}
+                    >
+                      <MessageSquare className="h-5 w-5" />
                     </div>
-                    <div className="min-w-0">
-                      <p className="text-xs font-medium text-white truncate">
+                    <div className="flex min-w-0 flex-col gap-1">
+                      <p className="t-heading truncate text-[var(--app-text)]">
                         {s.title || t('newSession')}
                       </p>
-                      <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5">
+                      <div className="flex items-center gap-2 t-caption text-[var(--app-text-muted)]">
                         <span>{s.messageCount} {s.messageCount === 1 ? tx('messageOne', 'message') : tx('messagesCount', 'messages')}</span>
                         <span>·</span>
                         <span>{homeAgo(s.lastActiveAt, settings.language || 'en')}</span>
@@ -759,13 +825,9 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    {isLive && (
-                      <span className="px-2 py-0.5 rounded-md bg-teal-500/10 text-teal-300 font-mono text-[10px] font-medium">
-                        {tx('live', 'Live')}
-                      </span>
-                    )}
-                    <ChevronRight className="w-4 h-4 text-slate-500 rtl-flip" />
+                  <div className="flex shrink-0 items-center gap-2">
+                    {isLive && <span className="pill-info">{tx('live', 'Live')}</span>}
+                    <ChevronRight className="h-4 w-4 text-[var(--app-text-dim)] rtl-flip" />
                   </div>
                 </div>
               );
@@ -777,22 +839,22 @@ export const HomeTab: React.FC<HomeTabProps> = ({
       {/* 4. Scheduled Jobs Overview (also shown when the counts are unknown,
           so the unknown state always carries a retry affordance) */}
       {(jobs.length > 0 || jobsPanelState !== null) && (
-        <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xs font-semibold text-slate-400 tracking-wider uppercase">
-              {t('scheduledCron')}
+        <section className="flex flex-col gap-3">
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="t-micro text-[var(--app-text-muted)]">
+              {tx('scheduledTasksTitle', 'Scheduled tasks')}
             </h2>
             {jobsCountKnown ? (
               <button
                 onClick={onGoActivity}
-                className="min-h-[44px] px-2 inline-flex items-center text-xs text-indigo-400 hover:text-indigo-300 transition-colors font-medium cursor-pointer"
+                className="inline-flex min-h-[36px] items-center px-2 t-label text-[var(--app-accent-text)] transition-colors cursor-pointer hover:text-[var(--app-accent)]"
               >
-                {t('jobs')} ({enabledJobsCount}/{jobs.length})
+                {jobsCountText}
               </button>
             ) : (
               <button
                 onClick={() => void handleRetryJobs()}
-                className="min-h-[44px] px-2 inline-flex items-center text-xs text-indigo-400 hover:text-indigo-300 transition-colors font-medium cursor-pointer"
+                className="inline-flex min-h-[36px] items-center px-2 t-label text-[var(--app-accent-text)] transition-colors cursor-pointer hover:text-[var(--app-accent)]"
               >
                 {t('refresh')}
               </button>
@@ -800,29 +862,43 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           </div>
 
           {jobsPanelState === 'stale' && (
-            <div role="status" className="px-3.5 py-2.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300">
-              <p className="font-semibold">
-                {t('offline')}: {tx('showingSavedJobs', 'showing saved jobs, counts may be out of date')}
+            <div
+              role="status"
+              className="r-sm border border-[var(--app-warning-border)] bg-[var(--app-warning-subtle)] px-4 py-3 t-caption text-[var(--app-warning)]"
+            >
+              <p>
+                {t('offline')}:{' '}
+                {tx('showingSavedTasks', 'showing saved tasks, so the counts may be out of date')}
                 {jobsSyncedLabel ? ` · ${jobsSyncedLabel}` : ''}
               </p>
             </div>
           )}
 
           {jobsPanelState === 'loading' && (
-            <div role="status" className="p-4 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] text-xs text-slate-400">
-              {tx('loadingJobs', 'Loading scheduled jobs...')}
+            <div
+              role="status"
+              className="r-md edge elev-0 bg-[var(--app-card)] p-4 t-caption text-[var(--app-text-muted)]"
+            >
+              {tx('loadingTasks', 'Loading your scheduled tasks…')}
             </div>
           )}
 
           {jobsPanelState === 'error' && (
-            <div role="alert" className="p-4 rounded-2xl bg-[var(--app-card,#0E1217)] border border-rose-500/20 text-center space-y-3">
-              <p className="text-xs font-medium text-white">{tx('jobsUnavailable', 'Could not load scheduled jobs.')}</p>
-              <p className="text-[11px] text-slate-400">
-                {tx('countsUnavailable', 'Counts unavailable')}
-              </p>
+            <div
+              role="alert"
+              className="r-md elev-0 flex flex-col gap-4 border border-[var(--app-danger-border)] bg-[var(--app-card)] p-6 text-center"
+            >
+              <div className="flex flex-col gap-1">
+                <p className="t-heading text-[var(--app-text)]">
+                  {tx('tasksUnavailableTitle', 'Could not load your scheduled tasks')}
+                </p>
+                <p className="t-caption text-[var(--app-text-muted)]">
+                  {tx('tasksUnavailableBody', 'Nothing was lost. Refresh to try again.')}
+                </p>
+              </div>
               <button
                 onClick={() => void handleRetryJobs()}
-                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition cursor-pointer"
+                className="r-sm mx-auto flex min-h-[36px] items-center justify-center bg-[var(--app-accent)] px-4 t-label text-[var(--app-text)] transition cursor-pointer hover:bg-[var(--app-accent-hover)]"
               >
                 {t('refresh')}
               </button>
@@ -830,13 +906,13 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           )}
 
           {jobs.length > 0 && (
-            <div className="space-y-2">
+            <div className="flex flex-col gap-2">
               {jobs.slice(0, 3).map((job) => (
                 <div
                   key={job.id}
                   role="button"
                   tabIndex={0}
-                  aria-label={`${tx('goToJobs', 'Go to Cron & Tasks')}: ${job.name}`}
+                  aria-label={`${tx('openScheduledTasks', 'Open scheduled tasks')}: ${job.name}`}
                   onClick={onGoActivity}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
@@ -844,25 +920,25 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                       onGoActivity();
                     }
                   }}
-                  className="p-3.5 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] hover:border-white/[0.12] flex items-center justify-between gap-3 cursor-pointer transition"
+                  className="r-sm edge elev-0 flex cursor-pointer items-center justify-between gap-3 bg-[var(--app-card)] p-3 transition hover:bg-[var(--app-card-hover)]"
                 >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center shrink-0">
-                      <CheckCircle2 className="w-4 h-4" />
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="r-sm flex h-10 w-10 shrink-0 items-center justify-center bg-[var(--app-card-subtle)] text-[var(--app-text-muted)]">
+                      <CheckCircle2 className="h-5 w-5" />
                     </div>
-                    <div className="min-w-0">
-                      <p className="text-xs font-medium text-white truncate">
-                        {job.name}
+                    <div className="flex min-w-0 flex-col gap-1">
+                      <p className="t-heading truncate text-[var(--app-text)]">{job.name}</p>
+                      <p
+                        className="t-caption truncate text-[var(--app-text-muted)]"
+                        title={job.scheduleDisplay}
+                      >
+                        {scheduleSummary(job.scheduleDisplay) || tx('customSchedule', 'Custom schedule')}
                       </p>
-                      <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5">
-                        <span>{job.scheduleDisplay}</span>
-                        <span>·</span>
-                        <span className={job.enabled ? 'text-emerald-400' : 'text-slate-500'}>
-                          {job.enabled ? t('active') : t('stopped')}
-                        </span>
-                      </div>
                     </div>
                   </div>
+                  <span className={job.enabled ? 'pill-success' : 'pill-neutral'}>
+                    {job.enabled ? t('active') : t('stopped')}
+                  </span>
                 </div>
               ))}
             </div>
@@ -873,11 +949,23 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   );
 };
 
-const ExpandablePill: React.FC<{ value: string; full: string; className?: string }> = ({
-  value,
-  full,
-  className = '',
-}) => {
+// Short, honest model alias for the hero chip: the full id lives in the model
+// sheet, so the chip only needs the leading token of the last path segment.
+export function modelAlias(id: string): string {
+  const seg = (id || '').split('/').pop() || '';
+  if (!seg) return '';
+  return seg.split(/[-_]/)[0] || seg;
+}
+
+const ExpandablePill: React.FC<{
+  value: string;
+  full: string;
+  /** Human word for what the pill shows, used as the accessible label. */
+  label: string;
+  expandHint: string;
+  collapseHint: string;
+  className?: string;
+}> = ({ value, full, label, expandHint, collapseHint, className = '' }) => {
   const [expanded, setExpanded] = useState(false);
   return (
     <button
@@ -885,11 +973,15 @@ const ExpandablePill: React.FC<{ value: string; full: string; className?: string
       onClick={() => setExpanded((v) => !v)}
       aria-expanded={expanded}
       title={full}
-      aria-label={`${full}. Tap to ${expanded ? 'collapse' : 'expand'}.`}
-      className={`inline-flex items-center gap-0.5 text-slate-400 font-mono text-[11px] min-w-0 text-start cursor-pointer underline decoration-dotted underline-offset-2 ${expanded ? '' : `truncate ${className}`} ${expanded ? 'whitespace-normal break-all' : ''}`}
+      aria-label={`${label}: ${full}. ${expanded ? collapseHint : expandHint}.`}
+      className={`r-sm edge elev-0 inline-flex min-h-[36px] min-w-0 items-center gap-1 bg-[var(--app-card-subtle)] px-3 t-caption text-[var(--app-text-muted)] cursor-pointer ${className}`}
     >
-      <span className="truncate min-w-0">{value}</span>
-      <ChevronDown className={`w-3 h-3 shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+      <span className={`min-w-0 font-mono ${expanded ? 'whitespace-normal break-all' : 'truncate'}`}>
+        {expanded ? full : value}
+      </span>
+      <ChevronDown
+        className={`h-3.5 w-3.5 shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`}
+      />
     </button>
   );
 };

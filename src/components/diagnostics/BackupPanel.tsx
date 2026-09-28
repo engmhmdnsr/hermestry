@@ -4,24 +4,34 @@
 //   safe: sessions, jobs, prefs, provider NAMES only (no key material).
 //   secret: opt-in, separately encrypted envelope only, never plaintext.
 // The component documents the classes and builds safe payloads through
-// the central redaction engine.
+// the central redaction engine. Every user-visible string goes through the
+// translate function; the raw field lists stay in the code comments.
 
 import React, { useState } from 'react';
 import type { BackupResult } from '../../types/hermes';
 import { redactSecrets, REDACTED } from '../../services/redaction';
+import { useHermes } from '../../context/HermesContext';
 
+// Labels and explanations are translatable pairs. The fallback is the English
+// text a user reads when the key is not in constants/languages yet.
 export const BACKUP_CLASSES = [
   {
     id: 'safe',
-    label: 'Safe backup (default)',
-    includes: ['sessions (ids, titles, models, counts)', 'jobs (ids, names, schedules, enabled)', 'prefs (theme, language, font scale)', 'provider names (label, provider, model, no keys)'],
-    excludes: ['apiKey, serverKey, tgToken, discordToken, appLockPin', 'baseUrls with credentials', 'message bodies with token leakage (redacted)'],
+    labelKey: 'backupSafeLabel',
+    label: 'Snapshot',
+    includesKey: 'backupSafeIncludes',
+    includes: 'chats (titles, models, message counts), scheduled tasks (names, schedules), and appearance settings',
+    excludesKey: 'backupSafeExcludes',
+    excludes: 'API keys, bot tokens, your Hermes server key, and the app lock PIN',
   },
   {
     id: 'secret',
-    label: 'Secret backup (opt-in, separately encrypted)',
-    includes: ['AES-GCM envelope via secureStore only'],
-    excludes: ['plaintext export is refused', 'never bundled with safe backup file'],
+    labelKey: 'backupSecretLabel',
+    label: 'Keys backup',
+    includesKey: 'backupSecretIncludes',
+    includes: 'one separate file that is encrypted and locked to this phone',
+    excludesKey: 'backupSecretExcludes',
+    excludes: 'any plain-text copy of a key',
   },
 ] as const;
 
@@ -130,46 +140,73 @@ interface BackupPanelProps {
   running: boolean;
   result: BackupResult | null;
   onRunBackup: () => void;
+  // Translate lookup from the caller (useHermes). Optional: a missing lookup
+  // degrades to the English fallback instead of printing the raw key.
+  t?: (key: string) => string;
 }
 
-export const BackupPanel: React.FC<BackupPanelProps> = ({ running, result, onRunBackup }) => {
+export const BackupPanel: React.FC<BackupPanelProps> = ({ running, result, onRunBackup, t }) => {
   const [ack, setAck] = useState(false);
+  // The prop wins when a caller passes its own lookup; otherwise the app
+  // context supplies it, so this panel translates even when mounted bare.
+  const { t: ctxT } = useHermes();
+  const lookup = t ?? ctxT;
+  const tx = (key: string, fallback: string): string => {
+    const v = lookup(key);
+    return !v || v === key ? fallback : v;
+  };
   return (
-    <div className="rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-5 space-y-4">
+    <div className="r-md edge elev-0 bg-[var(--app-card)] p-5 space-y-4">
       <div>
-        <h4 className="text-sm font-semibold text-white">Local snapshot</h4>
-        <p className="text-xs text-slate-400 mt-0.5">
-          Safe backup only. Plaintext API keys are never exported.
+        <h4 className="t-heading text-[var(--app-text)]">{tx('backupTitlePlain', 'Local snapshot')}</h4>
+        <p className="t-body text-[var(--app-text-muted)] mt-1">
+          {tx('backupIntroPlain', 'A snapshot saves your chats, tasks, and settings. Keys are never included.')}
         </p>
       </div>
-      <ul className="space-y-1.5">
+      <ul className="space-y-2">
         {BACKUP_CLASSES.map((c) => (
-          <li key={c.id} className="text-[11px] text-slate-400">
-            <span className="text-slate-200 font-medium">{c.label}: </span>
-            includes {c.includes.join('; ')}. Excludes: {c.excludes.join('; ')}.
+          <li key={c.id} className="t-caption text-[var(--app-text-muted)]">
+            <span className="t-label text-[var(--app-text)]">{tx(c.labelKey, c.label)}: </span>
+            {tx('backupIncludesWord', 'Includes')} {tx(c.includesKey, c.includes)}.{' '}
+            {tx('backupExcludesWord', 'Leaves out')} {tx(c.excludesKey, c.excludes)}.
           </li>
         ))}
       </ul>
-      <label className="flex items-start gap-2 text-[11px] text-slate-300 cursor-pointer">
+      <label className="flex items-start gap-2 t-label text-[var(--app-text)] cursor-pointer">
         <input
           type="checkbox"
           checked={ack}
           onChange={(e) => setAck(e.target.checked)}
-          className="mt-0.5"
+          className="mt-1"
         />
-        <span>I understand this snapshot contains no API keys. Secret backup is a separate encrypted step.</span>
+        <span>
+          {tx('backupAckLabel', 'I understand this snapshot holds no keys. A keys backup is a separate, encrypted step.')}
+        </span>
       </label>
       <button
         onClick={onRunBackup}
         disabled={running || !ack}
-        className="px-3.5 py-2 min-h-[44px] rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer"
+        className="inline-flex items-center justify-center px-4 min-h-[44px] r-sm bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] disabled:opacity-50 text-[var(--app-on-accent)] t-label font-semibold cursor-pointer"
       >
-        {running ? 'Creating snapshot...' : 'Create safe snapshot'}
+        {running ? tx('backupRunningShort', 'Saving the snapshot…') : tx('backupCreateAction', 'Create snapshot')}
       </button>
       {result && (
-        <p role="status" className={`text-[11px] ${result.ok ? 'text-emerald-400' : 'text-rose-400'}`}>
-          {result.message}
-        </p>
+        <div
+          role="status"
+          className="r-sm edge bg-[var(--app-card-subtle)] px-3 py-2 flex items-start gap-2"
+        >
+          <span className={`${result.ok ? 'pill-success' : 'pill-danger'} shrink-0`}>
+            {result.ok ? tx('backupOkPill', 'Saved') : tx('backupFailedPill', 'Not saved')}
+          </span>
+          <span className="min-w-0">
+            <span className="t-caption text-[var(--app-text)] break-words">{result.message}</span>
+            {result.ok && result.path && (
+              <span className="block t-micro normal-case font-mono text-[var(--app-text-muted)] break-all mt-1">
+                {result.path}
+              </span>
+            )}
+          </span>
+        </div>
       )}
     </div>
   );

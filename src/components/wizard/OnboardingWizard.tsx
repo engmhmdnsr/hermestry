@@ -1,5 +1,14 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { Eye, EyeOff, Check, Sparkles, ArrowRight, ShieldCheck } from 'lucide-react';
+import {
+  Eye,
+  EyeOff,
+  Check,
+  Sparkles,
+  ArrowRight,
+  ShieldCheck,
+  ChevronDown,
+  ChevronUp,
+} from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import {
   PROVIDER_OPTIONS,
@@ -19,6 +28,20 @@ interface OnboardingWizardProps {
 // Order of the real phases the native installer reports (mirrors
 // Bootstrap.installPhaseForLine). DONE folds to "all complete".
 const PHASE_ORDER: InstallPhase[] = ['CHECK_STORAGE', 'DOWNLOAD', 'VERIFY', 'EXTRACT', 'CONFIGURE'];
+
+// One input shape for the whole wizard: same radius, border, background and
+// type scale as every other text field in the app.
+const WIZARD_FIELD =
+  'w-full px-3 min-h-[44px] r-sm edge bg-[var(--app-input-bg)] t-body text-[var(--app-text)] focus:outline-none transition';
+
+// Secondary action: compact, sits beside the primary, never steals its width.
+const WIZARD_SECONDARY =
+  'min-h-[48px] px-4 r-sm shrink-0 inline-flex items-center justify-center gap-2 t-caption text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)] cursor-pointer transition';
+
+// Primary action: fills the remaining width so it lands on the outside edge of
+// the row, inside thumb reach on a 360dp phone.
+const WIZARD_PRIMARY =
+  'flex-1 min-h-[48px] px-4 r-sm inline-flex items-center justify-center gap-2 t-body font-semibold transition cursor-pointer disabled:opacity-60 disabled:cursor-wait';
 
 export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) => {
   const {
@@ -103,7 +126,10 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
   // gateway machine reports via gatewayFailed/gatewayFailureReason.
   useEffect(() => {
     if (step === 3 && launchTried && !launching && !connected && gatewayFailed) {
-      setLaunchError(gatewayFailureReason || t('wizardLaunchFailed'));
+      setLaunchError(
+        gatewayFailureReason ||
+          tx('launchFailedPlain', 'Hermes did not start. Nothing was changed, so your setup is intact. Check the log below, then try again.')
+      );
     }
   }, [step, launchTried, launching, connected, gatewayFailed, gatewayFailureReason, t]);
 
@@ -143,13 +169,13 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
       case 'CHECK_STORAGE':
         return tx('phaseCheckStorage', 'Checking storage');
       case 'DOWNLOAD':
-        return tx('phaseDownload', 'Downloading runtime image');
+        return tx('phaseDownloadPlain', 'Downloading files');
       case 'VERIFY':
-        return tx('phaseVerify', 'Verifying checksum');
+        return tx('phaseVerifyPlain', 'Checking the download');
       case 'EXTRACT':
-        return tx('phaseExtract', 'Extracting runtime layers');
+        return tx('phaseExtractPlain', 'Unpacking files');
       case 'CONFIGURE':
-        return tx('phaseConfigure', 'Writing gateway config');
+        return tx('phaseConfigurePlain', 'Saving settings');
       default:
         return tx('phaseDone', 'Finishing up');
     }
@@ -265,563 +291,639 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
 
   const stepLabel =
     step === 0
-      ? t('stepWelcome')
+      ? tx('stepWelcomePlain', 'Welcome')
       : step === 1
-        ? t('stepEnvironment')
+        ? tx('stepSetupPlain', 'Phone setup')
         : step === 2
-          ? t('stepCredentials')
-          : t('stepStart');
+          ? tx('stepKeysPlain', 'Your key')
+          : tx('stepFinishPlain', 'Start Hermes');
+
+  // One accent-filled progress track for the four wizard steps.
+  const progressPercent = ((step + 1) / 4) * 100;
 
   return (
     <div
       ref={overlayRef}
-      className="min-h-[100dvh] w-full overflow-y-auto overflow-x-hidden bg-[var(--app-bg,#090B0E)] text-slate-200"
+      className="min-h-[100dvh] w-full overflow-y-auto overflow-x-hidden bg-[var(--app-bg)] text-[var(--app-text)]"
     >
       <div
-        className="max-w-lg mx-auto flex flex-col justify-start"
+        className="max-w-lg mx-auto p-3"
         style={{
-          padding: '1.5rem',
-          paddingTop: 'calc(1.5rem + env(safe-area-inset-top, 0px))',
-          paddingBottom: 'calc(1.5rem + env(safe-area-inset-bottom, 0px))',
+          paddingTop: 'calc(0.75rem + var(--safe-top))',
+          paddingBottom: 'calc(0.75rem + var(--safe-bottom))',
         }}
       >
-        {/* Step indicators, driven by the real current step. */}
-        <div className="mb-6 pt-2">
-          <div className="flex items-center justify-between text-xs text-slate-400 mb-2 font-medium">
-            <span>
-              {t('stepWord')} {step + 1} {t('ofWord')} 4
-            </span>
-            <span>{stepLabel}</span>
-          </div>
-
-          <div
-            className="flex items-center gap-2"
-            role="progressbar"
-            aria-valuemin={1}
-            aria-valuemax={4}
-            aria-valuenow={step + 1}
-            aria-label={`${t('stepWord')} ${step + 1} ${t('ofWord')} 4: ${stepLabel}`}
-          >
-            {[0, 1, 2, 3].map((i) => (
-              <div
-                key={i}
-                className={`h-1.5 flex-1 rounded-full transition-all duration-300 ${
-                  i <= step ? 'bg-indigo-500' : 'bg-white/[0.08]'
-                }`}
-              />
-            ))}
-          </div>
-          {step === 3 && connected && (
-            <p className="mt-2 text-[11px] text-emerald-400 flex items-center gap-1.5">
-              <Check className="w-3.5 h-3.5" />
-              {tx('wizardGatewayRunning', 'Gateway is running. You are ready to go.')}
-            </p>
-          )}
-        </div>
-
-        {/* Main Content Area */}
-        <div className="flex-1 flex flex-col justify-between">
-          {step === 0 && (
-            <div className="space-y-4">
-              <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-500/20 to-teal-500/20 border border-indigo-500/30 flex items-center justify-center mb-4 shadow-sm">
-                <Sparkles className="w-6 h-6 text-indigo-400" />
-              </div>
-
-              <h1 className="text-2xl font-bold text-white tracking-tight">
-                {t('welcomeTitle')}
-              </h1>
-
-              <p className="text-sm text-slate-400 leading-relaxed">
-                {t('welcomeDesc')}
-              </p>
-
-              <div className="p-4 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] space-y-2 mt-4">
-                <div className="flex items-center gap-2 text-xs font-semibold text-white">
-                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                  <span>{t('zeroTelemetry')}</span>
-                </div>
-                <p className="text-xs text-slate-400">
-                  {t('zeroTelemetryDesc')}
-                </p>
-              </div>
-
-              {/* Honest scope before the tap: size and duration, not a surprise. */}
-              <div className="p-3.5 rounded-2xl bg-indigo-500/[0.06] border border-indigo-500/20 text-xs text-slate-300 leading-relaxed">
-                {tx(
-                  'installSizeNote',
-                  'This downloads about 305 MB and can take several minutes on a mobile connection. Keep the app open until it finishes.'
-                )}
-              </div>
-
-              {installDismissed && install === 'INSTALLING' && (
-                <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 leading-relaxed space-y-2">
-                  <p>
-                    {tx(
-                      'installRunningBackground',
-                      'The environment setup is still running in the background. You can come back to watch it.'
-                    )}
-                  </p>
-                  <button
-                    onClick={() => {
-                      setInstallDismissed(false);
-                      setStep(1);
-                    }}
-                    className="min-h-[44px] px-3 rounded-xl bg-amber-500/20 text-amber-200 font-medium cursor-pointer"
-                  >
-                    {tx('showInstallProgress', 'Show progress')}
-                  </button>
-                </div>
-              )}
-
-              <div className="pt-4 space-y-2">
-                <button
-                  onClick={startInstall}
-                  disabled={isInstalling}
-                  aria-disabled={isInstalling}
-                  className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 active:scale-[0.99] text-white font-semibold text-sm transition shadow-sm cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-wait"
-                >
-                  <span>{isInstalling ? tx('installInProgress', 'Setup in progress') : tx('startSetup', 'Start setup')}</span>
-                  <ArrowRight className="w-4 h-4 rtl-flip" />
-                </button>
-              </div>
+        {/* The wizard reads as one sheet: one radius, one edge, one depth. */}
+        <div className="r-lg elev-3 edge bg-[var(--app-card)] p-4 space-y-6">
+          {/* Step indicator: a stepper label pair over one accent track. */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <span className="t-caption text-[var(--app-text-muted)]">
+                {t('stepWord')} {step + 1} {t('ofWord')} 4
+              </span>
+              <span className="t-caption font-semibold text-[var(--app-text)]">{stepLabel}</span>
             </div>
-          )}
 
-          {step === 1 && (
-            <div className="space-y-4">
-              <div>
-                <h2 className="text-xl font-bold text-white tracking-tight">
-                  {t('preparingEnv')}
-                </h2>
-                <p className="text-xs text-slate-400 mt-1">
-                  {install === 'INSTALLING' && t('installingMsg')}
-                  {install === 'INSTALLED' && t('installedMsg')}
-                  {install === 'FAILED' && t('failedMsg')}
-                </p>
-              </div>
+            <div
+              className="h-1.5 w-full r-full bg-[var(--app-card-subtle)] overflow-hidden"
+              role="progressbar"
+              aria-valuemin={1}
+              aria-valuemax={4}
+              aria-valuenow={step + 1}
+              aria-label={`${t('stepWord')} ${step + 1} ${t('ofWord')} 4: ${stepLabel}`}
+            >
+              <div
+                className="h-full r-full bg-[var(--app-accent)] transition-all duration-300"
+                style={{ width: `${progressPercent}%` }}
+              />
+            </div>
 
-              {install === 'INSTALLING' && (
-                <>
-                  {/* Real phases the native installer reports, plus a
-                      determinate bar when the download percentage is known.
-                      No fake indeterminate animation. */}
-                  {phaseIdx >= 0 && (
-                    <ul className="space-y-1.5">
-                      {PHASE_ORDER.map((p, i) => {
-                        const done = i < phaseIdx;
-                        const active = i === phaseIdx;
-                        return (
-                          <li
-                            key={p}
-                            className={`flex items-center gap-2 text-xs ${
-                              active ? 'text-teal-300 font-medium' : done ? 'text-slate-300' : 'text-slate-500'
-                            }`}
-                          >
-                            <span className="w-4 flex justify-center">
-                              {done ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : active ? <span className="w-1.5 h-1.5 rounded-full bg-teal-400 animate-pulse" /> : <span className="w-1.5 h-1.5 rounded-full bg-white/[0.12]" />}
-                            </span>
-                            <span>{phaseLabel(p)}</span>
-                          </li>
-                        );
-                      })}
-                    </ul>
+            {step === 3 && connected && (
+              <p className="t-caption text-[var(--app-success)] flex items-center gap-2">
+                <Check className="w-3.5 h-3.5 shrink-0" />
+                {tx('wizardRunningPlain', 'Hermes is running on this phone. You can start chatting.')}
+              </p>
+            )}
+          </div>
+
+          {/* Main Content Area */}
+          <div className="flex-1 flex flex-col justify-between">
+            {step === 0 && (
+              <div className="space-y-4">
+                <div className="w-12 h-12 r-md bg-[var(--app-accent-subtle)] border border-[var(--app-accent-border)] flex items-center justify-center">
+                  <Sparkles className="w-6 h-6 text-[var(--app-accent-text)]" />
+                </div>
+
+                <h1 className="t-title text-[var(--app-text)]">{t('welcomeTitle')}</h1>
+
+                <p className="t-body text-[var(--app-text-muted)]">
+                  {tx(
+                    'welcomeDescPlain',
+                    'Chat with Hermes on this phone. It can run tools, show each step it takes, and work on a schedule while you are away.'
                   )}
+                </p>
 
-                  {installPercent !== null && (installPhase === null || installPhase === 'DOWNLOAD') ? (
-                    <div
-                      className="w-full bg-white/[0.06] h-1.5 rounded-full overflow-hidden"
-                      role="progressbar"
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      aria-valuenow={installPercent}
-                      aria-label={t('installingMsg')}
-                    >
-                      <div
-                        className="bg-indigo-500 h-full rounded-full transition-all duration-300"
-                        style={{ width: `${installPercent}%` }}
-                      />
-                    </div>
-                  ) : null}
-
-                  <p className="text-[11px] text-slate-500 leading-relaxed">
-                    {tx(
-                      'installSizeNote',
-                      'This downloads about 305 MB and can take several minutes on a mobile connection. Keep the app open until it finishes.'
-                    )}
-                  </p>
-                </>
-              )}
-
-              {installProgress && (
-                <p role="status" className="text-xs font-mono text-teal-400">{redactSecrets(installProgress)}</p>
-              )}
-
-              <div className="rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-3.5 h-52 overflow-y-auto overflow-x-hidden font-mono text-xs text-slate-400 space-y-1" ref={logBoxRef}>
-                {gatewayLogs.slice(-200).map((log, i) => (
-                  <div key={`${gatewayLogs.length - 200 + i}`} className="leading-relaxed break-words whitespace-pre-wrap">
-                    {redactSecrets(log)}
+                <div className="p-4 r-md bg-[var(--app-card-subtle)] hairline space-y-2">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-[var(--app-success)] shrink-0" />
+                    <span className="t-label text-[var(--app-text)]">{tx('privacyTitle', 'Your data stays on this phone')}</span>
                   </div>
-                ))}
-              </div>
+                  <p className="t-caption text-[var(--app-text-muted)]">
+                    {tx('privacyDescPlain', 'Your keys, chats, and scheduled tasks stay on this phone, not on our servers.')}
+                  </p>
+                </div>
 
-              <div className="pt-4 space-y-2">
-                {install === 'INSTALLED' && (
-                  <button
-                    onClick={() => setStep(2)}
-                    className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm transition cursor-pointer"
-                  >
-                    {t('continueCredentials')}
-                  </button>
-                )}
-                {install === 'INSTALLING' && (
-                  <button
-                    onClick={handleCancelInstall}
-                    className="w-full min-h-[44px] inline-flex items-center justify-center text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
-                  >
-                    {tx('cancelSetup', 'Cancel and continue in the background')}
-                  </button>
-                )}
-                {install === 'FAILED' && (
-                  <div className="space-y-3">
-                    <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-300 leading-relaxed">
-                      {installError
-                        ? redactSecrets(installError)
-                        : tx('installFailedGeneric', 'Setup did not finish. Check your connection and free storage, then tap Retry.')}
-                    </div>
-                    <p className="text-[11px] text-slate-500 leading-relaxed">
-                      {tx('installRetryHint', 'Retry resumes the download instead of starting over.')}
+                {/* Honest scope before the tap: size and duration, not a surprise. */}
+                <div className="p-4 r-md bg-[var(--app-accent-subtle)] border border-[var(--app-accent-border)] t-caption text-[var(--app-text-muted)]">
+                  {tx(
+                    'installSizeNote',
+                    'This downloads about 305 MB and can take several minutes on a mobile connection. Keep the app open until it finishes.'
+                  )}
+                </div>
+
+                {installDismissed && install === 'INSTALLING' && (
+                  <div className="p-4 r-md bg-[var(--app-warning-subtle)] border border-[var(--app-warning-border)] space-y-3">
+                    <p className="t-caption text-[var(--app-warning)]">
+                      {tx(
+                        'installRunningBackground',
+                        'The environment setup is still running in the background. You can come back to watch it.'
+                      )}
                     </p>
                     <button
                       onClick={() => {
-                        if (isInstalling) return;
-                        installGateway();
+                        setInstallDismissed(false);
+                        setStep(1);
                       }}
-                      disabled={isInstalling}
-                      className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm transition cursor-pointer disabled:opacity-60 disabled:cursor-wait"
+                      className="min-h-[44px] px-4 r-sm bg-[var(--app-card-subtle)] border border-[var(--app-warning-border)] t-caption font-semibold text-[var(--app-warning)] cursor-pointer transition"
                     >
-                      {t('retrySetup')}
+                      {tx('showInstallProgress', 'Show progress')}
                     </button>
                   </div>
                 )}
-                <button
-                  onClick={() => setStep(0)}
-                  className="w-full min-h-[44px] inline-flex items-center justify-center text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
-                >
-                  {t('back')}
-                </button>
-              </div>
-            </div>
-          )}
 
-          {step === 2 && (
-            <div className="space-y-4">
-              <div>
-                <h2 className="text-xl font-bold text-white tracking-tight">
-                  {t('modelCredentials')}
-                </h2>
-                <p className="text-xs text-slate-400 mt-1">
-                  {t('modelCredentialsDesc')}
-                </p>
+                <div className="pt-4">
+                  <button
+                    onClick={startInstall}
+                    disabled={isInstalling}
+                    aria-disabled={isInstalling}
+                    className={`${WIZARD_PRIMARY} w-full bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-bg)]`}
+                  >
+                    <span>
+                      {isInstalling
+                        ? tx('installInProgress', 'Setup in progress')
+                        : tx('startSetup', 'Start setup')}
+                    </span>
+                    <ArrowRight className="w-4 h-4 rtl-flip" />
+                  </button>
+                </div>
               </div>
+            )}
 
-              <div className="space-y-3">
+            {step === 1 && (
+              <div className="space-y-4">
                 <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <label htmlFor="ob-provider" className="block text-xs font-medium text-slate-400">
-                      {t('providerLabel')}
+                  <h2 className="t-title text-[var(--app-text)]">
+                    {tx('preparingEnvPlain', 'Setting up Hermes on this phone')}
+                  </h2>
+                  <p className="t-body text-[var(--app-text-muted)] mt-1">
+                    {install === 'INSTALLING' && tx('installingMsgPlain', 'Downloading about 305 MB and unpacking it. Keep this screen open.')}
+                    {install === 'INSTALLED' && tx('installedMsgPlain', 'Setup finished. Your Hermes server is ready.')}
+                    {install === 'FAILED' && tx('failedMsgPlain', 'Setup failed. Nothing was installed, so nothing was lost. Press Retry to try again.')}
+                  </p>
+                </div>
+
+                {install === 'INSTALLING' && (
+                  <>
+                    {/* Real phases the native installer reports, as a vertical
+                        stepper: done is success, active is accent, pending is
+                        neutral. No fake indeterminate animation. */}
+                    {phaseIdx >= 0 && (
+                      <ul className="space-y-2">
+                        {PHASE_ORDER.map((p, i) => {
+                          const done = i < phaseIdx;
+                          const active = i === phaseIdx;
+                          return (
+                            <li key={p} className="flex items-center gap-3 min-h-[32px]">
+                              <span
+                                className={done ? 'pill-success' : active ? 'pill-accent' : 'pill-neutral'}
+                                aria-label={
+                                  done
+                                    ? tx('phaseStateDone', 'Done')
+                                    : active
+                                      ? tx('phaseStateActive', 'Active')
+                                      : tx('phaseStatePending', 'Pending')
+                                }
+                              >
+                                {done ? (
+                                  <Check className="w-3 h-3" />
+                                ) : (
+                                  <span
+                                    className={`w-1.5 h-1.5 r-full ${active ? 'bg-[var(--app-accent-text)]' : 'bg-[var(--app-text-dim)]'}`}
+                                  />
+                                )}
+                                {done
+                                  ? tx('phaseStateDone', 'Done')
+                                  : active
+                                    ? tx('phaseStateActive', 'Active')
+                                    : tx('phaseStatePending', 'Pending')}
+                              </span>
+                              <span
+                                className={`t-caption ${
+                                  active || done
+                                    ? 'text-[var(--app-text)]'
+                                    : 'text-[var(--app-text-muted)]'
+                                }`}
+                              >
+                                {phaseLabel(p)}
+                              </span>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+
+                    {installPercent !== null && (installPhase === null || installPhase === 'DOWNLOAD') ? (
+                      <div
+                        className="w-full h-1.5 r-full bg-[var(--app-card-subtle)] overflow-hidden"
+                        role="progressbar"
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={installPercent}
+                        aria-label={tx('installingMsgPlain', 'Downloading about 305 MB and unpacking it. Keep this screen open.')}
+                      >
+                        <div
+                          className="h-full r-full bg-[var(--app-accent)] transition-all duration-300"
+                          style={{ width: `${installPercent}%` }}
+                        />
+                      </div>
+                    ) : null}
+
+                    <p className="t-caption text-[var(--app-text-dim)]">
+                      {tx(
+                        'installSizeNote',
+                        'This downloads about 305 MB and can take several minutes on a mobile connection. Keep the app open until it finishes.'
+                      )}
+                    </p>
+                  </>
+                )}
+
+                {installProgress && (
+                  <p role="status" className="t-caption font-mono text-[var(--app-accent-text)] break-words">
+                    {redactSecrets(installProgress)}
+                  </p>
+                )}
+
+                <div
+                  className="r-md bg-[var(--app-card-subtle)] hairline p-3 h-48 overflow-y-auto overflow-x-hidden font-mono t-caption text-[var(--app-text-muted)] space-y-1"
+                  ref={logBoxRef}
+                >
+                  {gatewayLogs.slice(-200).map((log, i) => (
+                    <div key={`${gatewayLogs.length - 200 + i}`} className="leading-relaxed break-words whitespace-pre-wrap">
+                      {redactSecrets(log)}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="pt-4 space-y-3">
+                  {install === 'INSTALLED' && (
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setStep(0)} className={WIZARD_SECONDARY}>
+                        {t('back')}
+                      </button>
+                      <button
+                        onClick={() => setStep(2)}
+                        className={`${WIZARD_PRIMARY} bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-bg)]`}
+                      >
+                        {tx('continueToKeys', 'Continue to keys')}
+                      </button>
+                    </div>
+                  )}
+
+                  {install === 'INSTALLING' && (
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setStep(0)} className={WIZARD_SECONDARY}>
+                        {t('back')}
+                      </button>
+                      <button onClick={handleCancelInstall} className={`${WIZARD_SECONDARY} flex-1`}>
+                        {tx('cancelSetup', 'Cancel and continue in the background')}
+                      </button>
+                    </div>
+                  )}
+
+                  {install === 'FAILED' && (
+                    <div className="space-y-3">
+                      <div className="p-4 r-md bg-[var(--app-danger-subtle)] border border-[var(--app-danger-border)] space-y-2">
+                        <p className="t-caption text-[var(--app-danger)] break-words">
+                          {tx('failedMsgPlain', 'Setup failed. Nothing was installed, so nothing was lost. Press Retry to try again.')}
+                        </p>
+                        {installError && (
+                          <p className="t-micro font-mono text-[var(--app-text-muted)] break-words">
+                            {redactSecrets(installError)}
+                          </p>
+                        )}
+                      </div>
+                      <p className="t-caption text-[var(--app-text-dim)]">
+                        {tx('installRetryHint', 'Retry resumes the download instead of starting over.')}
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => setStep(0)} className={WIZARD_SECONDARY}>
+                          {t('back')}
+                        </button>
+                        <button
+                          onClick={() => {
+                            if (isInstalling) return;
+                            installGateway();
+                          }}
+                          disabled={isInstalling}
+                          className={`${WIZARD_PRIMARY} bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-bg)]`}
+                        >
+                          {tx('retrySetupPlain', 'Retry setup')}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {install !== 'INSTALLED' && install !== 'INSTALLING' && install !== 'FAILED' && (
+                    <button onClick={() => setStep(0)} className={`${WIZARD_SECONDARY} w-full`}>
+                      {t('back')}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {step === 2 && (
+              <div className="space-y-4">
+                <div>
+                  <h2 className="t-title text-[var(--app-text)]">{tx('modelCredentialsPlain', 'Connect your model')}</h2>
+                  <p className="t-body text-[var(--app-text-muted)] mt-1">
+                    {tx(
+                      'modelCredentialsDescPlain',
+                      'Pick the provider you have a key for, then paste the key. Hermes keeps it on this phone.'
+                    )}
+                  </p>
+                </div>
+
+                <div className="space-y-4">
+                  <div>
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <label htmlFor="ob-provider" className="block t-label text-[var(--app-text-muted)]">
+                        {t('providerLabel')}
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // Never carry a stale id across modes: a selected slug
+                          // is not a valid custom id and vice versa.
+                          setCustomProvider(!customProvider);
+                          setProvider('');
+                        }}
+                        aria-pressed={customProvider}
+                        className={`px-3 min-h-[44px] r-sm t-caption font-medium transition cursor-pointer ${
+                          customProvider
+                            ? 'bg-[var(--app-accent)] text-[var(--app-bg)]'
+                            : 'edge bg-[var(--app-card-subtle)] text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+                        }`}
+                      >
+                        {customProvider ? t('customOn') : t('customOff')}
+                      </button>
+                    </div>
+                    {customProvider ? (
+                      <input
+                        id="ob-provider"
+                        type="text"
+                        value={provider}
+                        onChange={(e) => setProvider(e.target.value)}
+                        onBlur={persistEnteredCredentials}
+                        placeholder="e.g. my-proxy"
+                        dir="ltr"
+                        className={`${WIZARD_FIELD} font-mono`}
+                      />
+                    ) : (
+                      <select
+                        id="ob-provider"
+                        value={provider}
+                        onChange={(e) => setProvider(e.target.value)}
+                        onBlur={persistEnteredCredentials}
+                        dir="ltr"
+                        className={WIZARD_FIELD}
+                      >
+                        <option value="">{t('selectProvider')}</option>
+                        {PROVIDER_OPTIONS.map(([id, name]) => (
+                          <option key={id} value={id}>
+                            {name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+
+                  <div>
+                    <label htmlFor="ob-apikey" className="block t-label text-[var(--app-text-muted)] mb-1">
+                      {t('apiKey')} {isKeyless ? t('optionalLocal') : '*'}
                     </label>
+                    <div className="relative">
+                      <input
+                        id="ob-apikey"
+                        type={showKey ? 'text' : 'password'}
+                        value={apiKey}
+                        onChange={(e) => setApiKey(e.target.value)}
+                        onBlur={persistEnteredCredentials}
+                        placeholder="sk-…"
+                        dir="ltr"
+                        autoComplete="off"
+                        className={`${WIZARD_FIELD} pe-12 font-mono`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowKey(!showKey)}
+                        aria-label={showKey ? t('hideToken') : t('showToken')}
+                        aria-pressed={showKey}
+                        className="absolute end-1 top-1/2 -translate-y-1/2 w-11 h-11 flex items-center justify-center r-sm text-[var(--app-text-dim)] hover:text-[var(--app-text)] cursor-pointer"
+                      >
+                        {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label htmlFor="ob-baseurl" className="block t-label text-[var(--app-text-muted)] mb-1">
+                      {t('baseUrl')}{(customProvider || !isKnown) ? ' *' : ` ${t('optionalSuffix')}`}
+                    </label>
+                    <input
+                      id="ob-baseurl"
+                      type="text"
+                      value={baseUrl}
+                      onChange={(e) => setBaseUrl(e.target.value)}
+                      onBlur={persistEnteredCredentials}
+                      placeholder="https://api.openai.com/v1"
+                      dir="ltr"
+                      autoComplete="off"
+                      className={`${WIZARD_FIELD} font-mono`}
+                    />
+                  </div>
+
+                  <div>
+                    <label htmlFor="ob-model" className="block t-label text-[var(--app-text-muted)] mb-1">
+                      {t('modelLabel')} {t('optionalSuffix')}
+                    </label>
+                    <input
+                      id="ob-model"
+                      type="text"
+                      value={modelId}
+                      onChange={(e) => setModelId(e.target.value)}
+                      onBlur={persistEnteredCredentials}
+                      placeholder="e.g. deepseek-chat, gpt-4o, claude-3-5-sonnet"
+                      dir="ltr"
+                      autoComplete="off"
+                      className={`${WIZARD_FIELD} font-mono`}
+                    />
+                  </div>
+
+                  <div>
+                    <label htmlFor="ob-tgtoken" className="block t-label text-[var(--app-text-muted)] mb-1">
+                      {t('telegramBridge')} {t('optionalSuffix')}
+                    </label>
+                    <div className="relative">
+                      <input
+                        id="ob-tgtoken"
+                        type={showTg ? 'text' : 'password'}
+                        value={tgToken}
+                        onChange={(e) => setTgToken(e.target.value)}
+                        onBlur={persistEnteredCredentials}
+                        placeholder="bot123456:ABC-DEF…"
+                        dir="ltr"
+                        autoComplete="off"
+                        className={`${WIZARD_FIELD} pe-12 font-mono`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowTg(!showTg)}
+                        aria-label={showTg ? t('hideToken') : t('showToken')}
+                        aria-pressed={showTg}
+                        className="absolute end-1 top-1/2 -translate-y-1/2 w-11 h-11 flex items-center justify-center r-sm text-[var(--app-text-dim)] hover:text-[var(--app-text)] cursor-pointer"
+                      >
+                        {showTg ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-4 space-y-3">
+                  {saveBlockReason && (
+                    <p role="status" className="t-caption text-[var(--app-warning)]">
+                      {saveBlockReason}
+                    </p>
+                  )}
+                  <p className="t-caption text-[var(--app-text-dim)]">
+                    {tx('credentialsSavedHint', 'Your key is saved as you type, so setup can resume if the app closes.')}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setStep(1)} className={WIZARD_SECONDARY}>
+                      {t('back')}
+                    </button>
                     <button
-                      type="button"
+                      disabled={!canSave}
+                      aria-disabled={!canSave}
                       onClick={() => {
-                        // Never carry a stale id across modes: a selected slug
-                        // is not a valid custom id and vice versa.
-                        setCustomProvider(!customProvider);
-                        setProvider('');
+                        if (!canSave) return;
+                        saveKeys(effectiveProvider, apiKey, modelId, baseUrl, tgToken, settings.discordToken, settings.serverKey, bootRestart);
+                        setStep(3);
                       }}
-                      aria-pressed={customProvider}
-                      className={`px-3 min-h-[44px] py-1 rounded-lg text-[11px] font-medium transition cursor-pointer ${
-                        customProvider
-                          ? 'bg-indigo-600 text-white'
-                          : 'bg-white/[0.04] text-slate-400 hover:text-white'
+                      className={`${WIZARD_PRIMARY} ${
+                        canSave
+                          ? 'bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-bg)]'
+                          : 'bg-[var(--app-card-subtle)] text-[var(--app-text-dim)] cursor-not-allowed'
                       }`}
                     >
-                      {customProvider ? t('customOn') : t('customOff')}
+                      {t('saveContinue')}
                     </button>
                   </div>
-                  {customProvider ? (
-                    <input
-                      id="ob-provider"
-                      type="text"
-                      value={provider}
-                      onChange={(e) => setProvider(e.target.value)}
-                      onBlur={persistEnteredCredentials}
-                      placeholder="e.g. my-proxy"
-                      dir="ltr"
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
-                    />
-                  ) : (
-                    <select
-                      id="ob-provider"
-                      value={provider}
-                      onChange={(e) => setProvider(e.target.value)}
-                      onBlur={persistEnteredCredentials}
-                      dir="ltr"
-                      className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
+                </div>
+              </div>
+            )}
+
+            {step === 3 && (
+              <div className="space-y-4">
+                <div>
+                  <h2 className="t-title text-[var(--app-text)]">{tx('launchServerTitle', 'Start your Hermes server')}</h2>
+                  <p className="t-body text-[var(--app-text-muted)] mt-1">
+                    {tx('launchServerDesc', 'Hermes runs on this phone. Start it now so chats can work.')}
+                  </p>
+                </div>
+
+                <div className="p-4 r-md bg-[var(--app-card-subtle)] hairline space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="t-label text-[var(--app-text)]">{t('autostartTitle')}?</p>
+                    {/* Off is always neutral; on uses the accent tone. */}
+                    <span className={settings.autostart ? 'pill-accent' : 'pill-neutral'} role="status">
+                      {settings.autostart ? t('autostartEnabled') : t('autostartDisabled')}
+                    </span>
+                  </div>
+                  <p className="t-caption text-[var(--app-text-muted)]">
+                    {tx(
+                      'autostartShortPlain',
+                      'Hermes keeps running when your phone is locked, and starts again by itself each time you open the app.'
+                    )}
+                  </p>
+                  <div className="flex gap-2 pt-1">
+                    {/* Selected state is accent tint plus a check, never a
+                        colour-only difference. */}
+                    <button
+                      onClick={() => applyAutostart(true)}
+                      aria-pressed={bootRestart}
+                      className={`flex-1 min-h-[48px] px-3 r-sm inline-flex items-center justify-center gap-2 t-caption transition cursor-pointer ${
+                        bootRestart
+                          ? 'bg-[var(--app-accent-subtle)] border border-[var(--app-accent-border)] text-[var(--app-accent-text)] font-semibold'
+                          : 'edge bg-[var(--app-card)] text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+                      }`}
                     >
-                      <option value="">{t('selectProvider')}</option>
-                      {PROVIDER_OPTIONS.map(([id, name]) => (
-                        <option key={id} value={id}>
-                          {name} ({id})
-                        </option>
-                      ))}
-                    </select>
+                      {bootRestart && <Check className="w-4 h-4 shrink-0" />}
+                      <span>{tx('turnOn', 'Turn on')}</span>
+                    </button>
+                    <button
+                      onClick={() => applyAutostart(false)}
+                      aria-pressed={!bootRestart}
+                      className={`flex-1 min-h-[48px] px-3 r-sm inline-flex items-center justify-center gap-2 t-caption transition cursor-pointer ${
+                        !bootRestart
+                          ? 'bg-[var(--app-accent-subtle)] border border-[var(--app-accent-border)] text-[var(--app-accent-text)] font-semibold'
+                          : 'edge bg-[var(--app-card)] text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+                      }`}
+                    >
+                      {!bootRestart && <Check className="w-4 h-4 shrink-0" />}
+                      <span>{tx('keepOff', 'Keep off')}</span>
+                    </button>
+                  </div>
+                  {/* Policy detail lives behind a disclosure, not in the box. */}
+                  <button
+                    type="button"
+                    onClick={() => setShowPolicy(!showPolicy)}
+                    aria-expanded={showPolicy}
+                    className="min-h-[44px] inline-flex items-center gap-1 t-caption text-[var(--app-accent-text)] cursor-pointer"
+                  >
+                    {showPolicy ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                    <span>{tx('autostartPolicyTitle', 'How auto-launch behaves')}</span>
+                  </button>
+                  {showPolicy && (
+                    <p className="t-caption text-[var(--app-text-dim)]">
+                      {tx('autostartPolicyShort', 'With auto-launch on, the local service starts by itself when the app opens.')}{' '}
+                      {tx(
+                        'autostartPolicyNote',
+                        'Android may still start the app fresh after a reboot or a battery-optimization kill; auto-launch only controls the local service, never what the app can reach.'
+                      )}
+                    </p>
                   )}
                 </div>
 
-                <div>
-                  <label htmlFor="ob-apikey" className="block text-xs font-medium text-slate-400 mb-1">
-                    {t('apiKey')} {isKeyless ? t('optionalLocal') : '*'}
-                  </label>
-                  <div className="relative">
-                    <input
-                      id="ob-apikey"
-                      type={showKey ? 'text' : 'password'}
-                      value={apiKey}
-                      onChange={(e) => setApiKey(e.target.value)}
-                      onBlur={persistEnteredCredentials}
-                      placeholder="sk-..."
-                      dir="ltr"
-                      autoComplete="off"
-                      className="w-full px-3.5 py-2.5 pe-10 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowKey(!showKey)}
-                      aria-label={showKey ? t('hideToken') : t('showToken')}
-                      aria-pressed={showKey}
-                      className="absolute end-2 top-1/2 -translate-y-1/2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-500 hover:text-white"
+                <div className="pt-4 space-y-3">
+                  {launchError && (
+                    <div
+                      role="alert"
+                      className="p-4 r-md bg-[var(--app-danger-subtle)] border border-[var(--app-danger-border)] t-caption text-[var(--app-danger)] break-words"
                     >
-                      {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      {redactSecrets(launchError)}
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => setStep(2)} className={WIZARD_SECONDARY}>
+                      {t('back')}
                     </button>
-                  </div>
-                </div>
-
-                <div>
-                  <label htmlFor="ob-baseurl" className="block text-xs font-medium text-slate-400 mb-1">
-                    {t('baseUrl')}{(customProvider || !isKnown) ? ' *' : ` ${t('optionalSuffix')}`}
-                  </label>
-                  <input
-                    id="ob-baseurl"
-                    type="text"
-                    value={baseUrl}
-                    onChange={(e) => setBaseUrl(e.target.value)}
-                    onBlur={persistEnteredCredentials}
-                    placeholder="https://api.openai.com/v1"
-                    dir="ltr"
-                    autoComplete="off"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
-                  />
-                </div>
-
-                <div>
-                  <label htmlFor="ob-model" className="block text-xs font-medium text-slate-400 mb-1">
-                    {t('modelLabel')} {t('optionalSuffix')}
-                  </label>
-                  <input
-                    id="ob-model"
-                    type="text"
-                    value={modelId}
-                    onChange={(e) => setModelId(e.target.value)}
-                    onBlur={persistEnteredCredentials}
-                    placeholder="e.g. deepseek-chat, gpt-4o, claude-3-5-sonnet"
-                    dir="ltr"
-                    autoComplete="off"
-                    className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
-                  />
-                </div>
-
-                <div>
-                  <label htmlFor="ob-tgtoken" className="block text-xs font-medium text-slate-400 mb-1">
-                    {t('telegramBridge')} {t('optionalSuffix')}
-                  </label>
-                  <div className="relative">
-                    <input
-                      id="ob-tgtoken"
-                      type={showTg ? 'text' : 'password'}
-                      value={tgToken}
-                      onChange={(e) => setTgToken(e.target.value)}
-                      onBlur={persistEnteredCredentials}
-                      placeholder="bot123456:ABC-DEF..."
-                      dir="ltr"
-                      autoComplete="off"
-                      className="w-full px-3.5 py-2.5 pe-10 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowTg(!showTg)}
-                      aria-label={showTg ? t('hideToken') : t('showToken')}
-                      aria-pressed={showTg}
-                      className="absolute end-2 top-1/2 -translate-y-1/2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-500 hover:text-white"
-                    >
-                      {showTg ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              <div className="pt-4 space-y-2">
-                {saveBlockReason && (
-                  <p role="status" className="text-[11px] text-amber-400">{saveBlockReason}</p>
-                )}
-                <p className="text-[11px] text-slate-500 leading-relaxed">
-                  {tx('credentialsSavedHint', 'Your key is saved as you type, so setup can resume if the app closes.')}
-                </p>
-                <button
-                  disabled={!canSave}
-                  aria-disabled={!canSave}
-                  onClick={() => {
-                    if (!canSave) return;
-                    saveKeys(effectiveProvider, apiKey, modelId, baseUrl, tgToken, settings.discordToken, settings.serverKey, bootRestart);
-                    setStep(3);
-                  }}
-                  className={`w-full py-3.5 rounded-2xl font-semibold text-sm transition cursor-pointer ${
-                    canSave
-                      ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-xs'
-                      : 'bg-white/[0.04] text-slate-600 cursor-not-allowed'
-                  }`}
-                >
-                  {t('saveContinue')}
-                </button>
-                <button
-                  onClick={() => setStep(1)}
-                  className="w-full min-h-[44px] inline-flex items-center justify-center text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
-                >
-                  {t('back')}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {step === 3 && (
-            <div className="space-y-4">
-              <div>
-                <h2 className="text-xl font-bold text-white tracking-tight">
-                  {t('launchGateway')}
-                </h2>
-                <p className="text-xs text-slate-400 mt-1">
-                  {t('launchGatewayDesc')}
-                </p>
-              </div>
-
-              <div className="p-4 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-xs font-semibold text-white">{t('autostartTitle')}?</p>
-                  <span
-                    className={`text-[11px] font-medium ${settings.autostart ? 'text-emerald-400' : 'text-slate-500'}`}
-                    role="status"
-                  >
-                    {settings.autostart ? t('autostartEnabled') : t('autostartDisabled')}
-                  </span>
-                </div>
-                <p className="text-xs text-slate-400">
-                  {tx('autostartWizardShort', 'Start the local gateway automatically when the app opens.')}
-                </p>
-                <div className="flex gap-2 pt-2">
-                  <button
-                    onClick={() => applyAutostart(true)}
-                    aria-pressed={bootRestart}
-                    className={`flex-1 min-h-[44px] py-2 rounded-xl text-xs font-medium cursor-pointer transition ${
-                      bootRestart
-                        ? 'bg-indigo-600 text-white font-semibold'
-                        : 'bg-white/[0.04] text-slate-400'
-                    }`}
-                  >
-                    {t('enable')}
-                  </button>
-                  <button
-                    onClick={() => applyAutostart(false)}
-                    aria-pressed={!bootRestart}
-                    className={`flex-1 min-h-[44px] py-2 rounded-xl text-xs font-medium cursor-pointer transition ${
-                      !bootRestart
-                        ? 'bg-indigo-600 text-white font-semibold'
-                        : 'bg-white/[0.04] text-slate-400'
-                    }`}
-                  >
-                    {t('skip')}
-                  </button>
-                </div>
-                {/* Policy detail lives behind a disclosure, not in the box. */}
-                <button
-                  type="button"
-                  onClick={() => setShowPolicy(!showPolicy)}
-                  aria-expanded={showPolicy}
-                  className="min-h-[44px] inline-flex items-center text-[11px] text-indigo-300 underline cursor-pointer"
-                >
-                  {tx('autostartPolicyTitle', 'How auto-launch behaves')}
-                </button>
-                {showPolicy && (
-                  <p className="text-[11px] text-slate-500 leading-relaxed">
-                    {t('autostartWizardDesc')} {' '}
-                    {tx(
-                      'autostartPolicyNote',
-                      'Android may still start the app fresh after a reboot or a battery-optimization kill; auto-launch only controls the local gateway, never what the app can reach.'
+                    {connected ? (
+                      <button
+                        onClick={finishOnboarding}
+                        className={`${WIZARD_PRIMARY} bg-[var(--app-success)] hover:opacity-90 text-[var(--app-bg)]`}
+                      >
+                        <Check className="w-4 h-4 shrink-0" />
+                        <span>{tx('finishSetup', 'Finish setup')}</span>
+                      </button>
+                    ) : (
+                      <button
+                        onClick={handleLaunch}
+                        disabled={launching}
+                        aria-disabled={launching}
+                        className={`${WIZARD_PRIMARY} bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-bg)]`}
+                      >
+                        <Check className="w-4 h-4 shrink-0" />
+                        <span>{launching ? tx('launchingPlain', 'Starting…') : tx('startHermesNow', 'Start Hermes')}</span>
+                      </button>
                     )}
-                  </p>
-                )}
-              </div>
-
-              <div className="pt-6 space-y-3">
-                {launchError && (
-                  <div role="alert" className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-300 leading-relaxed">
-                    {redactSecrets(launchError)}
                   </div>
-                )}
 
-                {connected ? (
+                  {skipArmed && (
+                    <div
+                      role="alert"
+                      className="p-4 r-md bg-[var(--app-warning-subtle)] border border-[var(--app-warning-border)] t-caption text-[var(--app-warning)]"
+                    >
+                      {isOffline
+                        ? tx(
+                            'skipConfirmOfflinePlain',
+                            'You appear to be offline and Hermes is not running. Tap Skip for now again to open the app anyway. Chats will not work until Hermes runs.'
+                          )
+                        : tx(
+                            'skipConfirmOnlinePlain',
+                            'Hermes is not running yet. Tap Skip for now again to open the app without it. Chats will not work until Hermes runs.'
+                          )}
+                    </div>
+                  )}
+
                   <button
-                    onClick={finishOnboarding}
-                    className="w-full py-3.5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-sm transition cursor-pointer flex items-center justify-center gap-2 shadow-xs"
+                    onClick={handleSkip}
+                    className="w-full min-h-[44px] inline-flex items-center justify-center text-center t-caption text-[var(--app-text-muted)] hover:text-[var(--app-text)] cursor-pointer transition"
                   >
-                    <Check className="w-4 h-4" />
-                    <span>{tx('finishSetup', 'Finish setup')}</span>
+                    {tx('skipForNowPlain', 'Skip for now')}
                   </button>
-                ) : (
-                  <button
-                    onClick={handleLaunch}
-                    disabled={launching}
-                    aria-disabled={launching}
-                    className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm transition cursor-pointer flex items-center justify-center gap-2 shadow-xs disabled:opacity-60 disabled:cursor-wait"
-                  >
-                    <Check className="w-4 h-4" />
-                    <span>{launching ? tx('launching', 'Launching...') : t('launchHermes')}</span>
-                  </button>
-                )}
-
-                {skipArmed && (
-                  <div role="alert" className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 leading-relaxed">
-                    {isOffline ? t('skipConfirmOffline') : t('skipConfirmOnline')}
-                  </div>
-                )}
-                <button
-                  onClick={handleSkip}
-                  className="w-full min-h-[44px] inline-flex items-center justify-center text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
-                >
-                  {t('skipWorkspace')}
-                </button>
-
-                <button
-                  onClick={() => setStep(2)}
-                  className="w-full min-h-[44px] inline-flex items-center justify-center text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
-                >
-                  {t('back')}
-                </button>
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
         {backConfirm && (
-          <div role="alert" className="fixed inset-x-4 bottom-4 p-3.5 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-xs text-amber-200 leading-relaxed max-w-lg mx-auto">
+          <div
+            role="alert"
+            className="fixed inset-x-4 bottom-4 p-4 r-lg elev-3 bg-[var(--app-warning-subtle)] border border-[var(--app-warning-border)] t-caption text-[var(--app-warning)] max-w-lg mx-auto"
+          >
             {tx(
               'installBackBlocked',
               'Setup is still running. Leaving now stops this screen, not the install itself, so it is safer to wait. Press back again after setup finishes.'

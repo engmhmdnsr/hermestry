@@ -130,7 +130,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
         setNextOffset(page.nextOffset);
       } catch (e) {
         if (cancelled) return;
-        setPageError(e instanceof Error ? e.message : tx('couldNotLoadConversations', 'Could not load conversations.'));
+        setPageError(e instanceof Error ? e.message : tx('couldNotLoadChats', 'Could not load chats.'));
       } finally {
         if (!cancelled) setMetaLoading(false);
       }
@@ -156,7 +156,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       setNextOffset(page.nextOffset);
       if (page.error && !page.stale) setPageError(page.error);
     } catch (e) {
-      setPageError(e instanceof Error ? e.message : tx('couldNotLoadMore', 'Could not load more conversations.'));
+      setPageError(e instanceof Error ? e.message : tx('couldNotLoadMoreChats', 'Could not load more chats.'));
     } finally {
       setLoadingMore(false);
     }
@@ -175,7 +175,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       setHasMore(page.hasMore);
       setNextOffset(page.nextOffset);
     } catch (e) {
-      setPageError(e instanceof Error ? e.message : tx('couldNotLoadConversations', 'Could not load conversations.'));
+      setPageError(e instanceof Error ? e.message : tx('couldNotLoadChats', 'Could not load chats.'));
     }
   };
 
@@ -185,7 +185,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       onSelectSession(newId);
       onClose();
     } catch {
-      showDrawerToast(tx('couldNotCreateSession', 'Could not create session. Gateway unreachable.'), 'error');
+      showDrawerToast(tx('couldNotCreateSession', 'Could not start a chat. The Hermes server did not answer.'), 'error');
     }
   };
 
@@ -193,7 +193,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     try {
       await forkSession(id);
     } catch {
-      showDrawerToast(tx('forkFailed', 'Fork failed. The conversation was not forked.'), 'error');
+      showDrawerToast(tx('branchFailed', 'Could not start a copy of this chat. The original chat is unchanged.'), 'error');
     }
   };
 
@@ -350,9 +350,9 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     try {
       await renameSession(target.id, next);
       setRenameTarget(null);
-      showDrawerToast(tx('conversationRenamed', 'Conversation renamed.'), 'success');
+      showDrawerToast(tx('chatRenamed', 'Chat renamed.'), 'success');
     } catch {
-      setRenameError(tx('renameFailed', 'Rename failed. The conversation was not renamed.'));
+      setRenameError(tx('renameFailed', 'Could not rename this chat. The name is unchanged.'));
     } finally {
       setIsSavingRename(false);
     }
@@ -367,14 +367,20 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
           role="status"
           aria-live="polite"
           style={{ top: 'calc(4rem + env(safe-area-inset-top, 0px))' }}
-          className={`fixed start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] px-4 py-2 rounded-lg text-white text-xs font-semibold shadow-2xl ${toastKind === 'error' ? 'bg-rose-600' : toastKind === 'success' ? 'bg-emerald-600' : 'bg-slate-800 border border-white/[0.1]'}`}
+          className={`fixed start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] px-4 py-2 r-sm elev-3 t-caption font-semibold ${
+            toastKind === 'error'
+              ? 'bg-[var(--app-danger)] text-[var(--app-bg)]'
+              : toastKind === 'success'
+                ? 'bg-[var(--app-success)] text-[var(--app-bg)]'
+                : 'edge text-[var(--app-text)]'
+          }`}
         >
           {drawerToast}
         </div>
       )}
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-black/60 backdrop-blur-xs transition-opacity duration-200"
+        className="fixed inset-0 bg-[var(--app-scrim)] backdrop-blur-xs transition-opacity duration-200"
         onClick={onClose}
         aria-hidden="true"
       />
@@ -385,19 +391,22 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       <aside
         role="dialog"
         aria-modal="true"
-        aria-label={tx('conversations', 'Conversations')}
-        style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
-        className="relative w-full max-w-xs bg-[var(--app-card,#0E1217)] border-e border-white/[0.08] h-full flex flex-col z-10 shadow-2xl animate-in slide-in-from-left rtl:slide-in-from-right duration-200"
+        aria-label={tx('chats', 'Chats')}
+        style={{
+          paddingTop: 'env(safe-area-inset-top, 0px)',
+          backgroundColor: 'var(--app-card)',
+        }}
+        className="relative w-full max-w-xs border-e edge h-full flex flex-col z-10 elev-3 animate-in slide-in-from-left rtl:slide-in-from-right duration-200"
       >
         {/* Header: 44px row carrying 36px controls. */}
-        <div className="px-3 min-h-[44px] border-b border-white/[0.08] flex items-center justify-between gap-2">
-          <div className="flex items-center gap-1.5 min-w-0">
-            <span className="text-xs font-semibold text-white tracking-tight truncate">
-              {tx('conversations', 'Conversations')}
+        <div className="px-3 min-h-[44px] hairline border-b flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="t-body font-semibold text-[var(--app-text)] tracking-tight truncate">
+              {tx('chats', 'Chats')}
             </span>
             <span
-              className="text-[11px] text-slate-500 shrink-0"
-              aria-label={`${allSessions.length} ${tx('conversations', 'Conversations')}`}
+              className="t-caption text-[var(--app-text-dim)] shrink-0"
+              aria-label={`${allSessions.length} ${tx('chats', 'Chats')}`}
             >
               ({allSessions.length})
             </span>
@@ -406,17 +415,17 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
           <div className="flex items-center gap-1 shrink-0">
             <button
               onClick={() => void handleNewSession()}
-              className="w-9 h-9 rounded-lg flex items-center justify-center text-indigo-400 hover:text-white hover:bg-white/[0.06] transition"
-              title={tx('newSession', 'New Session')}
-              aria-label={tx('newSession', 'New Session')}
+              className="w-9 h-9 r-sm flex items-center justify-center text-[var(--app-accent-text)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)] transition"
+              title={tx('newChat', 'New chat')}
+              aria-label={tx('newChat', 'New chat')}
             >
               <Plus className="w-4 h-4" />
             </button>
             <button
               onClick={onClose}
-              className="w-9 h-9 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.06] transition"
-              title={tx('closeConversations', 'Close conversations')}
-              aria-label={tx('closeConversations', 'Close conversations')}
+              className="w-9 h-9 r-sm flex items-center justify-center text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)] transition"
+              title={tx('closeChats', 'Close chats')}
+              aria-label={tx('closeChats', 'Close chats')}
             >
               <X className="w-4 h-4" />
             </button>
@@ -424,37 +433,37 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
         </div>
 
         {/* Search & Filters */}
-        <div className="px-3 py-2 border-b border-white/[0.06] space-y-2">
+        <div className="px-3 py-2 hairline border-b space-y-2">
           <div className="relative">
-            <Search className="w-3.5 h-3.5 absolute start-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+            <Search className="w-4 h-4 absolute start-3 top-1/2 -translate-y-1/2 text-[var(--app-text-dim)] pointer-events-none" />
             <input
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder={tx('searchConversationsPlaceholder', 'Search title, model, or id…')}
-              aria-label={tx('searchConversations', 'Search conversations')}
-              className="w-full ps-9 pe-9 h-9 rounded-lg bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+              placeholder={tx('searchChatsPlaceholder', 'Search chats by title, model, or id…')}
+              aria-label={tx('searchChats', 'Search chats')}
+              className="w-full ps-9 pe-9 h-9 r-sm edge bg-[var(--app-input-bg)] t-caption text-[var(--app-text)] placeholder:text-[var(--app-text-dim)] focus:outline-none focus:border-[var(--app-accent)]"
             />
             {query && (
               <button
                 type="button"
                 onClick={() => setQuery('')}
-                aria-label={tx('clearSearch', 'Clear search')}
-                className="hm-hit absolute end-0.5 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:text-white transition"
+                aria-label={tx('clearSearch', 'Clear the search')}
+                className="hm-hit absolute end-0 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center r-sm text-[var(--app-text-dim)] hover:text-[var(--app-text)] transition"
               >
-                <X className="w-3.5 h-3.5" />
+                <X className="w-4 h-4" />
               </button>
             )}
           </div>
           {query.trim() && (
-            <p className="text-[11px] text-slate-500" role="status">
-              {visibleSessions.length} / {allSessions.length} {tx('conversationsMatch', 'conversations match')}
+            <p className="t-caption text-[var(--app-text-dim)]" role="status">
+              {visibleSessions.length} / {allSessions.length} {tx('chatsMatch', 'chats match')}
             </p>
           )}
 
           {/* Segmented sort control: 36px controls, one radius. */}
           <div className="flex items-center gap-1">
-            <span className="text-slate-500 text-[11px] uppercase font-medium me-1">
+            <span className="t-caption text-[var(--app-text-dim)] uppercase font-medium me-1">
               {tx('sortLabel', 'Sort:')}
             </span>
             {[
@@ -466,10 +475,10 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                 key={s.mode}
                 onClick={() => setSortMode(s.mode as any)}
                 aria-pressed={sortMode === s.mode}
-                className={`px-3 h-9 rounded-lg text-xs transition ${
+                className={`px-3 h-9 r-sm t-caption transition ${
                   sortMode === s.mode
-                    ? 'bg-white/[0.08] text-white font-medium'
-                    : 'text-slate-400 hover:text-white'
+                    ? 'bg-[var(--app-accent-subtle)] text-[var(--app-accent-text)] font-medium'
+                    : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
                 }`}
               >
                 {s.label}
@@ -479,64 +488,64 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
         </div>
 
         {/* Sessions Scroll List */}
-        <div className="flex-1 overflow-y-auto p-2.5 space-y-1.5">
+        <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {(listState === 'stale' || listState === 'offline') && (
-            <div role="status" className="px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300">
-              <p className="font-semibold">{tx('offlineCached', 'Offline, showing cached data')}</p>
+            <div role="status" className="px-3 py-2 r-sm t-caption border border-[var(--app-warning-border)] bg-[var(--app-warning-subtle)] text-[var(--app-warning)]">
+              <p className="font-semibold">{tx('offlineCached', 'Not connected. Showing chats saved on this phone.')}</p>
               {syncedLabel && (
-                <p className="text-amber-300/70 mt-0.5">
+                <p className="mt-1 opacity-80">
                   {tx('lastSynced', 'Last synced')} {syncedLabel}
                 </p>
               )}
             </div>
           )}
           {pageError && (
-            <div role="alert" className="px-3 py-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-[11px] text-rose-300 space-y-2">
+            <div role="alert" className="px-3 py-2 r-sm t-caption border border-[var(--app-danger-border)] bg-[var(--app-danger-subtle)] text-[var(--app-danger)] space-y-2">
               <p>{pageError}</p>
               <button
                 onClick={() => void handleRetryList()}
-                className="h-9 px-3 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 text-rose-200 font-semibold cursor-pointer"
+                className="h-9 px-3 r-sm bg-[var(--app-card-hover)] text-[var(--app-danger)] font-semibold cursor-pointer"
               >
                 {tx('retry', 'Retry')}
               </button>
             </div>
           )}
           {listState === 'loading' ? (
-            <div className="py-12 text-center text-xs text-slate-400" role="status" aria-label={tx('loadingConversations', 'Loading conversations…')}>
-              <p>{tx('loadingConversations', 'Loading conversations…')}</p>
+            <div className="py-12 text-center t-caption text-[var(--app-text-muted)]" role="status" aria-label={tx('loadingChats', 'Loading chats…')}>
+              <p>{tx('loadingChats', 'Loading chats…')}</p>
             </div>
           ) : listState === 'error' ? (
-            <div className="py-12 text-center text-xs text-slate-400 space-y-3" role="alert">
-              <p>{tx('couldNotLoadConversations', 'Could not load conversations.')}</p>
-              {pageMeta.error && <p className="text-[11px] text-slate-500">{pageMeta.error}</p>}
+            <div className="py-12 text-center t-caption text-[var(--app-text-muted)] space-y-3" role="alert">
+              <p>{tx('couldNotLoadChats', 'Could not load chats.')}</p>
+              {pageMeta.error && <p className="t-caption text-[var(--app-text-dim)]">{pageMeta.error}</p>}
               <button
                 onClick={() => void handleRetryList()}
-                className="h-9 px-4 rounded-lg bg-indigo-600 text-white text-xs font-medium cursor-pointer"
+                className="h-9 px-4 r-sm bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)] t-caption font-medium cursor-pointer"
               >
                 {tx('retry', 'Retry')}
               </button>
             </div>
           ) : allSessions.length === 0 ? (
-            <div className="py-12 text-center text-xs text-slate-400">
-              <p>{tx('noConversationsYet', 'No conversations yet')}</p>
+            <div className="py-12 text-center t-caption text-[var(--app-text-muted)]">
+              <p>{tx('noChatsYet', 'No chats yet')}</p>
               <button
                 onClick={() => void handleNewSession()}
-                className="mt-3 h-9 px-3 rounded-lg bg-indigo-600 text-white text-xs font-medium cursor-pointer"
+                className="mt-3 h-9 px-3 r-sm bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)] t-caption font-medium cursor-pointer"
               >
-                {tx('createFirstSession', 'Create First Session')}
+                {tx('startFirstChat', 'Start your first chat')}
               </button>
             </div>
           ) : visibleSessions.length === 0 ? (
-            <div className="py-12 text-center text-xs text-slate-400">
-              <p>{tx('noConversationsMatch', 'No conversations match your search')}</p>
+            <div className="py-12 text-center t-caption text-[var(--app-text-muted)]">
+              <p>{tx('noChatsMatch', 'No chats match your search')}</p>
             </div>
           ) : (
             <>
               {/* Pinned Section */}
               {pinnedSessions.length > 0 && (
                 <div className="space-y-1 mb-3">
-                  <div className="flex items-center gap-1.5 px-2 text-[11px] text-amber-400 font-medium">
-                    <Star className="w-3 h-3 fill-amber-400" />
+                  <div className="flex items-center gap-2 px-2 t-micro text-[var(--app-warning)] font-medium">
+                    <Star className="w-3 h-3 text-[var(--app-warning)]" />
                     <span aria-label={`${pinnedSessions.length} ${tx('favorites', 'Favorites')}`}>
                       {tx('favorites', 'Favorites')} ({pinnedSessions.length})
                     </span>
@@ -605,9 +614,9 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                 <button
                   onClick={() => void handleLoadMore()}
                   disabled={loadingMore}
-                  className="w-full mt-2 h-9 px-3 rounded-lg bg-white/[0.04] hover:bg-white/[0.07] disabled:opacity-50 text-xs font-medium text-slate-300 border border-white/[0.07] transition cursor-pointer"
+                  className="w-full mt-2 h-9 px-3 r-sm edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] disabled:opacity-50 t-caption font-medium text-[var(--app-text-muted)] transition cursor-pointer"
                 >
-                  {loadingMore ? tx('loadingMore', 'Loading…') : tx('loadMoreConversations', 'Load more conversations')}
+                  {loadingMore ? tx('loadingMore', 'Loading…') : tx('loadMoreChats', 'Load more chats')}
                 </button>
               )}
             </>
@@ -620,18 +629,18 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
         <div
           role="dialog"
           aria-modal="true"
-          aria-label={tx('renameConversation', 'Rename conversation')}
-          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+          aria-label={tx('renameChat', 'Rename chat')}
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-[var(--app-scrim)] backdrop-blur-xs"
           onClick={(e) => {
             if (e.target === e.currentTarget) setRenameTarget(null);
           }}
         >
           <div
-            className="w-full max-w-sm rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-4"
+            className="w-full max-w-sm r-md elev-3 edge bg-[var(--app-card)] p-4 space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 className="text-sm font-semibold text-white">
-              {tx('renameConversationTitle', 'Rename Conversation')}
+            <h3 className="t-heading font-semibold text-[var(--app-text)]">
+              {tx('renameChatTitle', 'Rename chat')}
             </h3>
             <input
               type="text"
@@ -645,11 +654,11 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
               }}
               // eslint-disable-next-line jsx-a11y/no-autofocus
               autoFocus
-              aria-label={tx('conversationTitle', 'Conversation title')}
-              className="w-full px-3.5 h-9 rounded-lg bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
+              aria-label={tx('chatTitle', 'Chat title')}
+              className="w-full px-3 h-9 r-sm edge bg-[var(--app-input-bg)] t-caption text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)]"
             />
             {renameError && (
-              <p className="text-xs text-rose-400" role="alert">{renameError}</p>
+              <p className="t-caption text-[var(--app-danger)]" role="alert">{renameError}</p>
             )}
             <div className="flex justify-end gap-2 pt-1">
               <button
@@ -657,7 +666,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                   setRenameTarget(null);
                   setRenameError('');
                 }}
-                className="h-9 px-4 rounded-lg text-xs font-medium text-slate-400 hover:text-white"
+                className="h-9 px-4 r-sm t-caption font-medium text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
               >
                 {t('cancel') || tx('cancel', 'Cancel')}
               </button>
@@ -667,9 +676,9 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                   void saveRename(renameTarget, renameTitle.trim());
                 }}
                 disabled={isSavingRename}
-                className="h-9 px-4 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold"
+                className="h-9 px-4 r-sm bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] disabled:opacity-50 text-[var(--app-on-accent)] t-caption font-semibold"
               >
-                {isSavingRename ? tx('saving', 'Saving…') : t('save') || tx('save', 'Save')}
+                {isSavingRename ? tx('saving', 'Saving…') : tx('saveShort', 'Save')}
               </button>
             </div>
           </div>
@@ -681,24 +690,24 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
         <div
           role="dialog"
           aria-modal="true"
-          aria-label={tx('deleteConversation', 'Delete conversation')}
-          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+          aria-label={tx('deleteChat', 'Delete chat')}
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-[var(--app-scrim)] backdrop-blur-xs"
           onClick={(e) => {
             if (e.target === e.currentTarget) setDeleteTarget(null);
           }}
         >
           <div
-            className="w-full max-w-sm rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-3"
+            className="w-full max-w-sm r-md elev-3 edge bg-[var(--app-card)] p-4 space-y-3"
             onClick={(e) => e.stopPropagation()}
           >
-            <h3 className="text-sm font-semibold text-white">
-              {tx('deleteConversationTitle', 'Delete Conversation?')}
+            <h3 className="t-heading font-semibold text-[var(--app-text)]">
+              {tx('deleteChatTitle', 'Delete this chat')}
             </h3>
-            <p className="text-xs text-slate-400">
-              {tx('deleteConversationLead', 'Are you sure you want to delete')} "{deleteTarget.title}"?
+            <p className="t-caption text-[var(--app-text-muted)]">
+              {tx('deleteChatLead', 'Are you sure you want to delete')} "{deleteTarget.title}"?
             </p>
             {deleteError && (
-              <p className="text-xs text-rose-400" role="alert">{deleteError}</p>
+              <p className="t-caption text-[var(--app-danger)]" role="alert">{deleteError}</p>
             )}
             <div className="flex justify-end gap-2 pt-2">
               <button
@@ -706,7 +715,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                   setDeleteTarget(null);
                   setDeleteError('');
                 }}
-                className="h-9 px-4 rounded-lg text-xs font-medium text-slate-400 hover:text-white"
+                className="h-9 px-4 r-sm t-caption font-medium text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
               >
                 {t('cancel') || tx('cancel', 'Cancel')}
               </button>
@@ -719,13 +728,13 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                     await deleteSession(deleteTarget.id);
                     setDeleteTarget(null);
                   } catch {
-                    setDeleteError(tx('deleteFailed', 'Delete failed. The conversation was not deleted.'));
+                    setDeleteError(tx('deleteFailed', 'Could not delete this chat. It is still here.'));
                   } finally {
                     setIsDeleting(false);
                   }
                 }}
                 disabled={isDeleting}
-                className="h-9 px-4 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-semibold"
+                className="h-9 px-4 r-sm bg-[var(--app-danger)] hover:brightness-110 disabled:opacity-50 text-[var(--app-bg)] t-caption font-semibold"
               >
                 {isDeleting ? tx('deleting', 'Deleting…') : t('delete') || tx('delete', 'Delete')}
               </button>
@@ -773,18 +782,18 @@ const SessionCard: React.FC<SessionCardProps> = ({
     const v = t(key);
     return !v || v === key ? fallback : v;
   };
-  const title = session.title || tx('untitledSession', 'Untitled Session');
+  const title = session.title || tx('untitledChat', 'Untitled chat');
   const menuItems: {
     label: string;
     icon: React.ReactNode;
     danger?: boolean;
     run: () => void;
   }[] = [
-    { label: tx('export', 'Export'), icon: <Download className="w-3.5 h-3.5" />, run: onExport },
-    { label: tx('copyTranscript', 'Copy transcript'), icon: <Copy className="w-3.5 h-3.5" />, run: onCopy },
-    { label: tx('rename', 'Rename'), icon: <Edit2 className="w-3.5 h-3.5" />, run: onRename },
-    { label: t('fork') || tx('fork', 'Fork'), icon: <GitFork className="w-3.5 h-3.5" />, run: onFork },
-    { label: t('delete') || tx('delete', 'Delete'), icon: <Trash2 className="w-3.5 h-3.5" />, danger: true, run: onDelete },
+    { label: tx('export', 'Export'), icon: <Download className="w-4 h-4" />, run: onExport },
+    { label: tx('copyTranscript', 'Copy transcript'), icon: <Copy className="w-4 h-4" />, run: onCopy },
+    { label: tx('rename', 'Rename'), icon: <Edit2 className="w-4 h-4" />, run: onRename },
+    { label: tx('duplicateChat', 'Duplicate chat'), icon: <GitFork className="w-4 h-4" />, run: onFork },
+    { label: t('delete') || tx('delete', 'Delete'), icon: <Trash2 className="w-4 h-4" />, danger: true, run: onDelete },
   ];
 
   return (
@@ -799,31 +808,31 @@ const SessionCard: React.FC<SessionCardProps> = ({
         }
       }}
       aria-current={isSelected ? 'true' : undefined}
-      aria-label={`${title}${isSelected ? `, ${tx('currentConversation', 'current conversation')}` : ''}`}
-      className={`group relative min-h-[44px] p-2.5 rounded-lg border transition-all cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
+      aria-label={`${title}${isSelected ? `, ${tx('currentChat', 'current chat')}` : ''}`}
+      className={`group relative min-h-[44px] p-2 r-sm border transition-all cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-accent)] ${
         isSelected
-          ? 'bg-indigo-600/10 border-indigo-500/40 text-white'
-          : 'bg-[var(--app-card-subtle,#141920)]/60 hover:bg-[var(--app-card-subtle,#141920)] border-white/[0.05] hover:border-white/[0.1]'
+          ? 'bg-[var(--app-accent-subtle)] border-[var(--app-accent)] text-[var(--app-accent-text)]'
+          : 'bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] edge'
       }`}
     >
       <div className="flex items-start justify-between gap-2">
-        <h4 className="text-xs font-medium text-slate-200 line-clamp-1 flex-1 leading-snug">
+        <h4 className="t-body font-medium text-[var(--app-text)] line-clamp-1 flex-1 leading-snug">
           {title}
         </h4>
-        <div className="flex items-center gap-0.5 -me-0.5 -mt-0.5">
+        <div className="flex items-center gap-1 -me-1 -mt-1">
           <button
             onClick={(e) => {
               e.stopPropagation();
               onTogglePin();
             }}
-            className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${
-              isPinned ? 'text-amber-400' : 'text-slate-500 hover:text-slate-300'
+            className={`w-9 h-9 flex items-center justify-center r-sm transition ${
+              isPinned ? 'text-[var(--app-warning)]' : 'text-[var(--app-text-dim)] hover:text-[var(--app-text)]'
             }`}
-            title={isPinned ? tx('unpin', 'Unpin') : tx('pinToFavorites', 'Pin to favorites')}
-            aria-label={`${isPinned ? tx('unpin', 'Unpin') : tx('pin', 'Pin')} ${title}`}
+            title={isPinned ? tx('unpinFromFavorites', 'Remove from favorites') : tx('pinToFavorites', 'Add to favorites')}
+            aria-label={`${isPinned ? tx('unpinFromFavorites', 'Remove from favorites') : tx('pinToFavorites', 'Add to favorites')}: ${title}`}
             aria-pressed={isPinned}
           >
-            <Star className={`w-3.5 h-3.5 ${isPinned ? 'fill-amber-400' : ''}`} />
+            <Star className={`w-4 h-4 ${isPinned ? 'text-[var(--app-warning)]' : ''}`} />
           </button>
           <div className="relative">
             <button
@@ -837,7 +846,7 @@ const SessionCard: React.FC<SessionCardProps> = ({
               aria-haspopup="menu"
               aria-expanded={isMenuOpen}
               aria-label={`${tx('moreActions', 'More actions')}: ${title}`}
-              className="w-9 h-9 flex items-center justify-center rounded-lg text-slate-500 hover:text-white transition"
+              className="w-9 h-9 flex items-center justify-center r-sm text-[var(--app-text-dim)] hover:text-[var(--app-text)] transition"
             >
               <MoreHorizontal className="w-4 h-4" />
             </button>
@@ -854,7 +863,7 @@ const SessionCard: React.FC<SessionCardProps> = ({
                 <div
                   role="menu"
                   aria-label={`${tx('moreActions', 'More actions')}: ${title}`}
-                  className="absolute end-0 top-full z-50 w-44 rounded-lg bg-[var(--app-card,#0E1217)] border border-white/[0.1] shadow-2xl p-1"
+                  className="absolute end-0 top-full z-50 w-44 r-sm elev-2 edge bg-[var(--app-card)] p-1"
                   onClick={(e) => e.stopPropagation()}
                   onKeyDown={(e) => {
                     if (e.key === 'Escape') onCloseMenu();
@@ -868,10 +877,10 @@ const SessionCard: React.FC<SessionCardProps> = ({
                         onCloseMenu();
                         item.run();
                       }}
-                      className={`w-full h-9 px-2.5 flex items-center gap-2.5 rounded-lg text-xs transition cursor-pointer ${
+                      className={`w-full h-9 px-3 flex items-center gap-3 r-sm t-caption transition cursor-pointer ${
                         item.danger
-                          ? 'text-rose-400 hover:bg-rose-500/10'
-                          : 'text-slate-300 hover:bg-white/[0.06] hover:text-white'
+                          ? 'text-[var(--app-danger)] hover:bg-[var(--app-danger-subtle)]'
+                          : 'text-[var(--app-text-muted)] hover:bg-[var(--app-card-hover)] hover:text-[var(--app-text)]'
                       }`}
                     >
                       {item.icon}
@@ -885,7 +894,7 @@ const SessionCard: React.FC<SessionCardProps> = ({
         </div>
       </div>
 
-      <div className="flex items-center justify-between mt-0.5 text-[11px] text-slate-400">
+      <div className="flex items-center justify-between mt-1 t-caption text-[var(--app-text-muted)]">
         <span aria-label={`${session.messageCount} ${tx('messages', 'messages')}`}>
           {session.messageCount} {tx('msgs', 'msgs')}
         </span>

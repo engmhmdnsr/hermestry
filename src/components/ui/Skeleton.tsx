@@ -40,19 +40,27 @@ export const Skeleton: FC<SkeletonProps> = ({
 export interface TabPaneSkeletonProps {
   className?: string;
   rows?: number;
+  /** Short, translated accessible label. Omit to render aria-hidden. */
   label?: string;
 };
 
 /**
  * Suspense fallback for lazy tabs (Jobs/Settings): a hero block plus text
  * rows that roughly match tab content shape, replacing the bare spinner.
+ *
+ * `label` is read out by a screen reader, so it must be short, specific and
+ * already translated by the caller (for example "Loading your chats", not a
+ * bare "Loading"). Omit it and the fallback stays aria-hidden.
  */
 export const TabPaneSkeleton: FC<TabPaneSkeletonProps> = ({
   className = '',
   rows = 5,
-  label = 'Loading tab',
+  label,
 }) => (
-  <div role="status" aria-label={label} className={`hm-tab-skeleton ${className}`.trim()}>
+  <div
+    {...(label ? { role: 'status', 'aria-label': label } : { 'aria-hidden': true })}
+    className={`hm-tab-skeleton ${className}`.trim()}
+  >
     <div className="hm-skeleton hm-tab-skeleton-hero" aria-hidden="true" />
     {Array.from({ length: rows }).map((_, i) => (
       <div
@@ -70,7 +78,9 @@ export const TabPaneSkeleton: FC<TabPaneSkeletonProps> = ({
 
    Each primitive reuses .hm-skeleton (theme-aware shimmer, RTL sheen,
    reduced-motion safe) and mirrors the height/padding/radius of the real
-   content it stands in for, so the swap does not shift layout.
+   content it stands in for, so the swap does not shift layout. Radii come from
+   the shared .r-* scale and surfaces from .edge, so a skeleton matches the
+   real component geometry in both themes.
 
    Import them from './components/ui/Skeleton' (or the tab's relative path):
 
@@ -78,8 +88,10 @@ export const TabPaneSkeleton: FC<TabPaneSkeletonProps> = ({
        TabHeroSkeleton, ListRowSkeleton, CardSkeleton, ChatBubbleSkeleton,
      } from '../ui/Skeleton';
 
-   All four accept `className` and `label`. Pass a translated `label` so the
-   role="status" announcement is localized; omit it to stay aria-hidden.
+   All four accept `className` and `label`. Pass a short, translated `label`
+   that names the content being waited on ("Loading your chats", "Loading your
+   scheduled tasks") so the role="status" announcement is specific and
+   localized; omit it to stay aria-hidden.
    --------------------------------------------------------------------------- */
 
 export interface TabHeroSkeletonProps {
@@ -98,7 +110,7 @@ export const TabHeroSkeleton: FC<TabHeroSkeletonProps> = ({
 }) => (
   <div
     {...(label ? { role: 'status', 'aria-label': label } : { 'aria-hidden': true })}
-    className={`hm-skeleton rounded-2xl ${className}`.trim()}
+    className={`hm-skeleton r-md ${className}`.trim()}
     style={{ height: `${heightRem}rem` }}
   />
 );
@@ -125,12 +137,12 @@ export const ListRowSkeleton: FC<ListRowSkeletonProps> = ({
     {Array.from({ length: rows }).map((_, i) => (
       <div
         key={i}
-        className="flex items-center gap-3 rounded-2xl border border-white/[0.06] px-3 py-3"
+        className="flex items-center gap-3 r-md edge px-3 py-3"
       >
         {thumb && <div className="hm-skeleton shrink-0" style={{ width: '2.25rem', height: '2.25rem', borderRadius: '9999px' }} />}
         <div className="flex-1 min-w-0 space-y-2">
-          <div className="hm-skeleton" style={{ height: '0.75rem', width: `${78 - (i % 3) * 14}%` }} />
-          <div className="hm-skeleton" style={{ height: '0.625rem', width: `${52 - (i % 2) * 12}%` }} />
+          <div className="hm-skeleton r-xs" style={{ height: '0.75rem', width: `${78 - (i % 3) * 14}%` }} />
+          <div className="hm-skeleton r-xs" style={{ height: '0.625rem', width: `${52 - (i % 2) * 12}%` }} />
         </div>
       </div>
     ))}
@@ -144,7 +156,7 @@ export interface CardSkeletonProps {
   label?: string;
 }
 
-/** Stacked content cards matching rounded-2xl panels with a title and lines. */
+/** Stacked content cards matching rounded content panels with a title and lines. */
 export const CardSkeleton: FC<CardSkeletonProps> = ({
   className = '',
   cards = 3,
@@ -156,10 +168,10 @@ export const CardSkeleton: FC<CardSkeletonProps> = ({
     className={`flex flex-col gap-3 ${className}`.trim()}
   >
     {Array.from({ length: cards }).map((_, i) => (
-      <div key={i} className="rounded-2xl border border-white/[0.06] p-4 space-y-2">
-        <div className="hm-skeleton" style={{ height: '0.8125rem', width: `${60 - (i % 3) * 10}%` }} />
+      <div key={i} className="r-md edge p-4 space-y-2">
+        <div className="hm-skeleton r-xs" style={{ height: '0.8125rem', width: `${60 - (i % 3) * 10}%` }} />
         {Array.from({ length: lines }).map((__, j) => (
-          <div key={j} className="hm-skeleton" style={{ height: '0.625rem', width: `${90 - j * 18}%` }} />
+          <div key={j} className="hm-skeleton r-xs" style={{ height: '0.625rem', width: `${90 - j * 18}%` }} />
         ))}
       </div>
     ))}
@@ -185,11 +197,11 @@ export const ChatBubbleSkeleton: FC<ChatBubbleSkeletonProps> = ({
     {...(label ? { role: 'status', 'aria-label': label } : { 'aria-hidden': true })}
     className={`flex ${side === 'end' ? 'justify-end' : 'justify-start'} ${className}`.trim()}
   >
-    <div className="max-w-[78%] rounded-2xl border border-white/[0.06] px-3.5 py-2.5 space-y-2">
+    <div className="max-w-[78%] r-md edge px-4 py-3 space-y-2">
       {Array.from({ length: lines }).map((_, i) => (
         <div
           key={i}
-          className="hm-skeleton"
+          className="hm-skeleton r-xs"
           style={{ height: '0.625rem', width: i === lines - 1 ? '58%' : `${92 - (i % 3) * 10}%` }}
         />
       ))}

@@ -3,22 +3,27 @@
 // Share requires explicit consent (contents, destination, retention).
 // Log lines use a fixed format with severity and correlation ids and
 // carry no credentials (redacted before format, never after).
+// Every user-visible string goes through the translate function; log lines,
+// URLs and paths stay raw mono text.
 
 import React, { useState } from 'react';
 import type { DebugShare } from '../../types/hermes';
 import { redactSecrets, runRedactionSelfTests } from '../../services/redaction';
+import { useHermes } from '../../context/HermesContext';
 
+// Consent facts as translatable pairs with an English fallback. The raw
+// endpoint and policy wording stay in the code, not in front of the user.
 export const DEBUG_SHARE_CONSENT_SPEC = {
   requiresExplicitConfirm: true,
-  contents: [
-    'app version and platform',
-    'gateway status and doctor checks',
-    'redacted settings (no keys)',
-    'recent log lines (redacted, capped at 200)',
-  ],
-  destination: 'gateway /api/debug/share, URLs returned to this device only',
-  retention: 'bundle kept server-side per gateway policy; delete via gateway ops',
-  redactionNote: 'central content-aware redaction runs before upload; leak self-tests must pass',
+  contentsKey: 'debugConsentContents',
+  contents:
+    'the app version and platform, service status and checks, settings with secrets removed, and the last 200 log lines',
+  destinationKey: 'debugConsentDestination',
+  destination: 'sent to your own Hermes server, and any links come back to this phone only',
+  retentionKey: 'debugConsentRetention',
+  retention: 'kept on your Hermes server under its own policy, so delete it from the server when you are done',
+  redactionNoteKey: 'debugConsentRedaction',
+  redactionNote: 'secrets are removed before upload, and the secret-removal self-tests must pass first',
 } as const;
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -67,63 +72,104 @@ interface DebugBundlePanelProps {
   sharing: boolean;
   result: DebugShare | null;
   onShareDebug: () => void;
+  // Translate lookup from the caller (useHermes). Optional: a missing lookup
+  // degrades to the English fallback instead of printing the raw key.
+  t?: (key: string) => string;
 }
 
-export const DebugBundlePanel: React.FC<DebugBundlePanelProps> = ({ sharing, result, onShareDebug }) => {
+export const DebugBundlePanel: React.FC<DebugBundlePanelProps> = ({ sharing, result, onShareDebug, t }) => {
   const [consentContents, setConsentContents] = useState(false);
   const [consentDest, setConsentDest] = useState(false);
   const selfTests = runRedactionSelfTests();
   const ready = consentContents && consentDest && selfTests.passed;
+  // The prop wins when a caller passes its own lookup; otherwise the app
+  // context supplies it, so this panel translates even when mounted bare.
+  const { t: ctxT } = useHermes();
+  const lookup = t ?? ctxT;
+  const tx = (key: string, fallback: string): string => {
+    const v = lookup(key);
+    return !v || v === key ? fallback : v;
+  };
 
   return (
-    <div className="rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-5 space-y-4">
+    <div className="r-md edge elev-0 bg-[var(--app-card)] p-5 space-y-4">
       <div>
-        <h4 className="text-sm font-semibold text-white">Debug bundle</h4>
-        <p className="text-xs text-slate-400 mt-0.5">
-          Explicit consent required. Secrets are redacted before upload.
+        <h4 className="t-heading text-[var(--app-text)]">{tx('debugBundleTitlePlain', 'Diagnostics bundle')}</h4>
+        <p className="t-body text-[var(--app-text-muted)] mt-1">
+          {tx('debugBundleIntroPlain', 'Nothing is shared until you tick both boxes. Secrets are removed before upload.')}
         </p>
       </div>
-      <div className="text-[11px] text-slate-400 space-y-1">
-        <p><span className="text-slate-200 font-medium">Contents: </span>{DEBUG_SHARE_CONSENT_SPEC.contents.join('; ')}.</p>
-        <p><span className="text-slate-200 font-medium">Destination: </span>{DEBUG_SHARE_CONSENT_SPEC.destination}.</p>
-        <p><span className="text-slate-200 font-medium">Retention: </span>{DEBUG_SHARE_CONSENT_SPEC.retention}.</p>
+      <div className="t-caption text-[var(--app-text-muted)] space-y-2">
         <p>
-          <span className="text-slate-200 font-medium">Leak self-tests: </span>
+          <span className="t-label text-[var(--app-text)]">{tx('debugContentsLabel', 'Contents')}: </span>
+          {tx(DEBUG_SHARE_CONSENT_SPEC.contentsKey, DEBUG_SHARE_CONSENT_SPEC.contents)}.
+        </p>
+        <p>
+          <span className="t-label text-[var(--app-text)]">{tx('debugDestinationLabel', 'Where it goes')}: </span>
+          {tx(DEBUG_SHARE_CONSENT_SPEC.destinationKey, DEBUG_SHARE_CONSENT_SPEC.destination)}.
+        </p>
+        <p>
+          <span className="t-label text-[var(--app-text)]">{tx('debugRetentionLabel', 'How long it is kept')}: </span>
+          {tx(DEBUG_SHARE_CONSENT_SPEC.retentionKey, DEBUG_SHARE_CONSENT_SPEC.retention)}.
+        </p>
+        <p>
+          <span className="t-label text-[var(--app-text)]">{tx('debugSelfTestsLabel', 'Secret-removal self-tests')}: </span>
           {selfTests.passed ? (
-            <span className="text-emerald-400">passed ({selfTests.checked}/{selfTests.checked})</span>
+            <span className="pill-success">
+              {tx('debugSelfTestsPassed', 'Passed')} ({selfTests.checked}/{selfTests.checked})
+            </span>
           ) : (
-            <span className="text-rose-400">FAILED: {selfTests.failures.join('; ')}</span>
+            <span className="pill-danger">
+              {tx('debugSelfTestsFailedPill', 'Failed')}: {selfTests.failures.join('; ')}
+            </span>
           )}
         </p>
       </div>
-      <label className="flex items-start gap-2 text-[11px] text-slate-300 cursor-pointer">
+      <label className="flex items-start gap-2 t-label text-[var(--app-text)] cursor-pointer">
         <input
           type="checkbox"
           checked={consentContents}
           onChange={(e) => setConsentContents(e.target.checked)}
-          className="mt-0.5"
+          className="mt-1"
         />
-        <span>I agree to share the contents listed above, redacted.</span>
+        <span>{tx('debugConsentContentsAck', 'I agree to share the contents listed above, with secrets removed.')}</span>
       </label>
-      <label className="flex items-start gap-2 text-[11px] text-slate-300 cursor-pointer">
+      <label className="flex items-start gap-2 t-label text-[var(--app-text)] cursor-pointer">
         <input
           type="checkbox"
           checked={consentDest}
           onChange={(e) => setConsentDest(e.target.checked)}
-          className="mt-0.5"
+          className="mt-1"
         />
-        <span>I understand the destination and retention policy above.</span>
+        <span>{tx('debugConsentDestinationAck', 'I understand where it goes and how long it is kept.')}</span>
       </label>
       <button
         onClick={onShareDebug}
         disabled={sharing || !ready}
-        title={!selfTests.passed ? 'Redaction self-tests must pass first' : undefined}
-        className="px-3.5 py-2 min-h-[44px] rounded-xl bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer"
+        title={!selfTests.passed ? tx('debugTestsMustPass', 'Secret-removal self-tests must pass first') : undefined}
+        className="inline-flex items-center justify-center px-4 min-h-[44px] r-sm bg-[var(--app-warning)] hover:opacity-90 disabled:opacity-50 text-[var(--app-bg)] t-label font-semibold cursor-pointer"
       >
-        {sharing ? 'Generating bundle...' : 'Generate and share debug bundle'}
+        {sharing
+          ? tx('debugGeneratingPlain', 'Building the bundle…')
+          : tx('debugShareAction', 'Build and share the bundle')}
       </button>
       {result && (
-        <p role="status" className="text-[11px] text-slate-300">{result.summary}</p>
+        <div
+          role="status"
+          className="r-sm edge bg-[var(--app-card-subtle)] px-3 py-2 space-y-2"
+        >
+          <span className="pill-success">{tx('debugSharedPill', 'Shared')}</span>
+          <p className="t-caption text-[var(--app-text)] break-words">{result.summary}</p>
+          {result.urls.length > 0 && (
+            <ul className="space-y-2">
+              {result.urls.map((u) => (
+                <li key={u} className="t-micro normal-case font-mono text-[var(--app-text-muted)] break-all">
+                  {u}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
     </div>
   );

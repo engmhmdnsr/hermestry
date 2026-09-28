@@ -28,6 +28,7 @@ import { useHermes } from '../../context/HermesContext';
 import {
   PROVIDER_OPTIONS,
   normProvider,
+  providerLabel,
   DEFAULT_MODELS,
   keysValid,
 } from '../../constants/providers';
@@ -77,40 +78,131 @@ const PROVIDER_CREDENTIAL_FIELD = 'apiKey' as const;
 
 type RiskLevel = 'high' | 'medium' | 'low' | 'off';
 
-const RiskBadge: React.FC<{ level: RiskLevel; label: string }> = ({ level, label }) => {
-  const styles: Record<RiskLevel, string> = {
-    high: 'bg-rose-500/10 text-rose-300 border-rose-500/30',
-    medium: 'bg-amber-500/10 text-amber-300 border-amber-500/30',
-    low: 'bg-sky-500/10 text-sky-300 border-sky-500/30',
-    off: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30',
-  };
-  return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-semibold border ${styles[level]}`}>
-      {level === 'off' ? <ShieldCheck className="w-3 h-3" /> : <ShieldAlert className="w-3 h-3" />}
-      {label}
-    </span>
-  );
-};
+// One badge for every chip in this file. Tone maps onto the shared .pill-* set
+// so status reads identically in a section header, a row and a sheet, and
+// 'neutral' stays reserved for Off, Disabled and unknown values.
+type BadgeTone = 'success' | 'warning' | 'danger' | 'info' | 'neutral' | 'accent';
+
+const Badge: React.FC<{
+  tone: BadgeTone;
+  children: React.ReactNode;
+  icon?: React.ReactNode;
+  ariaLabel?: string;
+  className?: string;
+}> = ({ tone, children, icon, ariaLabel, className = '' }) => (
+  <span
+    aria-label={ariaLabel}
+    className={`pill-${tone} ${className}`}
+  >
+    {icon}
+    {children}
+  </span>
+);
+
+// Risk is domain vocabulary, not a colour: high and medium are the two levels
+// that need review, low is informational and off is the neutral resting state.
+const riskTone = (level: RiskLevel): BadgeTone =>
+  level === 'high' ? 'danger' : level === 'medium' ? 'warning' : level === 'low' ? 'info' : 'neutral';
+
+const riskIcon = (level: RiskLevel) =>
+  level === 'off' ? <ShieldCheck className="w-3 h-3" /> : <ShieldAlert className="w-3 h-3" />;
+
+// One boolean control for the whole file: Auto-start and every skill toggle.
+const Switch: React.FC<{ checked: boolean; onChange: () => void; ariaLabel: string }> = ({
+  checked,
+  onChange,
+  ariaLabel,
+}) => (
+  <button
+    type="button"
+    role="switch"
+    aria-checked={checked}
+    aria-label={ariaLabel}
+    onClick={onChange}
+    className={`hm-hit w-11 h-6 shrink-0 flex items-center r-full p-1 cursor-pointer transition-colors ${
+      checked ? 'bg-[var(--app-accent)]' : 'bg-[var(--app-card-hover)]'
+    }`}
+  >
+    <span
+      className={`block bg-[var(--app-text)] w-4 h-4 r-full transition-transform ${
+        checked ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'
+      }`}
+    />
+  </button>
+);
+
+// One enumeration control for the whole file: approval scope, theme mode and
+// reasoning effort all render as the same segmented strip.
+const Segmented: React.FC<{
+  groupLabel: string;
+  options: Array<{ id: string; label: string; icon?: React.ComponentType<{ className?: string }> }>;
+  value: string;
+  onSelect: (id: string, label: string) => void;
+  pendingId?: string | null;
+  stretch?: boolean;
+  className?: string;
+}> = ({ groupLabel, options, value, onSelect, pendingId = null, stretch = false, className = '' }) => (
+  <div
+    role="group"
+    aria-label={groupLabel}
+    className={`flex items-center gap-1 p-1 r-sm bg-[var(--app-card-subtle)] edge ${
+      stretch ? 'w-full' : 'shrink-0'
+    } ${className}`}
+  >
+    {options.map((opt) => {
+      const selected = value === opt.id;
+      const Icon = opt.icon;
+      return (
+        <button
+          key={opt.id}
+          type="button"
+          onClick={() => onSelect(opt.id, opt.label)}
+          aria-pressed={selected}
+          aria-label={`${groupLabel}: ${opt.label}`}
+          className={`hm-hit flex items-center justify-center gap-2 px-3 py-2 min-h-[36px] r-xs t-label font-medium transition-colors cursor-pointer ${
+            stretch ? 'flex-1' : ''
+          } ${
+            selected
+              ? 'bg-[var(--app-accent-subtle)] text-[var(--app-accent-text)] font-semibold'
+              : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
+          } ${pendingId === opt.id ? 'ring-1 ring-[var(--app-warning)]' : ''}`}
+        >
+          {Icon ? <Icon className="w-3.5 h-3.5 shrink-0" /> : null}
+          <span>{opt.label}</span>
+        </button>
+      );
+    })}
+  </div>
+);
 
 type DataState = 'loading' | 'empty' | 'offline' | 'error' | 'stale' | 'refreshing' | 'ready';
 
-const StateNote: React.FC<{ state: DataState; message: string; onRetry?: () => void }> = ({
-  state,
-  message,
-  onRetry,
-}) => {
+const StateNote: React.FC<{
+  state: DataState;
+  message: string;
+  // Optional raw text (installer output, HTTP status). It renders as the mono
+  // line under the plain sentence, never as the sentence itself.
+  detail?: string;
+  onRetry?: () => void;
+}> = ({ state, message, detail, onRetry }) => {
+  const { t } = useHermes();
+  // Same degrade rule as the tab: a missing key renders the English fallback.
+  const tx = (key: string, fallback: string): string => {
+    const v = t(key);
+    return !v || v === key ? fallback : v;
+  };
   if (state === 'ready') return null;
   const styles: Record<DataState, string> = {
-    loading: 'text-slate-400 border-white/[0.06]',
-    empty: 'text-slate-500 border-white/[0.06]',
-    offline: 'text-rose-300 border-rose-500/20 bg-rose-500/[0.04]',
-    error: 'text-rose-300 border-rose-500/20 bg-rose-500/[0.04]',
-    stale: 'text-amber-300 border-amber-500/20 bg-amber-500/[0.04]',
-    refreshing: 'text-indigo-300 border-indigo-500/20 bg-indigo-500/[0.04]',
+    loading: 't-caption text-[var(--app-text-muted)] edge',
+    empty: 't-caption text-[var(--app-text-dim)] edge',
+    offline: 't-caption text-[var(--app-danger)] border border-[var(--app-danger-border)] bg-[var(--app-danger-subtle)]',
+    error: 't-caption text-[var(--app-danger)] border border-[var(--app-danger-border)] bg-[var(--app-danger-subtle)]',
+    stale: 't-caption text-[var(--app-warning)] border border-[var(--app-warning-border)] bg-[var(--app-warning-subtle)]',
+    refreshing: 't-caption text-[var(--app-accent-text)] border border-[var(--app-border)] bg-[var(--app-accent-subtle)]',
     ready: '',
   };
   return (
-    <div className={`flex items-center gap-2 p-3 rounded-xl border text-[11px] ${styles[state]}`}>
+    <div className={`flex items-center gap-2 p-4 r-sm border ${styles[state]}`}>
       {state === 'offline' ? (
         <WifiOff className="w-3.5 h-3.5 shrink-0" />
       ) : state === 'refreshing' || state === 'loading' ? (
@@ -120,10 +212,17 @@ const StateNote: React.FC<{ state: DataState; message: string; onRetry?: () => v
       ) : (
         <Wifi className="w-3.5 h-3.5 shrink-0 opacity-60" />
       )}
-      <span className="flex-1">{message}</span>
+      <span className="flex-1">
+        {message}
+        {detail && (
+          <span className="block t-micro normal-case font-mono text-[var(--app-text-dim)] break-words mt-1">
+            {detail}
+          </span>
+        )}
+      </span>
       {onRetry && (state === 'error' || state === 'offline') && (
-        <button onClick={onRetry} className="hm-hit text-indigo-300 hover:text-indigo-200 font-semibold cursor-pointer shrink-0">
-          Retry
+        <button onClick={onRetry} className="hm-hit inline-flex items-center px-3 py-2 min-h-[36px] r-sm t-label text-[var(--app-accent-text)] hover:text-[var(--app-text)] cursor-pointer shrink-0">
+          {tx('retryLabel', 'Retry')}
         </button>
       )}
     </div>
@@ -141,33 +240,42 @@ const Section: React.FC<{
 }> = ({ title, subtitle, open, onToggle, id, badge, children }) => (
   <section
     id={id}
-    className="scroll-mt-4 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] shadow-xs overflow-hidden"
+    className="scroll-mt-4 r-md elev-0 bg-[var(--app-card)] edge overflow-hidden"
   >
     <button
       onClick={onToggle}
       aria-expanded={open}
-      className="w-full px-5 py-4 flex items-center gap-3 text-start cursor-pointer hover:bg-white/[0.02] transition"
+      className="w-full px-5 py-4 flex items-center gap-3 text-start cursor-pointer hover:bg-[var(--app-card-hover)] transition"
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <h3 className="text-sm font-semibold text-white tracking-tight">{title}</h3>
+          <h3 className="t-heading text-[var(--app-text)] tracking-tight">{title}</h3>
           {badge}
         </div>
-        <p className="text-xs text-slate-400 mt-0.5 truncate">{subtitle}</p>
+        <p className="t-caption text-[var(--app-text-muted)] mt-1 truncate">{subtitle}</p>
       </div>
-      <ChevronDown className={`w-4 h-4 text-slate-400 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+      <ChevronDown className={`w-4 h-4 text-[var(--app-text-muted)] shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
     </button>
-    {open && <div className="px-5 pb-5 pt-1 divide-y divide-white/[0.06]">{children}</div>}
+    {open && <div className="px-5 pb-5 pt-1 divide-y divide-[var(--app-border-subtle)]">{children}</div>}
   </section>
 );
 
 const Row: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-  <div className="py-3.5 first:pt-1 last:pb-1">{children}</div>
+  <div className="py-3 first:pt-1 last:pb-1">{children}</div>
 );
 
 // Gateway loopback the native bridge and health probes target. One named
 // constant so summary lines never drift from the real endpoint.
 const GATEWAY_ADDR = '127.0.0.1:8080';
+
+// Turn a machine key into words a person reads: 'repo_url' -> 'Repo url'. The
+// raw key stays visible as the mono detail line under the field.
+const humanizeKey = (key: string): string =>
+  key
+    .replace(/[_\-.]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^./, (c) => c.toUpperCase());
 
 // Commonly guessed PINs beyond the repeated-digit family.
 const COMMON_PINS = new Set([
@@ -312,7 +420,7 @@ export const SettingsTab: React.FC = () => {
       label: wasActive && nextActive ? nextActive.name : `${tx('removedItem', 'Removed')} ${prov.name}`,
       before: saveBefore,
       successMsg: `${tx('removedItem', 'Removed')} ${prov.name}`,
-      restartedMsg: `${tx('removedItem', 'Removed')} ${prov.name}. ${tx('gatewayRestartedShort', 'Gateway restarted.')}`,
+      restartedMsg: `${tx('removedItem', 'Removed')} ${prov.name}. ${tx('serverRestartedShort', 'Hermes restarted.')}`,
       clearWhenMissing: isSole,
     });
   };
@@ -373,6 +481,27 @@ export const SettingsTab: React.FC = () => {
   // validator accepts 4-8 digits. languages.ts is owned elsewhere, so the
   // title is used as-is and the range note below carries the truth.
   const appLockTitle = tx('appLock', 'App Lock PIN');
+
+  // Machine install and gateway states rendered as words a person reads. The
+  // raw value stays in the logs and in the details disclosure.
+  const installStateLabel = (state: string): string => {
+    switch (state) {
+      case 'NOT_INSTALLED':
+        return tx('setupStateNotInstalled', 'Not set up');
+      case 'INSTALLING':
+        return tx('setupStateInstalling', 'Setting up');
+      case 'INSTALLED':
+        return tx('setupStateInstalled', 'Set up');
+      case 'RUNNING':
+        return tx('setupStateRunning', 'Running');
+      case 'FAILED':
+        return tx('setupStateFailed', 'Setup failed');
+      case 'STOPPED':
+        return tx('setupStateStopped', 'Stopped');
+      default:
+        return tx('setupStateUnknown', 'Unknown');
+    }
+  };
 
   // Toast feedback with a single retriggerable timer (no stacked timeouts).
   // Tone drives color: info indigo, success emerald, error rose.
@@ -488,10 +617,10 @@ export const SettingsTab: React.FC = () => {
     if (!alive()) return;
     if (!outcome.ok) {
       setAuthOk(false);
-      setAuthResult(outcome.error || tx('settingsSaveFailedGeneric', 'The settings write failed. Tap Retry.'));
+      setAuthResult(outcome.error || tx('settingsSaveFailedPlain', 'Your change was not saved. Your earlier settings are still in effect. Tap Retry to try again.'));
       return;
     }
-    setAuthResult(tx('serverKeyApplying', 'Key saved. Applying it to the gateway before testing...'));
+    setAuthResult(tx('serverKeyApplyingPlain', 'Key saved. Applying it to the connection before testing…'));
     // 2. Mirror the key + active profile into the native prefs and restart a
     // running on-device gateway, otherwise the gateway keeps the old key and
     // every authenticated call answers 401.
@@ -501,7 +630,7 @@ export const SettingsTab: React.FC = () => {
     if (!alive()) return;
     if (!applied.ok) {
       setAuthOk(false);
-      setAuthResult(applied.error || tx('keyNotApplied', 'The key was saved but could not be applied to the gateway.'));
+      setAuthResult(applied.error || tx('keyNotAppliedPlain', 'The key was saved, but Hermes did not pick it up. Restart Hermes above, then test again.'));
       return;
     }
     // 3. Real authenticated probe: 401/403 means the gateway rejected the
@@ -514,23 +643,23 @@ export const SettingsTab: React.FC = () => {
       const http = /HTTP\s+(\d{3})/.exec(summary);
       if (mem.live) {
         setAuthOk(true);
-        setAuthResult(tx('serverKeyAccepted', 'Key accepted: an authenticated gateway call succeeded.'));
+        setAuthResult(tx('serverKeyAcceptedPlain', 'The key works. Hermes answered an authenticated call.'));
       } else if (http && (http[1] === '401' || http[1] === '403')) {
         setAuthOk(false);
         setAuthResult(
-          tx('serverKeyRejectedHttp', 'Gateway rejected the key (HTTP {status}). Authenticated calls will fail.').replace(
+          tx('serverKeyRejectedPlain', 'Hermes rejected this key, so authenticated calls will fail. Generate a new key, then test again.').replace(
             '{status}',
             http[1]
           )
         );
       } else {
         setAuthOk(null);
-        setAuthResult(tx('keyProbeUnreachable', 'Gateway unreachable. The key was saved but not verified.'));
+        setAuthResult(tx('keyUnreachablePlain', 'Hermes did not answer, so the key was not tested. Start Hermes, then test again.'));
       }
     } catch {
       if (!alive()) return;
       setAuthOk(null);
-      setAuthResult(tx('keyProbeUnreachable', 'Gateway unreachable. The key was saved but not verified.'));
+      setAuthResult(tx('keyUnreachablePlain', 'Hermes did not answer, so the key was not tested. Start Hermes, then test again.'));
     }
   };
 
@@ -571,7 +700,7 @@ export const SettingsTab: React.FC = () => {
     try {
       await startGateway();
       const ok = await verifyGatewayUp();
-      showToast(ok ? t('gatewayStarted') : tx('gatewayStartFailed', 'Gateway failed to start. See details below.'), ok ? 'success' : 'error');
+      showToast(ok ? t('gatewayStarted') : tx('startFailedPlain', 'Hermes did not start. Open the details below for the reason.'), ok ? 'success' : 'error');
     } catch (e) {
       showToast(localizedMessage(toAppError(e), settings.language || 'en'), 'error');
     } finally {
@@ -582,7 +711,7 @@ export const SettingsTab: React.FC = () => {
   const handleStopGateway = async () => {
     if (gatewayBusy) return;
     if (!connected) {
-      showToast(tx('gatewayAlreadyStopped', 'Gateway is already stopped.'));
+      showToast(tx('alreadyStoppedPlain', 'Hermes is already stopped.'));
       return;
     }
     setGatewayBusy(true);
@@ -593,7 +722,7 @@ export const SettingsTab: React.FC = () => {
       showToast(
         stopped
           ? t('gatewayStopped')
-          : tx('stopNotVerified', 'Stop was sent, but the gateway still responds. It may still be running.'),
+          : tx('stopNotVerifiedPlain', 'Stop was sent, but Hermes still answers, so it may still be running.'),
         stopped ? 'success' : 'error'
       );
     } catch (e) {
@@ -613,12 +742,12 @@ export const SettingsTab: React.FC = () => {
       // unfinished install is never announced as a green success.
       const settled = await waitForInstallSettled();
       if (settled === 'FAILED') {
-        showToast(installErrorRef.current || tx('installFailed', 'Install failed. Press Retry to try again.'), 'error');
+        showToast(tx('installFailedPlain', 'Setup failed. Nothing that was already on your phone was changed. Press Retry to try again.'), 'error');
       } else if (settled === 'INSTALLED' || settled === 'RUNNING') {
-        showToast(tx('installFinished', 'Install finished. Check gateway status above.'), 'success');
+        showToast(tx('installFinishedPlain', 'Setup finished. Check the status above.'), 'success');
       } else {
         showToast(
-          tx('installUnconfirmed', 'Install stopped reporting progress, but the gateway is not running. Check the status above.'),
+          tx('installUnconfirmedPlain', 'Setup stopped reporting progress and Hermes is not running. Check the status above, then start it again.'),
           'info'
         );
       }
@@ -774,8 +903,7 @@ export const SettingsTab: React.FC = () => {
   );
   const visibleThemes = showAllThemes ? filteredThemes : filteredThemes.slice(0, 6);
   // Short search copy lives in languages.ts per locale, no regex trimming.
-  const themeSearchPlaceholder =
-    t('searchThemesShort') || 'Search themes...';
+  const themeSearchPlaceholder = tx('searchThemesPlain', 'Search themes…');
 
   const filteredLanguages = LANGUAGES.filter((l) =>
     l.name.toLowerCase().includes(langSearch.toLowerCase()) ||
@@ -823,7 +951,8 @@ export const SettingsTab: React.FC = () => {
     setHasRetry(!!fn);
   };
 
-  const saveFailedFallback = () => tx('settingsSaveFailedGeneric', 'The settings write failed. Tap Retry.');
+  const saveFailedFallback = () =>
+    tx('settingsSaveFailedPlain', 'Your change was not saved. Your earlier settings are still in effect. Tap Retry to try again.');
 
   // Resolves once the provider confirmed or rejected the write it was handed:
   // settingsSaveState when the context ships it, otherwise the
@@ -844,7 +973,10 @@ export const SettingsTab: React.FC = () => {
       const settle = state ? SAVE_SETTLE_STATE_MS : SAVE_SETTLE_LEGACY_MS;
       if (state !== 'saving' && elapsed >= settle) return { ok: true, error: null };
       if (elapsed >= SAVE_MAX_WAIT_MS) {
-        return { ok: false, error: tx('settingsSaveUnconfirmed', 'The save did not confirm in time. Tap Retry.') };
+        return {
+          ok: false,
+          error: tx('settingsSaveUnconfirmedPlain', 'The save did not confirm in time, so the change may not be in effect. Tap Retry to try again.'),
+        };
       }
       await sleep(60);
     }
@@ -995,7 +1127,7 @@ export const SettingsTab: React.FC = () => {
         return {
           ok: false,
           restarted: false,
-          error: mirror.error || tx('nativeMirrorFailed', 'The on-device gateway config could not be updated.'),
+          error: mirror.error || tx('nativeMirrorFailedPlain', 'The on-device settings could not be updated, so nothing was applied.'),
         };
       }
       // The server key is also the local API credential, so push it through
@@ -1006,7 +1138,7 @@ export const SettingsTab: React.FC = () => {
         return {
           ok: false,
           restarted: false,
-          error: ack.error || tx('nativeServerKeyFailed', 'The on-device server key could not be updated.'),
+          error: ack.error || tx('nativeServerKeyFailedPlain', 'The on-device server key could not be updated, so nothing was applied.'),
         };
       }
     }
@@ -1026,7 +1158,7 @@ export const SettingsTab: React.FC = () => {
       : {
           ok: false,
           restarted: false,
-          error: tx('providerApplyFailed', 'The provider was saved, but the gateway did not come back healthy.'),
+          error: tx('providerApplyFailedPlain', 'The key was saved. Hermes did not come back up, so start it again above.'),
         };
   };
 
@@ -1068,7 +1200,7 @@ export const SettingsTab: React.FC = () => {
     }
     applyBusyRef.current = true;
     setApplyingProvider(true);
-    setApplyStatus(`${tx('applyingProvider', 'Applying provider change')}: ${opts.label}...`);
+    setApplyStatus(`${tx('applyingProviderPlain', 'Applying the change')}: ${opts.label}…`);
     try {
       if (opts.before !== undefined) {
         const outcome = await awaitSaveOutcome(opts.before);
@@ -1088,7 +1220,7 @@ export const SettingsTab: React.FC = () => {
         showToast(res.restarted ? opts.restartedMsg || opts.successMsg : opts.successMsg, 'success');
       } else {
         setLocalSaveError(res.error);
-        showToast(res.error || tx('applyFailed', 'The change could not be applied to the running gateway.'), 'error');
+        showToast(res.error || tx('applyFailedPlain', 'The change was saved, but Hermes did not pick it up. Restart Hermes, then try again.'), 'error');
       }
     } finally {
       applyBusyRef.current = false;
@@ -1110,7 +1242,7 @@ export const SettingsTab: React.FC = () => {
       label: prov.name,
       before,
       successMsg: `${t('switchedTo')} ${prov.name}`,
-      restartedMsg: `${t('switchedTo')} ${prov.name}. ${tx('gatewayRestartedShort', 'Gateway restarted.')}`,
+      restartedMsg: `${t('switchedTo')} ${prov.name}. ${tx('serverRestartedShort', 'Hermes restarted.')}`,
     });
   };
 
@@ -1140,7 +1272,7 @@ export const SettingsTab: React.FC = () => {
       showToast(`${prov.name}: ${t('keyRequired')}`, 'error');
       return;
     }
-    showToast(`${tx('testing', 'Testing…')} ${prov.name}`, 'info');
+    showToast(`${t('testing')} ${prov.name}`, 'info');
     let valid: boolean | null = null;
     try {
       valid = await service.providersValidate(normProvider(prov.provider), 'HERMES_API_KEY', cleaned);
@@ -1155,11 +1287,11 @@ export const SettingsTab: React.FC = () => {
           return awaitSaveOutcome(before);
         });
       }
-      showToast(`${prov.name}: ${t('keyValid')}`, 'success');
+      showToast(`${prov.name}: ${tx('keyValidPlain', 'This key works.')}`, 'success');
     } else if (valid === false) {
-      showToast(`${prov.name}: ${t('keyInvalid')}`, 'error');
+      showToast(`${prov.name}: ${tx('keyInvalidPlain', 'The provider refused this key.')}`, 'error');
     } else {
-      showToast(`${prov.name}: ${tx('keyUnreachable', 'Gateway unreachable. Key was not tested.')}`, 'info');
+      showToast(`${prov.name}: ${tx('keyUnreachablePlain', 'Hermes did not answer, so the key was not tested. Start Hermes, then test again.')}`, 'info');
     }
   };
 
@@ -1275,15 +1407,15 @@ export const SettingsTab: React.FC = () => {
     setTestedFingerprint(validationFingerprint({ provider: norm, [PROVIDER_CREDENTIAL_FIELD]: cleaned, baseUrl: newProvBaseUrl.trim() }));
     if (valid === true) {
       setKeyOk(true);
-      setKeyResult(t('keyValid'));
+      setKeyResult(tx('keyValidPlain', 'This key works.'));
     } else if (valid === false) {
       setKeyOk(false);
-      setKeyResult(t('keyInvalid'));
+      setKeyResult(tx('keyInvalidPlain', 'The provider refused this key.'));
     } else {
       // null means the gateway could not be reached, so validity is
       // genuinely unknown. Report unreachable, never a passing pattern.
       setKeyOk(null);
-      setKeyResult(tx('keyUnreachable', 'Gateway unreachable. Key was not tested.'));
+      setKeyResult(tx('keyUnreachablePlain', 'Hermes did not answer, so the key was not tested. Start Hermes, then test again.'));
     }
   };
 
@@ -1295,7 +1427,7 @@ export const SettingsTab: React.FC = () => {
   };
 
   const handleRunBackup = async () => {
-    if (!window.confirm(t('confirmBackup'))) {
+    if (!window.confirm(tx('confirmSnapshotPlain', 'Create a snapshot now? It saves your chats, scheduled tasks, and settings. Keys are not included.'))) {
       return;
     }
     setRunningBackup(true);
@@ -1305,7 +1437,7 @@ export const SettingsTab: React.FC = () => {
   };
 
   const handleShareDebug = async () => {
-    if (!window.confirm(t('confirmDebug'))) {
+    if (!window.confirm(tx('confirmDebugPlain', 'Share a diagnostics bundle? It includes the app version, service status, and recent logs, with secrets removed.'))) {
       return;
     }
     setSharingDebug(true);
@@ -1326,7 +1458,7 @@ export const SettingsTab: React.FC = () => {
     await service.instantiateBlueprint(id, blueprintSlots);
     setSelectedBlueprint(null);
     setBlueprintSlots({});
-    showToast(t('blueprintLaunched'), 'success');
+    showToast(tx('routineLaunched', 'Routine started in the current chat.'), 'success');
   };
 
   const handleRefreshStatus = async () => {
@@ -1350,17 +1482,36 @@ export const SettingsTab: React.FC = () => {
   const tokensRisk: RiskLevel = tokensSet === 0 ? 'off' : tokensSet >= 2 ? 'medium' : 'low';
   const riskCount = [autoApproveRisk, keysRisk, tokensRisk].filter((r) => r === 'high' || r === 'medium').length;
 
+  // Count phrasing carries a singular form, so "1 key saved" never renders as
+  // "1 keys saved" and "1 item needs review" never renders as "need".
+  const savedKeysLine =
+    configuredProviders.length === 1
+      ? tx('savedKeyOne', '1 key saved')
+      : tx('savedKeyMany', '{count} keys saved').replace('{count}', String(configuredProviders.length));
+  const validatedLine =
+    unvalidatedKeys === 0
+      ? tx('allKeysTested', ', all tested.')
+      : unvalidatedKeys === 1
+        ? tx('oneKeyUntested', ', 1 not tested yet.')
+        : tx('manyKeysUntested', ', {count} not tested yet.').replace('{count}', String(unvalidatedKeys));
+  const tokensBadgeLabel =
+    tokensSet === 0
+      ? tx('tokensNone', 'None set')
+      : tokensSet === 1
+        ? tx('tokensSetOne', '1 set')
+        : tx('tokensSetMany', '{count} set').replace('{count}', String(tokensSet));
+
   const activeProvider: ConfiguredProvider | undefined = settings.activeProviderId
     ? configuredProviders.find((p) => p.id === settings.activeProviderId)
     : configuredProviders.find((p) => p.provider === settings.provider);
 
   const sectionChips: Array<{ id: SectionId; label: string }> = [
-    { id: 'connection', label: 'Connection' },
-    { id: 'security', label: 'Security' },
-    { id: 'gateway', label: 'Gateway' },
-    { id: 'automation', label: 'Automation' },
-    { id: 'appearance', label: 'Appearance' },
-    { id: 'advanced', label: 'Advanced' },
+    { id: 'connection', label: tx('sectionConnection', 'Connection') },
+    { id: 'security', label: tx('sectionSecurity', 'Security') },
+    { id: 'gateway', label: tx('sectionServer', 'Hermes server') },
+    { id: 'automation', label: tx('sectionAutomation', 'Automation') },
+    { id: 'appearance', label: tx('sectionAppearance', 'Appearance') },
+    { id: 'advanced', label: tx('sectionAdvanced', 'Advanced') },
   ];
 
   return (
@@ -1371,8 +1522,12 @@ export const SettingsTab: React.FC = () => {
         <div
           role="status"
           aria-live="polite"
-          className={`fixed top-16 left-1/2 -translate-x-1/2 z-[200] max-w-[min(90vw,28rem)] text-center px-4 py-2 rounded-xl text-white text-xs font-semibold shadow-2xl pointer-events-none animate-in fade-in slide-in-from-top-2 ${
-            toast.tone === 'error' ? 'bg-rose-600' : toast.tone === 'success' ? 'bg-emerald-600' : 'bg-indigo-600'
+          className={`fixed top-16 left-1/2 -translate-x-1/2 z-[200] max-w-[min(90vw,28rem)] text-center px-4 py-2 r-sm elev-2 hairline t-label pointer-events-none animate-in fade-in slide-in-from-top-2 ${
+            toast.tone === 'error'
+              ? 'bg-[var(--app-danger-subtle)] text-[var(--app-danger)]'
+              : toast.tone === 'success'
+                ? 'bg-[var(--app-success-subtle)] text-[var(--app-success)]'
+                : 'bg-[var(--app-accent-subtle)] text-[var(--app-accent-text)]'
           }`}
         >
           {toast.msg}
@@ -1385,24 +1540,26 @@ export const SettingsTab: React.FC = () => {
       {visibleSaveError && (
         <div
           role="alert"
-          className="flex items-start gap-2.5 p-3 rounded-2xl bg-rose-500/10 border border-rose-500/30"
+          className="flex items-start gap-3 p-4 r-md bg-[var(--app-danger-subtle)] border border-[var(--app-danger-border)]"
         >
-          <XCircle className="w-4 h-4 text-rose-300 shrink-0 mt-0.5" />
+          <XCircle className="w-4 h-4 text-[var(--app-danger)] shrink-0 mt-1" />
           <div className="min-w-0 flex-1">
-            <p className="text-xs font-semibold text-rose-200">{tx('settingsSaveFailedTitle', 'Settings were not saved')}</p>
-            <p className="text-[11px] text-rose-200/80 break-words">{visibleSaveError}</p>
+            <p className="t-body text-[var(--app-danger)]">
+              {tx('settingsSaveFailedTitlePlain', 'Your change was not saved')}
+            </p>
+            <p className="t-caption text-[var(--app-text-muted)] break-words">{visibleSaveError}</p>
           </div>
           {hasRetry && (
             <button
               onClick={retryFailedSave}
-              className="hm-hit shrink-0 px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-[11px] font-medium text-rose-100 transition cursor-pointer"
+              className="hm-hit inline-flex shrink-0 items-center px-3 py-2 min-h-[36px] r-xs t-label bg-[var(--app-danger-subtle)] border border-[var(--app-danger-border)] text-[var(--app-danger)] transition cursor-pointer"
             >
               {tx('retrySave', 'Retry')}
             </button>
           )}
           <button
             onClick={() => setSaveErrorDismissed(visibleSaveError)}
-            className="hm-hit shrink-0 px-2 py-1 rounded-lg text-[11px] text-rose-200/70 hover:text-rose-100 transition cursor-pointer"
+            className="hm-hit inline-flex shrink-0 items-center px-3 py-2 min-h-[36px] r-xs t-label bg-[var(--app-card-subtle)] border border-[var(--app-border-subtle)] text-[var(--app-text-muted)] transition cursor-pointer"
           >
             {tx('dismiss', 'Dismiss')}
           </button>
@@ -1412,17 +1569,17 @@ export const SettingsTab: React.FC = () => {
       {/* Provider apply progress: shown while the native mirror and the gateway
           restart run, so the UI is never a silent wait. */}
       {applyingProvider && (
-        <div role="status" aria-live="polite" className="flex items-center gap-2.5 p-3 rounded-2xl bg-indigo-500/[0.08] border border-indigo-500/25">
-          <RefreshCw className="w-3.5 h-3.5 text-indigo-300 animate-spin shrink-0" />
-          <span className="text-[11px] text-indigo-200 flex-1 break-words">
-            {applyStatus || tx('applyingProvider', 'Applying provider change')}
+        <div role="status" aria-live="polite" className="flex items-center gap-3 p-4 r-md bg-[var(--app-accent-subtle)] border border-[var(--app-border)]">
+          <RefreshCw className="w-3.5 h-3.5 text-[var(--app-accent-text)] animate-spin shrink-0" />
+          <span className="t-caption text-[var(--app-accent-text)] flex-1 break-words">
+            {applyStatus || tx('applyingProviderPlain', 'Applying the change')}
           </span>
         </div>
       )}
 
       {/* UX-05: gateway status summary, always visible, tap for details */}
-      <div className="rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] shadow-xs overflow-hidden">
-        <div className="w-full px-5 py-3.5 flex items-center gap-3">
+      <div className="r-md elev-0 bg-[var(--app-card)] edge overflow-hidden">
+        <div className="w-full px-5 py-3 flex items-center gap-3">
           <button
             onClick={() => setShowGatewayDetails((v) => !v)}
             aria-expanded={showGatewayDetails}
@@ -1431,25 +1588,25 @@ export const SettingsTab: React.FC = () => {
             <span
               role="img"
               aria-label={connected ? tx('running', 'Running') : tx('stopped', 'Stopped')}
-              className={`w-2.5 h-2.5 rounded-full shrink-0 ${connected ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-rose-400'}`}
+              className={`w-3 h-3 r-full shrink-0 ${connected ? 'bg-[var(--app-success)] shadow-[0_0_8px_var(--app-success)]' : 'bg-[var(--app-danger)]'}`}
             />
             <span className="min-w-0 flex-1">
-              <span className="block text-xs font-semibold text-white truncate">
+              <span className="block t-body text-[var(--app-text)] truncate">
                 {connected ? t('running') : t('stopped')}
-                <span className="font-normal text-slate-400"> · {GATEWAY_ADDR} · {install}</span>
+                <span className="t-caption font-normal text-[var(--app-text-muted)]"> · {GATEWAY_ADDR} · {installStateLabel(install)}</span>
               </span>
-              <span className="block text-[11px] text-slate-500 truncate">
-                {gatewayFailed && gatewayFailureReason ? gatewayFailureReason : tx('tapForDetails', 'Tap for gateway details')}
+              <span className="block t-caption text-[var(--app-text-dim)] truncate">
+                {gatewayFailed && gatewayFailureReason ? gatewayFailureReason : tx('tapForDetailsPlain', 'Tap for details')}
               </span>
             </span>
-            <ChevronDown className={`w-4 h-4 text-slate-400 shrink-0 transition-transform ${showGatewayDetails ? 'rotate-180' : ''}`} />
+            <ChevronDown className={`w-4 h-4 text-[var(--app-text-muted)] shrink-0 transition-transform ${showGatewayDetails ? 'rotate-180' : ''}`} />
           </button>
           <button
             onClick={() => {
               void handleRefreshStatus();
             }}
             disabled={refreshingStatus}
-            className="w-11 h-11 flex items-center justify-center rounded-xl text-slate-400 hover:text-white cursor-pointer shrink-0 disabled:opacity-50"
+            className="w-11 h-11 flex items-center justify-center r-sm text-[var(--app-text-muted)] hover:text-[var(--app-text)] cursor-pointer shrink-0 disabled:opacity-50"
             title={t('refresh')}
             aria-label={t('refresh')}
           >
@@ -1457,34 +1614,37 @@ export const SettingsTab: React.FC = () => {
           </button>
         </div>
         {showGatewayDetails && (
-          <div className="px-5 pb-4 pt-1 text-[11px] text-slate-400 space-y-1.5 border-t border-white/[0.06]">
+          <div className="px-5 pb-4 pt-1 t-caption text-[var(--app-text-muted)] space-y-2 border-t border-[var(--app-border-subtle)]">
             <div className="flex justify-between pt-2">
               <span>{tx('stateLabel', 'State')}</span>
-              <span className="text-slate-200 font-mono">{gatewayStatus?.gatewayState || install}</span>
+              <span className="t-micro text-[var(--app-text)] font-mono">
+                {installStateLabel(gatewayStatus?.gatewayState || install)}
+              </span>
             </div>
             <div className="flex justify-between">
               <span>{tx('versionLabel', 'Version')}</span>
-              <span className="text-slate-200 font-mono">{gatewayStatus?.version || tx('unknownVersion', 'unknown version')}</span>
+              <span className="t-micro text-[var(--app-text)] font-mono">{gatewayStatus?.version || tx('unknownVersion', 'unknown version')}</span>
             </div>
             <div className="flex justify-between">
               <span>{tx('approvalsPending', 'Approvals pending')}</span>
-              <span className="text-slate-200 font-mono">{approvals?.length || 0}</span>
+              <span className="t-micro text-[var(--app-text)] font-mono">{approvals?.length || 0}</span>
             </div>
             <div className="flex justify-between">
               <span>{tx('scheduledJobs', 'Scheduled jobs')}</span>
-              <span className="text-slate-200 font-mono">{jobs?.length || 0}</span>
+              <span className="t-micro text-[var(--app-text)] font-mono">{jobs?.length || 0}</span>
             </div>
-            {refreshingStatus && <StateNote state="refreshing" message={tx('refreshingStatus', 'Refreshing gateway status...')} />}
+            {refreshingStatus && <StateNote state="refreshing" message={tx('refreshingStatusPlain', 'Refreshing status…')} />}
             {!connected && (
               <StateNote
                 state="offline"
-                message={gatewayFailureReason || installError || tx('gatewayStoppedHint', 'Gateway is stopped. Start it to run diagnostics and automations.')}
+                message={tx('serverStoppedHint', 'Hermes is stopped. Start it to run diagnostics and scheduled tasks.')}
+                detail={gatewayFailureReason || installError || undefined}
                 onRetry={() => {
                   void handleRefreshStatus();
                 }}
               />
             )}
-            {installProgress ? <p className="text-slate-500">{installProgress}</p> : null}
+            {installProgress ? <p className="t-caption text-[var(--app-text-dim)]">{installProgress}</p> : null}
           </div>
         )}
       </div>
@@ -1495,7 +1655,7 @@ export const SettingsTab: React.FC = () => {
           the current state (scroll position, or the section just opened). */}
       <nav
         aria-label={tx('sectionNav', 'Settings sections')}
-        className="hm-rail items-stretch gap-1 p-1 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08]"
+        className="hm-rail items-stretch gap-1 p-1 r-md elev-2 bg-[var(--app-card)] edge"
       >
         {sectionChips.map((chip) => {
           const isCurrent = currentSection === chip.id;
@@ -1507,20 +1667,15 @@ export const SettingsTab: React.FC = () => {
               aria-expanded={isOpen}
               aria-controls={sectionDomId(chip.id)}
               aria-current={isCurrent ? 'true' : undefined}
-              className={`min-h-[44px] px-3.5 py-2 rounded-xl text-xs font-medium transition-colors whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+              className={`hm-hit min-h-[36px] px-3 py-2 r-xs t-label transition-colors whitespace-nowrap cursor-pointer flex items-center gap-2 ${
                 isCurrent
-                  ? 'bg-white/[0.1] text-white shadow-xs font-semibold'
-                  : 'text-slate-400 hover:text-white'
+                  ? 'bg-[var(--app-accent-subtle)] text-[var(--app-accent-text)]'
+                  : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
               }`}
             >
               <span>{chip.label}</span>
               {isOpen && !isCurrent && (
-                <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-indigo-400/80" />
-              )}
-              {chip.id === 'security' && riskCount > 0 && (
-                <span className="px-1.5 py-0.5 rounded-lg bg-amber-500/15 text-amber-300 text-[10px] font-semibold">
-                  {riskCount}
-                </span>
+                <span aria-hidden="true" className="w-2 h-2 r-full bg-[var(--app-accent)]" />
               )}
             </button>
           );
@@ -1531,24 +1686,18 @@ export const SettingsTab: React.FC = () => {
       {/* CONNECTION: primary task first (active provider), then list */}
       {/* ========================================================= */}
       <Section
-        title="Connection"
-        subtitle={activeProvider ? `Active: ${activeProvider.name}` : t('providersDesc')}
+        title={tx('sectionConnection', 'Connection')}
+        subtitle={activeProvider ? `${t('active')}: ${activeProvider.name}` : t('providersDesc')}
         open={openSections.connection}
         onToggle={() => toggleSection('connection')}
         id={sectionDomId('connection')}
-        badge={
-          activeProvider ? (
-            <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 text-[10px] font-medium border border-emerald-500/30">
-              {t('active')}
-            </span>
-          ) : undefined
-        }
+        badge={activeProvider ? <Badge tone="success">{t('active')}</Badge> : undefined}
       >
         <Row>
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold text-white">{t('configuredProviders')}</p>
-              <p className="text-[11px] text-slate-400 mt-0.5">{t('providersDesc')}</p>
+              <p className="t-body text-[var(--app-text)]">{t('configuredProviders')}</p>
+              <p className="t-caption text-[var(--app-text-muted)] mt-1">{t('providersDesc')}</p>
             </div>
             <button
               onClick={() => {
@@ -1565,7 +1714,7 @@ export const SettingsTab: React.FC = () => {
                 setActivateNewProvider(false);
                 setShowAddModal(true);
               }}
-              className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer shrink-0"
+              className="hm-hit inline-flex items-center px-4 py-2 min-h-[36px] r-sm bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] t-label text-[var(--app-on-accent)] transition cursor-pointer shrink-0"
             >
               {t('addProvider')}
             </button>
@@ -1573,11 +1722,14 @@ export const SettingsTab: React.FC = () => {
         </Row>
         {configuredProviders.length === 0 ? (
           <Row>
-            <StateNote state={connected ? 'empty' : 'offline'} message={connected ? t('noProviders') : t('providersOfflineNote')} />
+            <StateNote
+              state={connected ? 'empty' : 'offline'}
+              message={connected ? t('noProviders') : tx('providersOfflinePlain', 'Hermes is offline. Saved keys stay on this phone and can still be edited.')}
+            />
           </Row>
         ) : (
           <Row>
-            <div className="divide-y divide-white/[0.04]">
+            <div className="divide-y divide-[var(--app-border-subtle)]">
               {configuredProviders.map((prov) => {
                 // Active is matched by id so same-slug duplicate profiles
                 // do not all light up. Falls back to slug for legacy state.
@@ -1587,30 +1739,22 @@ export const SettingsTab: React.FC = () => {
                 return (
                   <div key={prov.id} className="py-3 flex items-start gap-3">
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="flex items-center gap-2 min-w-0">
                         <div
-                          className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs uppercase shrink-0 ${
-                            isActive ? 'bg-indigo-600 text-white' : 'bg-white/[0.06] text-slate-400'
+                          className={`w-9 h-9 r-sm flex items-center justify-center t-label font-mono uppercase shrink-0 ${
+                            isActive ? 'bg-[var(--app-accent)] text-[var(--app-on-accent)]' : 'bg-[var(--app-card-subtle)] text-[var(--app-text-muted)]'
                           }`}
                         >
-                          {prov.provider.slice(0, 2)}
+                          {providerLabel(prov.provider).slice(0, 2)}
                         </div>
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <p className="text-xs font-semibold text-white truncate">{prov.name}</p>
-                          {isActive && (
-                            <span className="px-1.5 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 text-[10px] font-medium border border-emerald-500/30 shrink-0">
-                              {t('active')}
-                            </span>
-                          )}
-                          {!prov.validated && (
-                            <span className="px-1.5 py-0.5 rounded-lg bg-amber-500/15 text-amber-300 text-[10px] font-medium border border-amber-500/30 shrink-0">
-                              Untested
-                            </span>
-                          )}
+                        <div className="flex items-center gap-2 min-w-0">
+                          <p className="t-label text-[var(--app-text)] truncate">{prov.name}</p>
+                          {isActive && <Badge tone="success" className="shrink-0">{t('active')}</Badge>}
+                          {!prov.validated && <Badge tone="warning" className="shrink-0">{tx('untested', 'Untested')}</Badge>}
                         </div>
                       </div>
                       {/* Line two: model and endpoint summary, never starved. */}
-                      <p className="text-[11px] text-slate-400 font-mono truncate mt-1 ps-[46px]">
+                      <p className="t-micro text-[var(--app-text-dim)] truncate mt-1 ps-[46px]">
                         {prov.defaultModel || t('defaultModelShort')} · {prov.baseUrl ? t('customProxy') : t('officialEndpoint')}
                       </p>
                     </div>
@@ -1619,7 +1763,7 @@ export const SettingsTab: React.FC = () => {
                       aria-haspopup="dialog"
                       aria-expanded={menuProviderId === prov.id}
                       aria-label={`${tx('profileActions', 'Profile actions')}: ${prov.name}`}
-                      className="w-11 h-11 -my-1 flex items-center justify-center rounded-xl text-slate-400 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer shrink-0"
+                      className="w-11 h-11 -my-1 flex items-center justify-center r-sm text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)] transition-colors cursor-pointer shrink-0"
                     >
                       <MoreVertical className="w-4 h-4" />
                     </button>
@@ -1635,38 +1779,34 @@ export const SettingsTab: React.FC = () => {
       {/* SECURITY: risk indicators, Lock Now, PIN (UX-06/07/08) */}
       {/* ========================================================= */}
       <Section
-        title="Security"
-        subtitle={riskCount > 0 ? `${riskCount} item${riskCount > 1 ? 's' : ''} need review` : 'No elevated risks'}
+        title={tx('sectionSecurity', 'Security')}
+        subtitle={
+          riskCount > 0
+            ? tx('riskNeedsReview', riskCount === 1 ? '1 item needs review' : `${riskCount} items need review`)
+            : tx('noElevatedRisks', 'No elevated risks')
+        }
         open={openSections.security}
         onToggle={() => toggleSection('security')}
         id={sectionDomId('security')}
-        badge={
-          riskCount > 0 ? (
-            <RiskBadge level={autoApproveRisk === 'high' ? 'high' : 'medium'} label={`${riskCount} to review`} />
-          ) : (
-            <RiskBadge level="off" label="OK" />
-          )
-        }
+        badge={riskCount > 0 ? <Badge tone={riskTone('medium')}>{riskCount}</Badge> : <Badge tone="neutral">{tx('noRiskShort', 'Clear')}</Badge>}
       >
         <Row>
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-medium text-white">{t('autoApprove')}</p>
-              <p className="text-[11px] text-slate-400">{t('autoApproveDesc')}</p>
+              <p className="t-body text-[var(--app-text)]">{t('autoApprove')}</p>
+              <p className="t-caption text-[var(--app-text-muted)]">{t('autoApproveDesc')}</p>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <RiskBadge level={autoApproveRisk} label={autoApprovePolicy.enabled ? 'High risk' : 'Off'} />
-              <span
-                aria-label={`${t('autoApprove')}: ${autoApprovePolicy.enabled ? t('active') : t('disabled')}`}
-                className={`px-3 py-1 rounded-lg text-xs font-medium ${
-                  autoApprovePolicy.enabled
-                    ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                    : 'bg-white/[0.04] text-slate-400'
-                }`}
-              >
-                {autoApprovePolicy.enabled ? t('active') : t('disabled')}
-              </span>
-            </div>
+            <Badge
+              tone={autoApprovePolicy.enabled ? riskTone(autoApproveRisk) : 'neutral'}
+              icon={riskIcon(autoApprovePolicy.enabled ? autoApproveRisk : 'off')}
+              ariaLabel={`${t('autoApprove')}: ${autoApprovePolicy.enabled ? t('active') : t('disabled')}`}
+            >
+              {autoApprovePolicy.enabled
+                ? autoApproveRisk === 'high'
+                  ? tx('riskHigh', 'High risk')
+                  : tx('riskMedium', 'Medium risk')
+                : t('disabled')}
+            </Badge>
           </div>
         </Row>
 
@@ -1681,33 +1821,25 @@ export const SettingsTab: React.FC = () => {
         <Row>
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-medium text-white">{tx('approvalScope', 'Approval Scope')}</p>
-              <p className="text-[11px] text-slate-400">
+              <p className="t-body text-[var(--app-text)]">{tx('approvalScope', 'Approval Scope')}</p>
+              <p className="t-caption text-[var(--app-text-muted)]">
                 {tx('approvalScopeDesc', 'How long an auto-approval lasts once granted. Session scope keeps elevated rights longer.')}
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              {(settings.approvalScope || 'once') === 'session' && <RiskBadge level="medium" label={tx('elevated', 'Elevated')} />}
-              <div className="flex items-center gap-1 p-1 bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] rounded-xl">
-                {[
+              {(settings.approvalScope || 'once') === 'session' && (
+                <Badge tone="warning" icon={riskIcon('medium')}>{tx('elevated', 'Elevated')}</Badge>
+              )}
+              <Segmented
+                groupLabel={tx('approvalScope', 'Approval Scope')}
+                options={[
                   { id: 'once', label: tx('scopeOnce', 'Once') },
                   { id: 'session', label: tx('scopeSession', 'Session') },
-                ].map((scope) => (
-                  <button
-                    key={scope.id}
-                    onClick={() => handleScopeChange(scope.id, scope.label)}
-                    aria-pressed={(settings.approvalScope || 'once') === scope.id}
-                    aria-label={`${tx('approvalScope', 'Approval Scope')}: ${scope.label}`}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
-                      (settings.approvalScope || 'once') === scope.id
-                        ? 'bg-white/[0.12] text-white shadow-xs font-semibold'
-                        : 'text-slate-400 hover:text-white'
-                    } ${pendingScope === scope.id ? 'ring-1 ring-amber-400' : ''}`}
-                  >
-                    {scope.label}
-                  </button>
-                ))}
-              </div>
+                ]}
+                value={settings.approvalScope || 'once'}
+                onSelect={handleScopeChange}
+                pendingId={pendingScope}
+              />
             </div>
           </div>
         </Row>
@@ -1715,9 +1847,9 @@ export const SettingsTab: React.FC = () => {
         <Row>
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-medium text-white">{appLockTitle}</p>
-              <p className="text-[11px] text-slate-400">{t('appLockDesc')}</p>
-              <p className="text-[11px] text-slate-500 mt-0.5">{tx('pinRangeNote', 'Use 4 to 8 digits. Avoid common or repeated-digit PINs.')}</p>
+              <p className="t-body text-[var(--app-text)]">{appLockTitle}</p>
+              <p className="t-caption text-[var(--app-text-muted)]">{t('appLockDesc')}</p>
+              <p className="t-caption text-[var(--app-text-dim)] mt-1">{tx('pinRangeNote', 'Use 4 to 8 digits. Avoid common or repeated-digit PINs.')}</p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <button
@@ -1742,10 +1874,8 @@ export const SettingsTab: React.FC = () => {
                     setShowPinForm(true);
                   }
                 }}
-                className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
-                  settings.appLockEnabled
-                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                    : 'bg-white/[0.04] text-slate-400'
+                className={`hm-hit min-h-[36px] cursor-pointer transition ${
+                  settings.appLockEnabled ? (pendingDisableLock ? 'pill-warning' : 'pill-success') : 'pill-neutral'
                 }`}
               >
                 {settings.appLockEnabled ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
@@ -1754,24 +1884,26 @@ export const SettingsTab: React.FC = () => {
             </div>
           </div>
           {settings.appLockEnabled && (
-            <p className="text-[11px] text-slate-500 mt-0.5">{t('appLockReentryNote')}</p>
+            <p className="t-caption text-[var(--app-text-dim)] mt-1">{t('appLockReentryNote')}</p>
           )}
 
           {settings.appLockEnabled && (
-            <div className="flex items-center gap-2 mt-2.5">
+            <div className="flex items-center gap-2 mt-3">
               <button
                 onClick={() => {
                   lockNow();
                   showToast(tx('appLocked', 'App locked'));
                 }}
                 aria-label={tx('lockNow', 'Lock Now')}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold transition cursor-pointer"
+                className="hm-hit inline-flex items-center gap-2 px-4 py-2 min-h-[36px] r-sm t-label bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)] transition cursor-pointer"
               >
                 <Lock className="w-3.5 h-3.5" />
                 <span>{tx('lockNow', 'Lock Now')}</span>
               </button>
-              <span className="text-[11px] text-slate-500">
-                {vaultUnlocked ? tx('vaultUnlocked', 'Vault is unlocked on this device.') : tx('vaultLocked', 'Vault is locked.')}
+              <span className="t-caption text-[var(--app-text-dim)]">
+                {vaultUnlocked
+                  ? tx('secretsUnlocked', 'Your saved keys can be read on this phone.')
+                  : tx('secretsLocked', 'Your saved keys are locked.')}
               </span>
               {!showPinForm && (
                 <button
@@ -1781,7 +1913,7 @@ export const SettingsTab: React.FC = () => {
                     setConfirmPin('');
                     setShowPinForm(true);
                   }}
-                  className="ms-auto text-xs text-indigo-400 hover:text-indigo-300 cursor-pointer"
+                  className="ms-auto hm-hit inline-flex items-center px-3 py-2 min-h-[36px] r-sm t-label text-[var(--app-accent-text)] hover:text-[var(--app-text)] cursor-pointer"
                 >
                   {t('changePin')}
                 </button>
@@ -1790,7 +1922,7 @@ export const SettingsTab: React.FC = () => {
           )}
 
           {showPinForm && (
-            <div className="space-y-2 pt-2.5">
+            <div className="space-y-2 pt-3">
               <div className="flex items-center gap-2">
                 <input
                   type={showPin ? 'text' : 'password'}
@@ -1803,7 +1935,7 @@ export const SettingsTab: React.FC = () => {
                   placeholder={t('newPinPlaceholder')}
                   maxLength={8}
                   aria-label={t('newPinPlaceholder')}
-                  className="flex-1 px-3 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  className="flex-1 px-3 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)] font-mono"
                 />
                 <input
                   type={showPin ? 'text' : 'password'}
@@ -1816,19 +1948,19 @@ export const SettingsTab: React.FC = () => {
                   placeholder={t('confirmPinPlaceholder')}
                   maxLength={8}
                   aria-label={t('confirmPinPlaceholder')}
-                  className="flex-1 px-3 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  className="flex-1 px-3 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)] font-mono"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPin((v) => !v)}
                   aria-pressed={showPin}
                   aria-label={showPin ? tx('hideToken', 'Hide token') : tx('showToken', 'Show token')}
-                  className="p-2 rounded-xl hm-hit text-slate-500 hover:text-white transition cursor-pointer shrink-0"
+                  className="w-11 h-11 flex items-center justify-center r-sm hm-hit shrink-0 text-[var(--app-text-dim)] hover:text-[var(--app-text)] transition cursor-pointer"
                 >
                   {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
-              {pinError && <p className="text-[11px] text-rose-400">{pinError}</p>}
+              {pinError && <p className="t-caption text-[var(--app-danger)]">{pinError}</p>}
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => {
@@ -1864,7 +1996,7 @@ export const SettingsTab: React.FC = () => {
                     setConfirmPin('');
                     setPinError(null);
                   }}
-                  className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition cursor-pointer"
+                  className="hm-hit inline-flex items-center px-4 py-2 min-h-[36px] r-sm t-label bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)] transition cursor-pointer"
                 >
                   {settings.appLockEnabled ? t('saveNewPin') : t('setPinEnable')}
                 </button>
@@ -1875,7 +2007,7 @@ export const SettingsTab: React.FC = () => {
                     setConfirmPin('');
                     setPinError(null);
                   }}
-                  className="px-3.5 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white transition cursor-pointer"
+                  className="hm-hit inline-flex items-center px-3 py-2 min-h-[36px] r-sm t-label text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition cursor-pointer"
                 >
                   {t('cancel')}
                 </button>
@@ -1887,15 +2019,15 @@ export const SettingsTab: React.FC = () => {
         <Row>
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-medium text-white">Stored API keys</p>
-              <p className="text-[11px] text-slate-400">
-                {configuredProviders.length} profile{configuredProviders.length === 1 ? '' : 's'} saved
-                {unvalidatedKeys > 0 ? `, ${unvalidatedKeys} never validated` : ', all validated'}.
+              <p className="t-body text-[var(--app-text)]">{tx('savedKeysTitle', 'Saved keys')}</p>
+              <p className="t-caption text-[var(--app-text-muted)]">
+                {savedKeysLine}
+                {validatedLine}
               </p>
             </div>
             <button
               onClick={revealConnection}
-              className="px-3.5 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-slate-200 transition-colors cursor-pointer shrink-0"
+              className="hm-hit inline-flex items-center px-4 py-2 min-h-[36px] r-sm edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] t-label text-[var(--app-text)] transition-colors cursor-pointer shrink-0"
             >
               {tx('reviewKeys', 'Review keys')}
             </button>
@@ -1906,33 +2038,34 @@ export const SettingsTab: React.FC = () => {
           <details className="group">
             <summary className="flex items-center justify-between gap-3 cursor-pointer list-none">
               <div>
-                <p className="text-xs font-medium text-white">Channel and daemon tokens</p>
-                <p className="text-[11px] text-slate-400">Telegram, Discord, and gateway server key. Tap to edit.</p>
+                <p className="t-body text-[var(--app-text)]">{tx('tokensTitle', 'Bot and server keys')}</p>
+                <p className="t-caption text-[var(--app-text-muted)]">
+                  {tx('tokensDesc', 'Telegram, Discord, and the key that reaches your Hermes server. Tap to edit.')}
+                </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
-                <RiskBadge
-                  level={tokensRisk}
-                  label={tokensSet === 0 ? 'None set' : `${tokensSet} set`}
-                />
-                <ChevronDown className="w-4 h-4 text-slate-400 group-open:rotate-180 transition-transform" />
+                <Badge tone={riskTone(tokensRisk)} icon={riskIcon(tokensRisk)}>
+                  {tokensBadgeLabel}
+                </Badge>
+                <ChevronDown className="w-4 h-4 text-[var(--app-text-muted)] group-open:rotate-180 transition-transform" />
               </div>
             </summary>
-            <div className="space-y-2.5 pt-3">
+            <div className="space-y-3 pt-3">
               <div className="flex items-center gap-2">
                 <input
                   type={showTokens.tg ? 'text' : 'password'}
                   value={tgToken}
                   onChange={(e) => setTgToken(e.target.value)}
-                  placeholder="bot123456:ABC-DEF..."
+                  placeholder="bot123456:ABC-DEF…"
                   aria-label={t('telegramBridge')}
-                  className="flex-1 px-3 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  className="flex-1 px-3 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)] font-mono"
                 />
                 <button
                   type="button"
                   onClick={() => setShowTokens((s) => ({ ...s, tg: !s.tg }))}
                   aria-pressed={showTokens.tg}
                   aria-label={showTokens.tg ? tx('hideToken', 'Hide token') : tx('showToken', 'Show token')}
-                  className="p-2 rounded-xl hm-hit text-slate-500 hover:text-white transition cursor-pointer shrink-0"
+                  className="w-11 h-11 flex items-center justify-center r-sm hm-hit shrink-0 text-[var(--app-text-dim)] hover:text-[var(--app-text)] transition cursor-pointer"
                 >
                   {showTokens.tg ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
@@ -1951,12 +2084,12 @@ export const SettingsTab: React.FC = () => {
                       void runApply(activeProviderIdOrNull(), {
                         label: t('telegramBridge'),
                         successMsg: t('tgSaved'),
-                        restartedMsg: `${t('tgSaved')}. ${tx('gatewayRestartedShort', 'Gateway restarted.')}`,
+                        restartedMsg: `${t('tgSaved')}. ${tx('serverRestartedShort', 'Hermes restarted.')}`,
                         overrides: { tgToken: cleaned },
                       });
                     })();
                   }}
-                  className="px-3.5 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white transition cursor-pointer"
+                  className="hm-hit inline-flex items-center px-3 py-2 min-h-[36px] r-sm edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] t-label text-[var(--app-text)] transition cursor-pointer"
                 >
                   {t('saveShort')}
                 </button>
@@ -1968,14 +2101,14 @@ export const SettingsTab: React.FC = () => {
                   onChange={(e) => setDiscordToken(e.target.value)}
                   placeholder={t('botTokenPlaceholder')}
                   aria-label={t('discordBridge')}
-                  className="flex-1 px-3 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  className="flex-1 px-3 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)] font-mono"
                 />
                 <button
                   type="button"
                   onClick={() => setShowTokens((s) => ({ ...s, discord: !s.discord }))}
                   aria-pressed={showTokens.discord}
                   aria-label={showTokens.discord ? tx('hideToken', 'Hide token') : tx('showToken', 'Show token')}
-                  className="p-2 rounded-xl hm-hit text-slate-500 hover:text-white transition cursor-pointer shrink-0"
+                  className="w-11 h-11 flex items-center justify-center r-sm hm-hit shrink-0 text-[var(--app-text-dim)] hover:text-[var(--app-text)] transition cursor-pointer"
                 >
                   {showTokens.discord ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
@@ -1993,12 +2126,12 @@ export const SettingsTab: React.FC = () => {
                       void runApply(activeProviderIdOrNull(), {
                         label: t('discordBridge'),
                         successMsg: t('discordSaved'),
-                        restartedMsg: `${t('discordSaved')}. ${tx('gatewayRestartedShort', 'Gateway restarted.')}`,
+                        restartedMsg: `${t('discordSaved')}. ${tx('serverRestartedShort', 'Hermes restarted.')}`,
                         overrides: { discordToken: cleaned },
                       });
                     })();
                   }}
-                  className="px-3.5 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white transition cursor-pointer"
+                  className="hm-hit inline-flex items-center px-3 py-2 min-h-[36px] r-sm edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] t-label text-[var(--app-text)] transition cursor-pointer"
                 >
                   {t('saveShort')}
                 </button>
@@ -2010,14 +2143,14 @@ export const SettingsTab: React.FC = () => {
                   onChange={(e) => setServerKey(e.target.value)}
                   placeholder={t('serverKeyPlaceholder')}
                   aria-label={t('serverKeyTitle')}
-                  className="flex-1 px-3 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  className="flex-1 px-3 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)] font-mono"
                 />
                 <button
                   type="button"
                   onClick={() => setShowTokens((s) => ({ ...s, server: !s.server }))}
                   aria-pressed={showTokens.server}
                   aria-label={showTokens.server ? tx('hideToken', 'Hide token') : tx('showToken', 'Show token')}
-                  className="p-2 rounded-xl hm-hit text-slate-500 hover:text-white transition cursor-pointer shrink-0"
+                  className="w-11 h-11 flex items-center justify-center r-sm hm-hit shrink-0 text-[var(--app-text-dim)] hover:text-[var(--app-text)] transition cursor-pointer"
                 >
                   {showTokens.server ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
@@ -2036,12 +2169,12 @@ export const SettingsTab: React.FC = () => {
                       void runApply(activeProviderIdOrNull(), {
                         label: t('serverKeyTitle'),
                         successMsg: t('serverKeySaved'),
-                        restartedMsg: `${t('serverKeySaved')}. ${tx('gatewayRestartedShort', 'Gateway restarted.')}`,
+                        restartedMsg: `${t('serverKeySaved')}. ${tx('serverRestartedShort', 'Hermes restarted.')}`,
                         overrides: { serverKey: cleaned },
                       });
                     })();
                   }}
-                  className="px-3.5 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white transition cursor-pointer"
+                  className="hm-hit inline-flex items-center px-3 py-2 min-h-[36px] r-sm edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] t-label text-[var(--app-text)] transition cursor-pointer"
                 >
                   {t('saveShort')}
                 </button>
@@ -2050,7 +2183,7 @@ export const SettingsTab: React.FC = () => {
                 <button
                   type="button"
                   onClick={handleGenerateServerKey}
-                  className="px-3.5 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white transition cursor-pointer"
+                  className="hm-hit inline-flex items-center px-3 py-2 min-h-[36px] r-sm edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] t-label text-[var(--app-text)] transition cursor-pointer"
                 >
                   {tx('generate', 'Generate')}
                 </button>
@@ -2058,17 +2191,17 @@ export const SettingsTab: React.FC = () => {
                   type="button"
                   onClick={handleTestServerKey}
                   disabled={!serverKey.trim() || testingAuth}
-                  className="px-3.5 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white transition cursor-pointer disabled:opacity-40"
+                  className="hm-hit inline-flex items-center px-3 py-2 min-h-[36px] r-sm edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] t-label text-[var(--app-text)] transition cursor-pointer disabled:opacity-40"
                 >
                   {testingAuth ? tx('testing', 'Testing…') : tx('testAuth', 'Test key')}
                 </button>
                 {serverKeyWeak && (
-                  <span className="text-[11px] text-amber-400">{tx('weakKey', 'Weak key: generate a fresh one.')}</span>
+                  <span className="t-caption text-[var(--app-warning)]">{tx('weakKey', 'Weak key: generate a fresh one.')}</span>
                 )}
                 {authResult && (
                   <span
-                    className={`text-[11px] font-medium ${
-                      authOk === true ? 'text-emerald-400' : authOk === false ? 'text-rose-400' : 'text-amber-400'
+                    className={`t-caption ${
+                      authOk === true ? 'text-[var(--app-success)]' : authOk === false ? 'text-[var(--app-danger)]' : 'text-[var(--app-warning)]'
                     }`}
                   >
                     {authResult}
@@ -2082,10 +2215,12 @@ export const SettingsTab: React.FC = () => {
         <Row>
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-medium text-white">Diagnostic sharing</p>
-              <p className="text-[11px] text-slate-400">Debug bundles are manual exports. Secrets are redacted before upload.</p>
+              <p className="t-body text-[var(--app-text)]">{tx('diagnosticSharingTitle', 'Diagnostic sharing')}</p>
+              <p className="t-caption text-[var(--app-text-muted)]">
+                {tx('diagnosticSharingDesc', 'Bundles are exports you start yourself. Secrets are removed before upload.')}
+              </p>
             </div>
-            <RiskBadge level="low" label="Manual only" />
+            <Badge tone="info">{tx('manualOnly', 'Manual only')}</Badge>
           </div>
         </Row>
       </Section>
@@ -2094,42 +2229,36 @@ export const SettingsTab: React.FC = () => {
       {/* GATEWAY */}
       {/* ========================================================= */}
       <Section
-        title="Gateway"
-        subtitle={`${GATEWAY_ADDR}, ${t('stateLabel')}: ${install}`}
+        title={tx('sectionServer', 'Hermes server')}
+        subtitle={`${GATEWAY_ADDR}, ${installStateLabel(install)}`}
         open={openSections.gateway}
         onToggle={() => toggleSection('gateway')}
         id={sectionDomId('gateway')}
-        badge={
-          <span className={`px-2.5 py-1 rounded-lg text-[10px] font-semibold border ${
-            connected ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20' : 'bg-rose-500/10 text-rose-300 border-rose-500/20'
-          }`}>
-            {connected ? t('running') : t('stopped')}
-          </span>
-        }
+        badge={<Badge tone={connected ? 'success' : 'danger'}>{connected ? t('running') : t('stopped')}</Badge>}
       >
         <Row>
-          <p className="text-xs font-semibold text-white">{t('gatewaySupervisor')}</p>
-          <div className="flex items-center gap-2.5 pt-2">
+          <p className="t-body text-[var(--app-text)]">{tx('serverServiceTitle', 'Background service')}</p>
+          <div className="flex items-center gap-2 pt-2">
             <button
               onClick={() => {
                 void handleStartGateway();
               }}
               disabled={gatewayBusy || !uiFlags.canStart}
-              title={!uiFlags.canStart ? tx('startUnavailable', 'Start is unavailable in the current gateway state.') : undefined}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer disabled:opacity-50"
+              title={!uiFlags.canStart ? tx('startUnavailablePlain', 'Start is not available right now.') : undefined}
+              className="hm-hit inline-flex items-center gap-2 px-4 py-2 min-h-[36px] r-sm t-label bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)] transition cursor-pointer disabled:opacity-50"
             >
-              <Play className="w-3.5 h-3.5 fill-white" />
-              <span>{t('startDaemon')}</span>
+              <Play className="w-3.5 h-3.5 fill-[var(--app-on-accent)]" />
+              <span>{tx('startService', 'Start')}</span>
             </button>
             <button
               onClick={() => {
                 void handleStopGateway();
               }}
               disabled={gatewayBusy || !uiFlags.canStop}
-              title={!uiFlags.canStop ? tx('stopUnavailable', 'Stop is unavailable in the current gateway state.') : undefined}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] text-slate-300 text-xs font-medium transition cursor-pointer disabled:opacity-50"
+              title={!uiFlags.canStop ? tx('stopUnavailablePlain', 'Stop is not available right now.') : undefined}
+              className="hm-hit inline-flex items-center gap-2 px-4 py-2 min-h-[36px] r-sm edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] t-label text-[var(--app-text)] transition cursor-pointer disabled:opacity-50"
             >
-              <Square className="w-3.5 h-3.5 fill-slate-300" />
+              <Square className="w-3.5 h-3.5 fill-[var(--app-text-muted)]" />
               <span>{t('stopShort')}</span>
             </button>
             {(install === 'NOT_INSTALLED' || install === 'FAILED') && (
@@ -2138,7 +2267,7 @@ export const SettingsTab: React.FC = () => {
                   void handleInstallGateway();
                 }}
                 disabled={installing || !uiFlags.isStable}
-                className="px-4 py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] text-slate-300 text-xs font-medium transition cursor-pointer disabled:opacity-50"
+                className="hm-hit inline-flex items-center px-4 py-2 min-h-[36px] r-sm edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] t-label text-[var(--app-text)] transition cursor-pointer disabled:opacity-50"
               >
                 {installing ? tx('installing', 'Installing…') : tx('install', 'Install')}
               </button>
@@ -2148,7 +2277,8 @@ export const SettingsTab: React.FC = () => {
             <div className="pt-2">
               <StateNote
                 state="offline"
-                message={gatewayFailureReason || installError || tx('gatewayStoppedHint', 'Gateway is stopped. Start it to run diagnostics and automations.')}
+                message={tx('serverStoppedHint', 'Hermes is stopped. Start it to run diagnostics and scheduled tasks.')}
+                detail={gatewayFailureReason || installError || undefined}
                 onRetry={() => {
                   void handleRefreshStatus();
                 }}
@@ -2159,26 +2289,19 @@ export const SettingsTab: React.FC = () => {
         <Row>
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-medium text-white">{t('autostartTitle')}</p>
-              <p className="text-[11px] text-slate-400">{t('autostartDesc')}</p>
+              <p className="t-body text-[var(--app-text)]">{t('autostartTitle')}</p>
+              <p className="t-caption text-[var(--app-text-muted)]">
+                {tx('autostartPlainDesc', 'Hermes starts again by itself each time you open the app, and keeps running while your phone is locked.')}
+              </p>
             </div>
-            <button
-              onClick={() => {
+            <Switch
+              checked={!!settings.autostart}
+              onChange={() => {
                 const next = !settings.autostart;
                 saveThenToast({ autostart: next }, next ? t('autostartEnabled') : t('autostartDisabled'), 'success');
               }}
-              aria-pressed={!!settings.autostart}
-              aria-label={`${t('autostartTitle')}: ${settings.autostart ? t('autostartEnabled') : t('autostartDisabled')}`}
-              className={`w-11 h-6 flex items-center rounded-full p-1 cursor-pointer transition-colors ${
-                settings.autostart ? 'bg-indigo-600' : 'bg-white/[0.1]'
-              }`}
-            >
-              <div
-                className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
-                  settings.autostart ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'
-                }`}
-              />
-            </button>
+              ariaLabel={`${t('autostartTitle')}: ${settings.autostart ? t('autostartEnabled') : t('autostartDisabled')}`}
+            />
           </div>
         </Row>
       </Section>
@@ -2187,8 +2310,8 @@ export const SettingsTab: React.FC = () => {
       {/* AUTOMATION: skills, memory, blueprints */}
       {/* ========================================================= */}
       <Section
-        title="Automation"
-        subtitle={t('skillsCatalogDesc')}
+        title={tx('sectionAutomation', 'Automation')}
+        subtitle={tx('automationSubtitle', 'Skills, memory, and routine templates')}
         open={openSections.automation}
         onToggle={() => toggleSection('automation')}
         id={sectionDomId('automation')}
@@ -2196,27 +2319,29 @@ export const SettingsTab: React.FC = () => {
         <Row>
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold text-white">{t('skillsCatalog')}</p>
-              <p className="text-[11px] text-slate-400">{t('skillsCatalogDesc')}</p>
+              <p className="t-body text-[var(--app-text)]">{tx('skillsTitle', 'Skills')}</p>
+              <p className="t-caption text-[var(--app-text-muted)]">
+                {tx('skillsCatalogPlain', 'Extra abilities you can switch on. Each one adds tools the assistant can use.')}
+              </p>
             </div>
             <button
               onClick={() => {
                 void refreshLibrary();
               }}
-              className="text-xs text-indigo-400 hover:underline cursor-pointer"
+              className="hm-hit inline-flex items-center px-3 py-2 min-h-[36px] r-sm t-label text-[var(--app-accent-text)] hover:underline cursor-pointer shrink-0"
             >
               {t('refresh')}
             </button>
           </div>
-          <div className="space-y-2 pt-2.5">
+          <div className="space-y-2 pt-3">
             <StateNote
               state={skillsState}
               message={
-                skillsState === 'loading' ? 'Loading skills...' :
-                skillsState === 'empty' ? 'No skills installed yet.' :
-                skillsState === 'offline' ? 'Gateway is offline. Skill toggles are unavailable.' :
-                skillsState === 'error' ? 'Could not load skills.' :
-                skillsState === 'refreshing' ? 'Refreshing skills...' : ''
+                skillsState === 'loading' ? tx('skillLoadingPlain', 'Loading skills…') :
+                skillsState === 'empty' ? tx('skillEmptyPlain', 'No skills installed yet.') :
+                skillsState === 'offline' ? tx('skillOfflinePlain', 'Hermes is offline. Skill switches are unavailable.') :
+                skillsState === 'error' ? tx('skillErrorPlain', 'Skills could not load.') :
+                skillsState === 'refreshing' ? tx('skillRefreshingPlain', 'Refreshing skills…') : ''
               }
               onRetry={() => {
                 void refreshLibrary();
@@ -2225,45 +2350,37 @@ export const SettingsTab: React.FC = () => {
             {skills.map((sk) => (
               <div key={sk.id} className="flex items-center justify-between gap-3 py-2">
                 <div className="pe-3 min-w-0">
-                  <p className="text-xs font-semibold text-white">{sk.name}</p>
-                  <p className="text-[11px] text-slate-400 mt-0.5">{sk.description}</p>
+                  <p className="t-label text-[var(--app-text)]">{sk.name}</p>
+                  <p className="t-caption text-[var(--app-text-muted)] mt-1">{sk.description}</p>
                 </div>
-                <button
-                  onClick={() => handleToggleSkill(sk.id, sk.enabled)}
-                  aria-pressed={sk.enabled}
-                  aria-label={`${sk.name}: ${sk.enabled ? t('skillEnabled') : t('skillDisabled')}`}
-                  className={`w-10 h-5 flex items-center rounded-full p-0.5 cursor-pointer transition-colors shrink-0 ${
-                    sk.enabled ? 'bg-indigo-600' : 'bg-white/[0.1]'
-                  }`}
-                >
-                  <div
-                    className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${
-                      sk.enabled ? 'translate-x-5 rtl:-translate-x-5' : 'translate-x-0'
-                    }`}
-                  />
-                </button>
+                <Switch
+                  checked={sk.enabled}
+                  onChange={() => handleToggleSkill(sk.id, sk.enabled)}
+                  ariaLabel={`${sk.name}: ${sk.enabled ? t('skillEnabled') : t('skillDisabled')}`}
+                />
               </div>
             ))}
           </div>
         </Row>
 
         <Row>
-          <p className="text-xs font-semibold text-white">{t('memoryTitle')}</p>
-          <p className="text-[11px] text-slate-400 mt-0.5">
-            {t('providerLabel')}: {memory?.provider || t('localVector')} · {t('entriesLabel')}: {memory?.entries || 0}
+          <p className="t-body text-[var(--app-text)]">{tx('memoryTitlePlain', 'Memory')}</p>
+          <p className="t-caption text-[var(--app-text-muted)] mt-1">
+            {t('providerLabel')}: {memory?.provider || tx('localMemory', 'On this phone')} · {t('entriesLabel')}:{' '}
+            {memory?.entries || 0}
           </p>
           <div className="pt-2">
             <StateNote
               state={memoryState}
               message={
-                memoryState === 'loading' ? 'Loading memory...' :
-                memoryState === 'offline' ? 'Gateway is offline. Memory summary may be stale.' :
-                memoryState === 'error' ? 'Could not load memory.' :
-                memoryState === 'refreshing' ? 'Refreshing memory...' : ''
+                memoryState === 'loading' ? tx('memoryLoadingPlain', 'Loading memory…') :
+                memoryState === 'offline' ? tx('memoryOfflinePlain', 'Hermes is offline. This summary may be out of date.') :
+                memoryState === 'error' ? tx('memoryErrorPlain', 'Memory could not load.') :
+                memoryState === 'refreshing' ? tx('memoryRefreshingPlain', 'Refreshing memory…') : ''
               }
             />
             {memoryState === 'ready' && (
-              <div className="text-xs text-slate-300 bg-[var(--app-card-subtle,#141920)] p-3 rounded-xl border border-white/[0.06] font-mono leading-relaxed">
+              <div className="t-caption text-[var(--app-text)] bg-[var(--app-card-subtle)] p-4 r-sm hairline font-mono leading-relaxed">
                 {memory?.summary || t('memoryEmpty')}
               </div>
             )}
@@ -2271,16 +2388,16 @@ export const SettingsTab: React.FC = () => {
         </Row>
 
         <Row>
-          <p className="text-xs font-semibold text-white">{t('blueprintsTitle')}</p>
+          <p className="t-body text-[var(--app-text)]">{tx('routinesTitle', 'Routine templates')}</p>
           <div className="pt-2 space-y-2">
             <StateNote
               state={blueprintsState}
               message={
-                blueprintsState === 'loading' ? 'Loading blueprints...' :
-                blueprintsState === 'empty' ? 'No blueprints available.' :
-                blueprintsState === 'offline' ? 'Gateway is offline. Blueprints may be stale.' :
-                blueprintsState === 'error' ? 'Could not load blueprints.' :
-                blueprintsState === 'refreshing' ? 'Refreshing blueprints...' : ''
+                blueprintsState === 'loading' ? tx('routinesLoadingPlain', 'Loading routines…') :
+                blueprintsState === 'empty' ? tx('routinesEmptyPlain', 'No routines available.') :
+                blueprintsState === 'offline' ? tx('routinesOfflinePlain', 'Hermes is offline. Routines may be out of date.') :
+                blueprintsState === 'error' ? tx('routinesErrorPlain', 'Routines could not load.') :
+                blueprintsState === 'refreshing' ? tx('routinesRefreshingPlain', 'Refreshing routines…') : ''
               }
               onRetry={() => {
                 void refreshLibrary();
@@ -2289,8 +2406,8 @@ export const SettingsTab: React.FC = () => {
             {blueprints.map((bp) => (
               <div key={bp.id} className="py-2 flex items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="text-xs font-semibold text-white">{bp.name}</p>
-                  <p className="text-[11px] text-slate-400 mt-0.5">{bp.description}</p>
+                  <p className="t-label text-[var(--app-text)]">{bp.name}</p>
+                  <p className="t-caption text-[var(--app-text-muted)] mt-1">{bp.description}</p>
                 </div>
                 <button
                   onClick={() => {
@@ -2301,7 +2418,7 @@ export const SettingsTab: React.FC = () => {
                     });
                     setBlueprintSlots(initialSlots);
                   }}
-                  className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer shrink-0"
+                  className="hm-hit inline-flex items-center px-3 py-2 min-h-[36px] r-sm t-label bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)] transition cursor-pointer shrink-0"
                 >
                   {t('launch')}
                 </button>
@@ -2315,7 +2432,7 @@ export const SettingsTab: React.FC = () => {
       {/* APPEARANCE */}
       {/* ========================================================= */}
       <Section
-        title="Appearance"
+        title={tx('sectionAppearance', 'Appearance')}
         subtitle={t('themeSubtitle')}
         open={openSections.appearance}
         onToggle={() => toggleSection('appearance')}
@@ -2324,44 +2441,33 @@ export const SettingsTab: React.FC = () => {
         <Row>
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold text-white">{t('themeTitle')}</p>
-              <p className="text-[11px] text-slate-400 mt-0.5">{t('themeSubtitle')}</p>
+              <p className="t-body text-[var(--app-text)]">{t('themeTitle')}</p>
+              <p className="t-caption text-[var(--app-text-muted)] mt-1">{t('themeSubtitle')}</p>
             </div>
-            <div className="flex items-center gap-1 p-1 bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] rounded-xl self-start sm:self-auto">
-              {[
+            <Segmented
+              groupLabel={t('themeTitle')}
+              className="self-start sm:self-auto"
+              options={[
                 { id: 'light', label: t('light') || 'Light', icon: Sun },
                 { id: 'dark', label: t('dark') || 'Dark', icon: Moon },
                 { id: 'system', label: t('system') || 'System', icon: Monitor },
-              ].map((mode) => (
-                <button
-                  key={mode.id}
-                  onClick={() => {
-                    saveThenToast({ themeMode: mode.id as ThemeMode }, `${t('themeTitle')}: ${mode.label}`, 'success');
-                  }}
-                  aria-pressed={currentMode === mode.id}
-                  aria-label={`${t('themeTitle')}: ${mode.label}`}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
-                    currentMode === mode.id
-                      ? 'bg-white/[0.12] text-white shadow-xs font-semibold'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <mode.icon className="w-3.5 h-3.5" />
-                  <span>{mode.label}</span>
-                </button>
-              ))}
-            </div>
+              ]}
+              value={currentMode}
+              onSelect={(id, label) => {
+                saveThenToast({ themeMode: id as ThemeMode }, `${t('themeTitle')}: ${label}`, 'success');
+              }}
+            />
           </div>
           <div className="pt-3">
             <div className="relative">
-              <Search className="w-4 h-4 absolute start-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              <Search className="w-4 h-4 absolute start-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)] pointer-events-none" />
               <input
                 type="text"
                 value={themeSearch}
                 onChange={(e) => setThemeSearch(e.target.value)}
                 placeholder={themeSearchPlaceholder}
                 aria-label={themeSearchPlaceholder}
-                className="w-full ps-9 pe-3.5 py-2.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 placeholder:text-slate-500"
+                className="w-full ps-9 pe-4 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)] placeholder:text-[var(--app-text-dim)]"
               />
             </div>
           </div>
@@ -2376,40 +2482,40 @@ export const SettingsTab: React.FC = () => {
                   }}
                   aria-pressed={isSelected}
                   aria-label={`${th.name}${isSelected ? ` (${t('active')})` : ''}`}
-                  className={`p-3 rounded-2xl border text-start transition-all cursor-pointer flex flex-col justify-between group ${
+                  className={`p-3 r-sm border text-start transition-all cursor-pointer flex flex-col justify-between group ${
                     isSelected
-                      ? 'border-indigo-500 bg-indigo-500/10 ring-1 ring-indigo-500/50 shadow-sm'
-                      : 'border-white/[0.08] bg-[var(--app-card-subtle,#141920)]/60 hover:bg-[var(--app-card-subtle,#141920)] hover:border-white/[0.18]'
+                      ? 'border-[var(--app-accent)] bg-[var(--app-accent-subtle)] ring-1 ring-[var(--app-accent)] elev-1'
+                      : 'edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)]'
                   }`}
                 >
                   <div
-                    className="w-full h-24 rounded-xl border border-white/[0.08] overflow-hidden flex relative mb-3 shadow-inner"
+                    className="w-full h-24 r-sm hairline overflow-hidden flex relative mb-3"
                     style={{ backgroundColor: th.preview.bg }}
                   >
                     <div
-                      className="w-12 h-full border-e border-white/[0.06] shrink-0"
+                      className="w-12 h-full border-e border-[var(--app-border-subtle)] shrink-0"
                       style={{ backgroundColor: th.preview.sidebar }}
                     />
-                    <div className="flex-1 p-2.5 flex flex-col justify-between">
-                      <div className="space-y-1.5">
-                        <div className="h-2.5 w-20 rounded-full" style={{ backgroundColor: th.preview.bar1 }} />
-                        <div className="h-2 w-28 rounded-full" style={{ backgroundColor: th.preview.bar2 }} />
+                    <div className="flex-1 p-3 flex flex-col justify-between">
+                      <div className="space-y-2">
+                        <div className="h-3 w-20 r-full" style={{ backgroundColor: th.preview.bar1 }} />
+                        <div className="h-2 w-28 r-full" style={{ backgroundColor: th.preview.bar2 }} />
                       </div>
                       <div className="flex justify-end">
-                        <div className="h-4 w-12 rounded-full" style={{ backgroundColor: th.preview.pill }} />
+                        <div className="h-4 w-12 r-full" style={{ backgroundColor: th.preview.pill }} />
                       </div>
                     </div>
                   </div>
                   <div>
                     <div className="flex items-center justify-between">
-                      <h4 className="text-xs font-semibold text-white group-hover:text-indigo-300 transition-colors">
+                      <h4 className="t-label text-[var(--app-text)] group-hover:text-[var(--app-accent-text)] transition-colors">
                         {th.name}
                       </h4>
                       {isSelected && (
-                        <span className="w-2 h-2 rounded-full bg-indigo-400 shadow-[0_0_8px_rgba(99,102,241,0.8)]" />
+                        <span className="w-2 h-2 r-full bg-[var(--app-accent)] shadow-[0_0_8px_var(--app-accent)]" />
                       )}
                     </div>
-                    <p className="text-[11px] text-slate-400 mt-0.5 leading-snug line-clamp-2">
+                    <p className="t-caption text-[var(--app-text-muted)] mt-1 leading-snug line-clamp-2">
                       {th.description}
                     </p>
                   </div>
@@ -2418,13 +2524,13 @@ export const SettingsTab: React.FC = () => {
             })}
           </div>
           {filteredThemes.length === 0 && (
-            <p className="text-[11px] text-slate-500 pt-3">{tx('noThemes', 'No themes match that search.')}</p>
+            <p className="t-caption text-[var(--app-text-dim)] pt-3">{tx('noThemes', 'No themes match that search.')}</p>
           )}
           {filteredThemes.length > 6 && (
             <button
               onClick={() => setShowAllThemes((v) => !v)}
               aria-expanded={showAllThemes}
-              className="mt-2.5 text-xs text-indigo-400 hover:text-indigo-300 cursor-pointer"
+              className="mt-3 hm-hit inline-flex items-center px-3 py-2 min-h-[36px] r-sm t-label text-[var(--app-accent-text)] hover:text-[var(--app-text)] cursor-pointer"
             >
               {showAllThemes
                 ? tx('showFewerThemes', 'Show fewer themes')
@@ -2436,33 +2542,33 @@ export const SettingsTab: React.FC = () => {
         <Row>
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold text-white">{t('languageTitle')}</p>
-              <p className="text-[11px] text-slate-400 mt-0.5">{t('languageSubtitle')}</p>
+              <p className="t-body text-[var(--app-text)]">{t('languageTitle')}</p>
+              <p className="t-caption text-[var(--app-text-muted)] mt-1">{t('languageSubtitle')}</p>
             </div>
-            <span className="px-2.5 py-1 rounded-lg bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 text-xs font-mono font-medium uppercase">
+            <span className="t-micro text-[var(--app-text-muted)] font-mono">
               {LANGUAGES.find((l) => l.id === (settings.language || 'en'))?.code || 'EN'}
             </span>
           </div>
-          <div className="pt-2.5">
+          <div className="pt-3">
             <div className="relative">
-              <Search className="w-4 h-4 absolute start-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              <Search className="w-4 h-4 absolute start-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)] pointer-events-none" />
               <input
                 type="text"
                 value={langSearch}
                 onChange={(e) => setLangSearch(e.target.value)}
-                placeholder={t('searchLanguages')}
-                aria-label={t('searchLanguages')}
-                className="w-full ps-9 pe-3.5 py-2.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 placeholder:text-slate-500 font-sans"
+                placeholder={tx('searchLanguagesPlain', 'Search languages…')}
+                aria-label={tx('searchLanguagesPlain', 'Search languages…')}
+                className="w-full ps-9 pe-4 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)] placeholder:text-[var(--app-text-dim)] font-sans"
               />
             </div>
           </div>
           <div
             role="listbox"
             aria-label={t('languageTitle')}
-            className="divide-y divide-white/[0.04] max-h-64 overflow-y-auto rounded-2xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] mt-2.5"
+            className="divide-y divide-[var(--app-border-subtle)] max-h-64 overflow-y-auto r-md hairline bg-[var(--app-card-subtle)] mt-3"
           >
             {filteredLanguages.length === 0 && (
-              <p className="text-[11px] text-slate-500 px-4 py-3">{tx('noLanguages', 'No languages match that search.')}</p>
+              <p className="t-caption text-[var(--app-text-dim)] px-4 py-3">{tx('noLanguages', 'No languages match that search.')}</p>
             )}
             {filteredLanguages.map((lang) => {
               const isSelected = (settings.language || 'en') === lang.id;
@@ -2474,16 +2580,16 @@ export const SettingsTab: React.FC = () => {
                   onClick={() => {
                     saveThenToast({ language: lang.id }, `${t('languageTitle')}: ${lang.name}`, 'success');
                   }}
-                  className={`w-full px-4 py-3 flex items-center justify-between transition cursor-pointer hover:bg-white/[0.04] ${
-                    isSelected ? 'bg-white/[0.06]' : ''
+                  className={`w-full px-4 py-3 min-h-[44px] flex items-center justify-between transition cursor-pointer hover:bg-[var(--app-card-hover)] ${
+                    isSelected ? 'bg-[var(--app-card-hover)]' : ''
                   }`}
                 >
-                  <span className={`text-xs ${isSelected ? 'text-white font-semibold' : 'text-slate-300'}`}>
+                  <span className={`t-label ${isSelected ? 'text-[var(--app-text)]' : 'text-[var(--app-text-muted)]'}`}>
                     {lang.name}
                   </span>
                   <div className="flex items-center gap-3">
-                    <span className="text-xs font-mono text-slate-500 uppercase font-semibold">{lang.code}</span>
-                    {isSelected && <Check className="w-4 h-4 text-indigo-400 stroke-[2.5]" />}
+                    <span className="t-micro font-mono text-[var(--app-text-dim)]">{lang.code}</span>
+                    {isSelected && <Check className="w-4 h-4 text-[var(--app-accent)] stroke-[2.5]" />}
                   </div>
                 </button>
               );
@@ -2492,9 +2598,9 @@ export const SettingsTab: React.FC = () => {
         </Row>
 
         <Row>
-          <div className="flex justify-between text-xs text-slate-300">
-            <span className="font-medium">{t('fontScale')}</span>
-            <span className="font-mono text-slate-400">{Math.round(fontScaleLocal * 100)}%</span>
+          <div className="flex justify-between t-label text-[var(--app-text)]">
+            <span>{t('fontScale')}</span>
+            <span className="t-micro font-mono text-[var(--app-text-muted)]">{Math.round(fontScaleLocal * 100)}%</span>
           </div>
           <input
             type="range"
@@ -2504,9 +2610,9 @@ export const SettingsTab: React.FC = () => {
             value={fontScaleLocal}
             onChange={(e) => setFontScaleLocal(parseFloat(e.target.value))}
             aria-label={t('fontScale')}
-            className="w-full accent-indigo-500 mt-2"
+            className="w-full accent-[var(--app-accent)] mt-2"
           />
-          <p className="text-[11px] text-slate-500 pt-1">{t('fontScaleDesc')}</p>
+          <p className="t-caption text-[var(--app-text-dim)] pt-1">{t('fontScaleDesc')}</p>
         </Row>
       </Section>
 
@@ -2514,68 +2620,66 @@ export const SettingsTab: React.FC = () => {
       {/* ADVANCED: reasoning, diagnostics, snapshot, debug export */}
       {/* ========================================================= */}
       <Section
-        title="Advanced"
+        title={tx('sectionAdvanced', 'Advanced')}
         subtitle={t('diagnosticsDesc')}
         open={openSections.advanced}
         onToggle={() => toggleSection('advanced')}
         id={sectionDomId('advanced')}
       >
         <Row>
-          <label className="block text-xs font-medium text-slate-300">{t('reasoningEffort')}</label>
-          <div className="grid grid-cols-4 gap-2 pt-2">
-            {EFFORT_LEVELS.map(({ id: lvl, label }) => (
-              <button
-                key={lvl}
-                onClick={() => updateSettings({ reasoningEffort: lvl })}
-                aria-pressed={settings.reasoningEffort === lvl}
-                aria-label={`${t('reasoningEffort')}: ${label}`}
-                className={`py-2 rounded-xl text-xs font-medium capitalize cursor-pointer border transition-all ${
-                  settings.reasoningEffort === lvl
-                    ? 'bg-indigo-600 border-indigo-500 text-white shadow-xs'
-                    : 'bg-white/[0.03] border-white/[0.06] text-slate-400 hover:text-white'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
+          <label className="block t-label text-[var(--app-text-muted)]">{t('reasoningEffort')}</label>
+          <div className="pt-2">
+            <Segmented
+              stretch
+              groupLabel={t('reasoningEffort')}
+              options={EFFORT_LEVELS.map(({ id: lvl, label }) => ({ id: lvl, label }))}
+              value={settings.reasoningEffort}
+              onSelect={(lvl) => updateSettings({ reasoningEffort: lvl })}
+            />
           </div>
         </Row>
 
         <Row>
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold text-white">{t('diagnosticsTitle')}</p>
-              <p className="text-[11px] text-slate-400 mt-0.5">{t('diagnosticsDesc')}</p>
+              <p className="t-body text-[var(--app-text)]">{t('diagnosticsTitle')}</p>
+              <p className="t-caption text-[var(--app-text-muted)] mt-1">{t('diagnosticsDesc')}</p>
             </div>
             <button
               onClick={handleRunDoctor}
               disabled={runningDoctor}
-              className="px-3.5 py-1.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] text-xs font-medium text-slate-300 hover:text-white transition cursor-pointer disabled:opacity-50 shrink-0"
+              className="hm-hit inline-flex items-center px-4 py-2 min-h-[36px] r-sm edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] t-label text-[var(--app-text)] transition cursor-pointer disabled:opacity-50 shrink-0"
             >
-              {runningDoctor ? t('auditing') : t('runDiagnostics')}
+              {runningDoctor ? tx('diagnosticsRunning', 'Running diagnostics…') : t('runDiagnostics')}
             </button>
           </div>
           <div className="pt-2">
-            {runningDoctor && <StateNote state="loading" message="Running diagnostics..." />}
+            {runningDoctor && (
+              <StateNote state="loading" message={tx('diagnosticsRunning', 'Running diagnostics…')} />
+            )}
             {!runningDoctor && !doctorReport && (
               <StateNote
                 state={connected ? 'empty' : 'offline'}
-                message={connected ? 'No diagnostics run yet.' : 'Gateway is offline. Diagnostics need a running gateway.'}
+                message={
+                  connected
+                    ? tx('diagnosticsNone', 'No diagnostics run yet.')
+                    : tx('diagnosticsOffline', 'Hermes is offline. Diagnostics need it running.')
+                }
               />
             )}
             {doctorReport && (
               <div className="space-y-2 pt-1">
-                <p className={`text-xs font-medium ${doctorReport.ok ? 'text-emerald-300' : 'text-rose-300'}`}>{doctorReport.summary}</p>
-                <div className="space-y-1.5">
+                <p className={`t-label ${doctorReport.ok ? 'text-[var(--app-success)]' : 'text-[var(--app-danger)]'}`}>{doctorReport.summary}</p>
+                <div className="space-y-2">
                   {doctorReport.checks.map((c, i) => (
-                    <div key={i} className="flex items-center gap-2.5 py-2 border-b border-white/[0.04] last:border-0 text-xs">
+                    <div key={i} className="flex items-center gap-3 py-2 border-b border-[var(--app-border-subtle)] last:border-0 t-label">
                       {c.ok ? (
-                        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                        <CheckCircle2 className="w-4 h-4 text-[var(--app-success)] shrink-0" />
                       ) : (
-                        <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                        <XCircle className="w-4 h-4 text-[var(--app-danger)] shrink-0" />
                       )}
-                      <span className="text-white font-medium">{c.name}</span>
-                      <span className="text-slate-400 ms-auto truncate max-w-[200px]">{c.detail}</span>
+                      <span className="text-[var(--app-text)]">{c.name}</span>
+                      <span className="t-caption text-[var(--app-text-dim)] ms-auto truncate max-w-[200px]">{c.detail}</span>
                     </div>
                   ))}
                 </div>
@@ -2587,23 +2691,25 @@ export const SettingsTab: React.FC = () => {
         <Row>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="py-1">
-              <p className="text-xs font-semibold text-white">{t('snapshotTitle')}</p>
-              <p className="text-[11px] text-slate-400 mt-0.5">{t('snapshotDesc')}</p>
+              <p className="t-body text-[var(--app-text)]">{tx('snapshotTitlePlain', 'Snapshot')}</p>
+              <p className="t-caption text-[var(--app-text-muted)] mt-1">
+                {tx('snapshotDescPlain', 'Saves your chats, scheduled tasks, and settings. Keys are not included.')}
+              </p>
               <button
                 onClick={handleRunBackup}
                 disabled={runningBackup}
-                className="w-full py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] text-xs font-medium text-slate-300 hover:text-white transition cursor-pointer mt-2 disabled:opacity-50"
+                className="hm-hit w-full inline-flex items-center justify-center px-4 py-2 min-h-[36px] r-sm edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] t-label text-[var(--app-text)] transition cursor-pointer mt-2 disabled:opacity-50"
               >
                 {runningBackup ? t('backingUp') : t('createSnapshot')}
               </button>
-              {runningBackup && <div className="pt-2"><StateNote state="loading" message="Creating snapshot..." /></div>}
+              {runningBackup && <div className="pt-2"><StateNote state="loading" message={tx('snapshotRunning', 'Saving the snapshot…')} /></div>}
               {backupResult && (
-                <div className="pt-1.5 space-y-0.5">
-                  <p className={`text-[11px] font-medium ${backupResult.ok ? 'text-emerald-400' : 'text-rose-400'}`}>
+                <div className="pt-2 space-y-2">
+                  <p className={`t-caption ${backupResult.ok ? 'text-[var(--app-success)]' : 'text-[var(--app-danger)]'}`}>
                     {backupResult.message}
                   </p>
                   {backupResult.ok && backupResult.path && (
-                    <p className="text-[11px] text-slate-500 font-mono truncate" title={backupResult.path}>
+                    <p className="t-micro text-[var(--app-text-dim)] font-mono truncate" title={backupResult.path}>
                       {backupResult.path}
                     </p>
                   )}
@@ -2611,26 +2717,28 @@ export const SettingsTab: React.FC = () => {
               )}
             </div>
             <div className="py-1">
-              <p className="text-xs font-semibold text-white">{t('debugTitle')}</p>
-              <p className="text-[11px] text-slate-400 mt-0.5">{t('debugDesc')}</p>
+              <p className="t-body text-[var(--app-text)]">{tx('debugTitlePlain', 'Diagnostics bundle')}</p>
+              <p className="t-caption text-[var(--app-text-muted)] mt-1">
+                {tx('debugDescPlain', 'Exports the app version, service status, and recent logs, with secrets removed.')}
+              </p>
               <button
                 onClick={handleShareDebug}
                 disabled={sharingDebug}
-                className="w-full py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] text-xs font-medium text-slate-300 hover:text-white transition cursor-pointer mt-2 disabled:opacity-50"
+                className="hm-hit w-full inline-flex items-center justify-center px-4 py-2 min-h-[36px] r-sm edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] t-label text-[var(--app-text)] transition cursor-pointer mt-2 disabled:opacity-50"
               >
                 {sharingDebug ? t('exporting') : t('generateBundle')}
               </button>
-              {sharingDebug && <div className="pt-2"><StateNote state="loading" message="Redacting secrets and exporting..." /></div>}
+              {sharingDebug && <div className="pt-2"><StateNote state="loading" message={tx('debugRunning', 'Removing secrets and exporting…')} /></div>}
               {debugResult && (
-                <div className="pt-1.5 space-y-1">
-                  <p className="text-[11px] text-indigo-400">{debugResult.summary}</p>
+                <div className="pt-2 space-y-2">
+                  <p className="t-caption text-[var(--app-accent-text)]">{debugResult.summary}</p>
                   {debugResult.urls.map((u) => (
                     <a
                       key={u}
                       href={u}
                       target="_blank"
                       rel="noreferrer"
-                      className="block text-[11px] text-indigo-300 underline truncate"
+                      className="block t-caption text-[var(--app-accent-text)] underline truncate"
                     >
                       {u}
                     </a>
@@ -2655,7 +2763,7 @@ export const SettingsTab: React.FC = () => {
         const armed = pendingDeleteId === prov.id;
         return (
           <div
-            className="fixed inset-0 z-[60] flex items-end justify-center bg-black/60 backdrop-blur-xs animate-in fade-in duration-150"
+            className="fixed inset-0 z-[60] flex items-end justify-center bg-[var(--app-scrim)] backdrop-blur-xs animate-in fade-in duration-150"
             onClick={() => setMenuProviderId(null)}
           >
             <div
@@ -2664,49 +2772,49 @@ export const SettingsTab: React.FC = () => {
               aria-modal="true"
               aria-label={`${tx('profileActions', 'Profile actions')}: ${prov.name}`}
               onClick={(event) => event.stopPropagation()}
-              className="w-full max-w-md rounded-t-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-3 shadow-2xl space-y-1 pb-[calc(0.75rem+var(--safe-bottom))]"
+              className="w-full max-w-md r-md elev-3 bg-[var(--app-card)] edge p-4 space-y-1 pb-[calc(1rem+var(--safe-bottom))]"
             >
-              <div className="px-3 pt-1 pb-2 border-b border-white/[0.06]">
-                <p className="text-xs font-semibold text-white truncate">{prov.name}</p>
-                <p className="text-[11px] text-slate-400 font-mono truncate mt-0.5">
+              <div className="px-3 pt-1 pb-3 border-b border-[var(--app-border-subtle)]">
+                <p className="t-body text-[var(--app-text)] truncate">{prov.name}</p>
+                <p className="t-micro text-[var(--app-text-dim)] font-mono truncate mt-1">
                   {prov.defaultModel || t('defaultModelShort')} · {prov.baseUrl ? t('customProxy') : t('officialEndpoint')}
                 </p>
               </div>
               {!isActive && (
                 <button
                   onClick={() => handleUseProvider(prov)}
-                  className="w-full min-h-[48px] px-3 rounded-xl flex items-center gap-3 text-start text-xs font-semibold text-slate-100 hover:bg-white/[0.06] cursor-pointer transition-colors"
+                  className="w-full min-h-[48px] px-3 r-sm flex items-center gap-3 text-start t-label text-[var(--app-text)] hover:bg-[var(--app-card-hover)] cursor-pointer transition-colors"
                 >
-                  <Check className="w-4 h-4 text-indigo-400 shrink-0" />
+                  <Check className="w-4 h-4 text-[var(--app-accent)] shrink-0" />
                   <span>{t('use')}</span>
                 </button>
               )}
               <button
                 onClick={() => handleEditProvider(prov)}
-                className="w-full min-h-[48px] px-3 rounded-xl flex items-center gap-3 text-start text-xs font-medium text-slate-200 hover:bg-white/[0.06] cursor-pointer transition-colors"
+                className="w-full min-h-[48px] px-3 r-sm flex items-center gap-3 text-start t-label text-[var(--app-text)] hover:bg-[var(--app-card-hover)] cursor-pointer transition-colors"
               >
-                <Pencil className="w-4 h-4 text-slate-400 shrink-0" />
+                <Pencil className="w-4 h-4 text-[var(--app-text-muted)] shrink-0" />
                 <span>{t('edit')}</span>
               </button>
               <button
                 onClick={() => {
                   void handleTestProvider(prov);
                 }}
-                className="w-full min-h-[48px] px-3 rounded-xl flex items-center gap-3 text-start text-xs font-medium text-slate-200 hover:bg-white/[0.06] cursor-pointer transition-colors"
+                className="w-full min-h-[48px] px-3 r-sm flex items-center gap-3 text-start t-label text-[var(--app-text)] hover:bg-[var(--app-card-hover)] cursor-pointer transition-colors"
               >
-                <ShieldCheck className="w-4 h-4 text-slate-400 shrink-0" />
+                <ShieldCheck className="w-4 h-4 text-[var(--app-text-muted)] shrink-0" />
                 <span>{t('testKey')}</span>
               </button>
               {/* Destructive action, set off by a rule and never adjacent to a
                   primary action. */}
-              <div className="pt-1 mt-1 border-t border-white/[0.06]">
+              <div className="pt-2 mt-2 border-t border-[var(--app-border-subtle)]">
                 <button
                   onClick={() => handleDeleteFromMenu(prov)}
                   aria-label={`${t('delete')} ${prov.name}`}
-                  className={`w-full min-h-[48px] px-3 rounded-xl flex items-center gap-3 text-start text-xs font-semibold cursor-pointer transition-colors ${
+                  className={`w-full min-h-[48px] px-3 r-sm flex items-center gap-3 text-start t-label cursor-pointer transition-colors ${
                     armed
-                      ? 'bg-rose-500/15 text-rose-100 border border-rose-500/40'
-                      : 'text-rose-300 hover:bg-rose-500/10'
+                      ? 'bg-[var(--app-danger-subtle)] text-[var(--app-danger)] border border-[var(--app-danger-border)]'
+                      : 'text-[var(--app-danger)] hover:bg-[var(--app-danger-subtle)]'
                   }`}
                 >
                   <Trash2 className="w-4 h-4 shrink-0" />
@@ -2721,7 +2829,7 @@ export const SettingsTab: React.FC = () => {
       {/* Blueprint Launch Modal */}
       {selectedBlueprint && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[var(--app-scrim)] backdrop-blur-sm animate-in fade-in duration-150"
           onClick={() => setSelectedBlueprint(null)}
         >
           <div
@@ -2730,24 +2838,26 @@ export const SettingsTab: React.FC = () => {
             aria-modal="true"
             aria-label={selectedBlueprint.name}
             onClick={(event) => event.stopPropagation()}
-            className="w-full max-w-sm rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-4"
+            className="w-full max-w-sm r-md elev-3 bg-[var(--app-card)] edge p-5 space-y-4"
           >
-            <div className="flex items-center justify-between pb-2 border-b border-white/[0.08]">
-              <span className="text-sm font-semibold text-white">{selectedBlueprint.name}</span>
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--app-border-subtle)]">
+              <span className="t-heading text-[var(--app-text)]">{selectedBlueprint.name}</span>
               <button
                 onClick={() => setSelectedBlueprint(null)}
                 aria-label={t('cancel')}
-                className="w-11 h-11 flex items-center justify-center rounded-xl text-slate-400 hover:text-white cursor-pointer"
+                className="w-11 h-11 flex items-center justify-center r-sm text-[var(--app-text-muted)] hover:text-[var(--app-text)] cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
-            <p className="text-xs text-slate-400">{selectedBlueprint.description}</p>
+            <p className="t-caption text-[var(--app-text-muted)]">{selectedBlueprint.description}</p>
             {selectedBlueprint.parameters && selectedBlueprint.parameters.length > 0 && (
-              <div className="space-y-2.5 pt-1">
+              <div className="space-y-3 pt-1">
                 {selectedBlueprint.parameters.map((param) => (
                   <div key={param.name}>
-                    <label className="block text-xs font-medium text-slate-400 mb-1">{param.label || param.name}</label>
+                    <label className="block t-label text-[var(--app-text-muted)] mb-1">
+                      {param.label || humanizeKey(param.name)}
+                    </label>
                     <input
                       type="text"
                       value={blueprintSlots[param.name] || ''}
@@ -2757,22 +2867,24 @@ export const SettingsTab: React.FC = () => {
                           [param.name]: e.target.value,
                         })
                       }
-                      className="w-full px-3 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
+                      className="w-full px-3 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)]"
                     />
+                    {/* Raw parameter key kept as the mono detail line. */}
+                    <p className="t-micro text-[var(--app-text-dim)] font-mono mt-1">{param.name}</p>
                   </div>
                 ))}
               </div>
             )}
-            <div className="flex justify-end gap-2.5 pt-2">
+            <div className="flex justify-end gap-2 pt-2">
               <button
                 onClick={() => setSelectedBlueprint(null)}
-                className="px-4 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white cursor-pointer"
+                className="hm-hit inline-flex items-center px-4 py-2 min-h-[36px] r-sm t-label text-[var(--app-text-muted)] hover:text-[var(--app-text)] cursor-pointer"
               >
                 {t('cancel')}
               </button>
               <button
                 onClick={() => handleInstantiateBlueprint(selectedBlueprint.id)}
-                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs cursor-pointer transition"
+                className="hm-hit inline-flex items-center px-4 py-2 min-h-[36px] r-sm t-label bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)] cursor-pointer transition"
               >
                 {t('launchRoutine')}
               </button>
@@ -2784,7 +2896,7 @@ export const SettingsTab: React.FC = () => {
       {/* Multi-Provider Add / Edit Modal */}
       {showAddModal && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[var(--app-scrim)] backdrop-blur-xs animate-in fade-in duration-150"
         >
           <div
             ref={addModalRef}
@@ -2792,23 +2904,23 @@ export const SettingsTab: React.FC = () => {
             aria-modal="true"
             aria-label={editingProviderId ? t('editModelProvider') : t('addModelProvider')}
             onClick={(event) => event.stopPropagation()}
-            className="w-full max-w-md rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto"
+            className="w-full max-w-md r-md elev-3 bg-[var(--app-card)] edge p-5 space-y-4 max-h-[90vh] overflow-y-auto"
           >
-            <div className="flex items-center justify-between pb-2 border-b border-white/[0.08]">
-              <span className="text-sm font-semibold text-white">
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--app-border-subtle)]">
+              <span className="t-heading text-[var(--app-text)]">
                 {editingProviderId ? t('editModelProvider') : t('addModelProvider')}
               </span>
               <button
                 onClick={closeAddModal}
                 aria-label={t('cancel')}
-                className="w-11 h-11 flex items-center justify-center rounded-xl text-slate-400 hover:text-white cursor-pointer"
+                className="w-11 h-11 flex items-center justify-center r-sm text-[var(--app-text-muted)] hover:text-[var(--app-text)] cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
             <div className="space-y-3">
               <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">{t('modelCatalog')}</label>
+                <label className="block t-label text-[var(--app-text-muted)] mb-1">{t('modelCatalog')}</label>
                 <select
                   value={newProvType}
                   autoFocus
@@ -2820,27 +2932,27 @@ export const SettingsTab: React.FC = () => {
                     const defModel = DEFAULT_MODELS[val]?.[0] || '';
                     if (defModel) setNewProvModel(defModel);
                   }}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
+                  className="w-full px-4 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)]"
                 >
                   {PROVIDER_OPTIONS.map(([id, name]) => (
                     <option key={id} value={id}>
-                      {name} ({id})
+                      {name}
                     </option>
                   ))}
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">{t('profileLabel')}</label>
+                <label className="block t-label text-[var(--app-text-muted)] mb-1">{t('profileLabel')}</label>
                 <input
                   type="text"
                   value={newProvName}
                   onChange={(e) => setNewProvName(e.target.value)}
                   placeholder={t('profilePlaceholder')}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
+                  className="w-full px-4 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)]"
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">
+                <label className="block t-label text-[var(--app-text-muted)] mb-1">
                   {t('apiKey')}{' '}
                   {normProvider(newProvType) === 'lmstudio' || normProvider(newProvType) === 'ollama-cloud'
                     ? t('optionalLocal')
@@ -2854,16 +2966,16 @@ export const SettingsTab: React.FC = () => {
                       setNewProvKey(e.target.value);
                       setKeyResult(null);
                     }}
-                    placeholder="sk-..."
+                    placeholder="sk-…"
                     aria-label={t('apiKey')}
-                    className="w-full px-3.5 py-2.5 pe-10 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                    className="w-full px-4 py-3 pe-10 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)] font-mono"
                   />
                   <button
                     type="button"
                     onClick={() => setShowNewKey(!showNewKey)}
                     aria-pressed={showNewKey}
                     aria-label={showNewKey ? tx('hideToken', 'Hide token') : tx('showToken', 'Show token')}
-                    className="absolute end-2 top-1/2 -translate-y-1/2 p-2.5 rounded-xl hm-hit text-slate-500 hover:text-white cursor-pointer"
+                    className="absolute end-2 top-1/2 -translate-y-1/2 w-11 h-11 flex items-center justify-center r-sm hm-hit text-[var(--app-text-dim)] hover:text-[var(--app-text)] cursor-pointer"
                   >
                     {showNewKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -2873,15 +2985,15 @@ export const SettingsTab: React.FC = () => {
                     type="button"
                     onClick={handleTestKey}
                     disabled={!newProvKey.trim() || testingKey}
-                    className="px-3 py-1.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] text-xs text-slate-300 hover:text-white transition cursor-pointer disabled:opacity-40"
+                    className="hm-hit inline-flex items-center px-3 py-2 min-h-[36px] r-sm edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] t-label text-[var(--app-text)] transition cursor-pointer disabled:opacity-40"
                   >
                     {testingKey ? t('testingKey') : t('testKey')}
                   </button>
-                  {testingKey && <span className="text-xs text-slate-400">Testing key...</span>}
+                  {testingKey && <span className="t-caption text-[var(--app-text-muted)]">{tx('testingKeyPlain', 'Testing…')}</span>}
                   {keyResult && (
                     <span
-                      className={`text-xs font-medium ${
-                        keyOk === true ? 'text-emerald-400' : keyOk === false ? 'text-rose-400' : 'text-amber-400'
+                      className={`t-caption ${
+                        keyOk === true ? 'text-[var(--app-success)]' : keyOk === false ? 'text-[var(--app-danger)]' : 'text-[var(--app-warning)]'
                       }`}
                     >
                       {keyResult}
@@ -2890,48 +3002,48 @@ export const SettingsTab: React.FC = () => {
                 </div>
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">{t('defaultModel')}</label>
+                <label className="block t-label text-[var(--app-text-muted)] mb-1">{t('defaultModel')}</label>
                 <input
                   type="text"
                   value={newProvModel}
                   onChange={(e) => setNewProvModel(e.target.value)}
                   placeholder={DEFAULT_MODELS[newProvType]?.[0] || 'e.g. gpt-4o, claude-3-7-sonnet'}
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  className="w-full px-4 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)] font-mono"
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">{t('baseUrl')}</label>
+                <label className="block t-label text-[var(--app-text-muted)] mb-1">{t('baseUrl')}</label>
                 <input
                   type="text"
                   value={newProvBaseUrl}
                   onChange={(e) => setNewProvBaseUrl(e.target.value)}
-                  placeholder="https://api.openai.com/v1"
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  placeholder={tx('baseUrlPlaceholder', 'https://api.openai.com/v1')}
+                  className="w-full px-4 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)] font-mono"
                 />
               </div>
             </div>
             {!keysValid(newProvType, newProvKey, newProvBaseUrl) && (
-              <p className="text-[11px] text-amber-400">
+              <p className="t-caption text-[var(--app-warning)]">
                 {!newProvKey.trim() ? t('keyRequired') : t('unknownProviderUrl')}
               </p>
             )}
             {!editingProviderId && (
-              <label className="flex items-start gap-2.5 pt-1 cursor-pointer">
+              <label className="flex items-start gap-3 pt-1 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={activateNewProvider}
                   onChange={(e) => setActivateNewProvider(e.target.checked)}
-                  className="mt-0.5 w-4 h-4 rounded accent-indigo-600"
+                  className="mt-1 w-4 h-4 r-xs accent-[var(--app-accent)]"
                 />
-                <span className="text-[11px] text-slate-400">
+                <span className="t-caption text-[var(--app-text-muted)]">
                   {tx('activateAfterSave', 'Activate this profile after saving. New profiles stay inactive unless you opt in.')}
                 </span>
               </label>
             )}
-            <div className="flex justify-end gap-2.5 pt-3 border-t border-white/[0.06]">
+            <div className="flex justify-end gap-2 pt-3 border-t border-[var(--app-border-subtle)]">
               <button
                 onClick={closeAddModal}
-                className="px-4 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white cursor-pointer"
+                className="hm-hit inline-flex items-center px-4 py-2 min-h-[36px] r-sm t-label text-[var(--app-text-muted)] hover:text-[var(--app-text)] cursor-pointer"
               >
                 {t('cancel')}
               </button>
@@ -2946,7 +3058,7 @@ export const SettingsTab: React.FC = () => {
                   const cleanedKey = newProvKey.trim();
                   const baseUrl = newProvBaseUrl.trim();
                   const targetModel = newProvModel.trim() || DEFAULT_MODELS[newProvType]?.[0] || `${newProvType}/default`;
-                  const label = newProvName.trim() || PROVIDER_OPTIONS.find(([id]) => id === newProvType)?.[1] || newProvType;
+                  const label = newProvName.trim() || PROVIDER_OPTIONS.find(([id]) => id === newProvType)?.[1] || providerLabel(newProvType);
                   const existing = editingProviderId
                     ? configuredProviders.find((p) => p.id === editingProviderId)
                     : undefined;
@@ -3012,7 +3124,7 @@ export const SettingsTab: React.FC = () => {
                       label,
                       profile: applyProfile,
                       successMsg: `${t('updatedItem')} ${label}`,
-                      restartedMsg: `${t('updatedItem')} ${label}. ${tx('gatewayRestartedShort', 'Gateway restarted.')}`,
+                      restartedMsg: `${t('updatedItem')} ${label}. ${tx('serverRestartedShort', 'Hermes restarted.')}`,
                     });
                     return;
                   }
@@ -3057,13 +3169,13 @@ export const SettingsTab: React.FC = () => {
                         validated,
                       },
                       successMsg: `${t('addedActivated')} ${label}`,
-                      restartedMsg: `${t('addedActivated')} ${label}. ${tx('gatewayRestartedShort', 'Gateway restarted.')}`,
+                      restartedMsg: `${t('addedActivated')} ${label}. ${tx('serverRestartedShort', 'Hermes restarted.')}`,
                     });
                   } else {
                     showToast(`${tx('addedInactive', 'Added (inactive)')} ${label}`, 'success');
                   }
                 }}
-                className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-xs font-semibold shadow-xs cursor-pointer transition"
+                className="hm-hit inline-flex items-center px-5 py-2 min-h-[36px] r-sm t-label bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] disabled:opacity-40 text-[var(--app-on-accent)] cursor-pointer transition"
               >
                 {applyingProvider ? tx('applyingShort', 'Applying…') : editingProviderId ? t('save') : t('saveEnable')}
               </button>

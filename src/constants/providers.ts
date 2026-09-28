@@ -125,6 +125,18 @@ export function keysValid(provider: string, key: string, baseUrl: string): boole
 
 export const KEYLESS_PROVIDERS = new Set(['lmstudio', 'ollama-cloud']);
 
+// Human label for a provider id, for anywhere a user reads a provider name.
+// The raw id is never the label: an id with no catalog entry is turned into
+// words ('my-proxy' -> 'My Proxy') so no slug is ever shown to the user.
+export function providerLabel(id: string): string {
+  const norm = normProvider(id);
+  const known = PROVIDER_OPTIONS.find(([pid]) => pid === norm);
+  if (known) return known[1];
+  const words = norm.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!words) return 'Provider';
+  return words.replace(/\b[a-z]/g, (c) => c.toUpperCase());
+}
+
 export const DEFAULT_MODELS: Record<string, string[]> = {
   openrouter: [
     'anthropic/claude-fable-5.1',

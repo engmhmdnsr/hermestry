@@ -34,6 +34,9 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
     const v = t(key);
     return !v || v === key ? fallback : v;
   };
+  // Singular form, so "1 attempt left" never renders as "1 attempts left".
+  const attemptsLeftLabel = (left: number): string =>
+    left === 1 ? tx('attemptLeftOne', 'attempt left') : t('attemptsLeft');
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [attempts, setAttempts] = useState(0);
@@ -131,7 +134,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
       setPin('');
       setError(`${t('tooManyAttempts')} ${duration}s.`);
     } else {
-      flashError(`${t('incorrectPin')} ${MAX_ATTEMPTS - used} ${t('attemptsLeft')}.`);
+      flashError(`${t('incorrectPin')} ${MAX_ATTEMPTS - used} ${attemptsLeftLabel(MAX_ATTEMPTS - used)}.`);
     }
   };
 
@@ -184,7 +187,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
           busyRef.current = false;
           setBusy(false);
           const detail = e instanceof Error && e.message ? e.message : '';
-          const base = tx('unlockFailed', 'Unlock failed. Try again.');
+          const base = tx('unlockFailedPlain', 'The PIN could not be checked, so the app stayed locked. Nothing was lost. Try again.');
           setError(detail ? `${base} ${detail}` : base);
         });
     } else if (attempted === settings.appLockPin) {
@@ -250,7 +253,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
     // Scrollable, keyboard-safe shell: a fixed full-screen scroller whose
     // column can grow past the viewport, so the PIN pad and the primary
     // action stay reachable on a 360dp device even with the keyboard open.
-    <div className="fixed inset-0 z-50 bg-[var(--app-bg,#090B0E)] text-slate-200 overflow-y-auto overflow-x-hidden">
+    <div className="fixed inset-0 z-50 elev-3 bg-[var(--app-bg)] text-[var(--app-text)] overflow-y-auto overflow-x-hidden">
       <div
         className="min-h-[100dvh] w-full flex flex-col items-center px-6"
         style={{
@@ -259,17 +262,17 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
         }}
       >
         <div className="my-auto w-full max-w-[360px] flex flex-col items-center py-4">
-          <div className="w-16 h-16 rounded-3xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mb-6 shadow-sm">
-            <Lock className="w-7 h-7 text-indigo-400" />
+          <div className="w-16 h-16 r-lg elev-0 bg-[var(--app-accent-subtle)] edge flex items-center justify-center mb-6">
+            <Lock className="w-7 h-7 text-[var(--app-accent-text)]" />
           </div>
 
-          <span className="mb-2 px-2.5 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-[11px] font-semibold text-indigo-300">
+          <span className="mb-2 pill-accent">
             {t('appLock')}
           </span>
-          <h2 className="text-lg font-semibold text-white tracking-tight mb-1">
-            {t('lockedTitle')}
+          <h2 className="t-title text-[var(--app-text)] tracking-tight mb-1">
+            {tx('lockScreenTitle', 'Hermes is locked')}
           </h2>
-          <p className="text-xs text-slate-400 mb-6 text-center">
+          <p className="t-body text-[var(--app-text-muted)] mb-6 text-center">
             {t('lockEnterPin').replace('{min}', String(MIN_PIN_LEN)).replace('{max}', String(MAX_PIN_LEN))}
           </p>
 
@@ -300,7 +303,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
               }}
               disabled={lockedOut || busy}
               style={{ fontSize: '16px' }}
-              className="w-full h-14 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-center text-transparent caret-transparent focus:outline-none focus:border-indigo-500 disabled:opacity-40"
+              className="w-full h-14 r-sm edge bg-[var(--app-card)] text-center text-transparent caret-transparent focus:outline-none focus:border-[var(--app-accent)] disabled:opacity-40"
             />
             <div aria-hidden="true" className="pointer-events-none absolute inset-0 flex items-center justify-center gap-3">
               {Array.from({ length: MAX_PIN_LEN }).map((_, idx) => {
@@ -308,10 +311,10 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
                 return (
                   <div
                     key={idx}
-                    className={`w-3.5 h-3.5 rounded-full transition-all duration-200 ${
+                    className={`w-3.5 h-3.5 r-full transition-all duration-200 ${
                       filled
-                        ? 'bg-indigo-500 scale-110 shadow-xs'
-                        : 'bg-white/[0.08] border border-white/[0.08]'
+                        ? 'bg-[var(--app-accent)] scale-110'
+                        : 'bg-[var(--app-card-hover)] hairline'
                     }`}
                   />
                 );
@@ -323,7 +326,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
           </p>
 
           {error && (
-            <p role="alert" className="text-xs text-rose-400 mt-2 mb-2 animate-shake text-center max-w-[280px]">
+            <p role="alert" className="t-body text-[var(--app-danger)] mt-2 mb-2 animate-shake text-center max-w-[280px]">
               {error}
             </p>
           )}
@@ -331,7 +334,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
           {/* Visible countdown is aria-hidden: the throttled polite region
               below announces the remaining time without ticking every second. */}
           {lockedOut && (
-            <p aria-hidden="true" className="text-xs text-amber-300 mb-2 font-mono">
+            <p aria-hidden="true" className="t-caption text-[var(--app-warning)] mb-2 font-mono">
               {t('lockedFor')} {lockoutLeft}s
             </p>
           )}
@@ -348,7 +351,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
                 onClick={() => handleDigit(digit)}
                 disabled={lockedOut || busy}
                 aria-label={`${t('digitLabel')} ${digit}`}
-                className="h-14 min-h-[44px] rounded-2xl bg-[var(--app-card,#0E1217)] hover:bg-white/[0.06] active:scale-95 border border-white/[0.06] text-base font-semibold text-white flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
+                className="h-14 min-h-[44px] r-sm edge bg-[var(--app-card)] hover:bg-[var(--app-card-hover)] active:scale-95 t-body font-semibold text-[var(--app-text)] flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
               >
                 {digit}
               </button>
@@ -357,7 +360,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
               onClick={() => setPin('')}
               disabled={lockedOut || busy}
               aria-label={t('clear')}
-              className="h-14 min-h-[44px] rounded-2xl bg-[var(--app-card,#0E1217)] hover:bg-white/[0.06] active:scale-95 border border-white/[0.06] text-xs font-medium text-slate-400 flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
+              className="h-14 min-h-[44px] r-sm edge bg-[var(--app-card)] hover:bg-[var(--app-card-hover)] active:scale-95 t-label font-medium text-[var(--app-text-muted)] flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
             >
               {t('clear')}
             </button>
@@ -365,14 +368,14 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
               onClick={() => handleDigit('0')}
               disabled={lockedOut || busy}
               aria-label={`${t('digitLabel')} 0`}
-              className="h-14 min-h-[44px] rounded-2xl bg-[var(--app-card,#0E1217)] hover:bg-white/[0.06] active:scale-95 border border-white/[0.06] text-base font-semibold text-white flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
+              className="h-14 min-h-[44px] r-sm edge bg-[var(--app-card)] hover:bg-[var(--app-card-hover)] active:scale-95 t-body font-semibold text-[var(--app-text)] flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
             >
               0
             </button>
             <button
               onClick={handleDelete}
               disabled={lockedOut || busy}
-              className="h-14 min-h-[44px] rounded-2xl bg-[var(--app-card,#0E1217)] hover:bg-white/[0.06] active:scale-95 border border-white/[0.06] text-slate-400 hover:text-white flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
+              className="h-14 min-h-[44px] r-sm edge bg-[var(--app-card)] hover:bg-[var(--app-card-hover)] active:scale-95 text-[var(--app-text-muted)] hover:text-[var(--app-text)] flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
               aria-label={t('deleteLabel')}
             >
               <Delete className="w-5 h-5" />
@@ -382,35 +385,45 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
           <button
             onClick={() => tryUnlockRef.current()}
             disabled={!ready}
-            className={`mt-5 w-full max-w-[280px] min-h-[48px] rounded-2xl font-semibold text-sm transition flex items-center justify-center gap-2 ${
+            className={`mt-5 w-full max-w-[280px] min-h-[48px] r-sm font-semibold t-label transition flex items-center justify-center gap-2 ${
               ready
-                ? 'bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer'
-                : 'bg-white/[0.04] text-slate-600 cursor-not-allowed'
+                ? 'bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)] cursor-pointer'
+                : 'bg-[var(--app-card-subtle)] text-[var(--app-text-dim)] cursor-not-allowed'
             }`}
           >
             <LogIn className="w-4 h-4" />
             <span>{busy ? t('unlocking') : t('unlock')}</span>
           </button>
           {!lockedOut && (
-            <p className="mt-2 text-[11px] text-slate-500 text-center max-w-[280px]">
+            <p className="mt-2 t-caption text-[var(--app-text-dim)] text-center max-w-[280px]">
               {attempts > 0
-                ? `${t('incorrectPin')} ${MAX_ATTEMPTS - attempts} ${t('attemptsLeft')}.`
+                ? `${t('incorrectPin')} ${MAX_ATTEMPTS - attempts} ${attemptsLeftLabel(MAX_ATTEMPTS - attempts)}.`
                 : t('lockHint').replace('{min}', String(MIN_PIN_LEN)).replace('{max}', String(MAX_PIN_LEN))}
             </p>
           )}
 
-          <p className="mt-6 text-xs text-slate-500 flex items-center gap-1.5">
+          <p className="mt-2 t-caption text-[var(--app-text-dim)] text-center max-w-[280px]">
+            {tx(
+              'lockoutNote',
+              'After {count} wrong attempts, unlocking pauses for a short time, and each further wrong attempt waits longer.'
+            ).replace('{count}', String(MAX_ATTEMPTS))}
+          </p>
+
+          <p className="mt-6 t-caption text-[var(--app-text-dim)] flex items-center gap-2">
             <Shield className="w-3.5 h-3.5" />
             <span>{t('pinLocalOnly')}</span>
           </p>
           <div className="mt-4 max-w-[300px] space-y-2 text-center">
-            <p className="text-[11px] text-amber-300/90 leading-relaxed">
-              {t('lockRecovery')}
+            <p className="t-caption text-[var(--app-warning)] leading-relaxed">
+              {tx(
+                'lockRecoveryPlain',
+                'Forgot your PIN? There is no recovery. Clearing the app data is the only reset, and your saved keys go with it.'
+              )}
             </p>
-            <p className="text-[11px] text-slate-500 leading-relaxed">
+            <p className="t-caption text-[var(--app-text-muted)] leading-relaxed">
               {t('lockTip')}
             </p>
-            <p className="text-[11px] text-slate-600 leading-relaxed">
+            <p className="t-caption text-[var(--app-text-dim)] leading-relaxed">
               {t('screenshotNote')}
             </p>
           </div>

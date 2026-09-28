@@ -32,7 +32,7 @@ interface HeaderProps {
 // `connected`, and sibling work adds an explicit failure/unauthorized flag.
 // Any of these naming variants is honoured, and the raw failure reason /
 // health detail are pattern matched as a fallback so a rejected key never
-// renders as a plain "Offline".
+// renders as a plain "Not connected".
 interface GatewayFailureSignals {
   gatewayFailed?: boolean;
   gatewayFailureKind?: string;
@@ -52,10 +52,10 @@ const APP_TITLE = 'Hermes Agent';
 // Canonical screen names. Keys mirror constants/languages.ts so BottomNav,
 // DesktopSidebar and this header never diverge.
 const SCREEN_TITLE: Record<number, { key: string; fallback: string }> = {
-  0: { key: 'home', fallback: 'Overview' },
-  1: { key: 'chat', fallback: 'Workspace Chat' },
-  2: { key: 'jobs', fallback: 'Cron & Tasks' },
-  3: { key: 'settings', fallback: 'Ops & Settings' },
+  0: { key: 'tabHome', fallback: 'Home' },
+  1: { key: 'tabChat', fallback: 'Chat' },
+  2: { key: 'tabJobs', fallback: 'Jobs' },
+  3: { key: 'tabSettings', fallback: 'Settings' },
 };
 
 // App.tsx persists the active tab as this hash (and mirrors it to
@@ -142,30 +142,44 @@ export const Header: React.FC<HeaderProps> = ({
     statusState === 'connected'
       ? tx('connected', 'Connected')
       : statusState === 'starting'
-        ? tx('starting', 'Starting')
+        ? tx('statusConnecting', 'Connecting…')
         : statusState === 'failed'
           ? isUnauthorized
-            ? tx('gatewayKeyRejected', 'Key rejected')
-            : tx('connectionFailed', 'Connection failed')
-          : tx('offline', 'Offline');
+            ? tx('keyNotAccepted', 'Key not accepted')
+            : tx('couldNotConnect', 'Could not connect')
+          : tx('notConnected', 'Not connected');
 
-  const statusDotClass =
+  // The single status pill reads the real gateway state through the shared
+  // badge vocabulary: connected success, starting warning, failed and
+  // key-rejected danger, offline neutral.
+  const statusPillClass =
     statusState === 'connected'
-      ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]'
+      ? 'pill-success'
       : statusState === 'starting'
-        ? 'bg-amber-400 animate-pulse'
+        ? 'pill-warning'
         : statusState === 'failed'
-          ? 'bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.5)]'
-          : 'bg-slate-500';
+          ? 'pill-danger'
+          : 'pill-neutral';
+
+  const statusDotColor =
+    statusState === 'connected'
+      ? 'var(--app-success)'
+      : statusState === 'starting'
+        ? 'var(--app-warning)'
+        : statusState === 'failed'
+          ? 'var(--app-danger)'
+          : 'var(--app-text-dim)';
 
   const statusTitle =
     statusState === 'failed'
       ? isUnauthorized
-        ? tx('gatewayKeyRejectedHint', 'The gateway rejected the server key. Check the gateway key in Settings.')
+        ? tx('keyNotAcceptedHint', 'The Hermes server did not accept the key. Open Settings and paste the right key.')
         : signals.gatewayFailureReason
           ? localizedMessage(toAppError(new Error(String(signals.gatewayFailureReason))), lang)
-          : tx('connectionFailedHint', 'The gateway did not respond. Check that it is running.')
-      : statusLabel;
+          : tx('noReplyFromServer', 'The Hermes server did not respond. Make sure it is running, then retry.')
+      : statusState === 'offline'
+        ? tx('notConnectedHint', 'Not connected to the Hermes server. Messages you send are kept and sent when it is back.')
+        : statusLabel;
 
   // Which screen are we on? An explicit title wins; otherwise the active tab
   // index maps to its canonical name. When neither prop is passed the header
@@ -194,10 +208,19 @@ export const Header: React.FC<HeaderProps> = ({
   const isHomeTitle = screenTitle === APP_TITLE;
 
   const approvalCount = approvals.length;
-  const approvalLabel =
+  // The badge says what it counts, so a bare "3" can never read as unread
+  // messages.
+  const approvalsWaiting =
     approvalCount === 1
-      ? tx('approvalNeeded', 'Approval')
-      : tx('approvalsNeededPlural', 'Approvals');
+      ? tx('approvalsWaitingOne', '1 approval waiting for you')
+      : tx('approvalsWaitingMany', '{count} approvals waiting for you').replace(
+          '{count}',
+          String(approvalCount)
+        );
+  const moreOptionsLabel =
+    approvalCount > 0
+      ? `${tx('moreOptions', 'More options')}, ${approvalsWaiting}`
+      : tx('moreOptions', 'More options');
 
   // Overflow menu: the token telemetry, approvals action and inspector toggle
   // used to be three separate bordered pills. At 360dp the pile overflowed the
@@ -225,17 +248,15 @@ export const Header: React.FC<HeaderProps> = ({
 
   return (
     <header
-      className="sticky top-0 z-30 backdrop-blur-xl border-b px-4 py-2.5 flex items-center justify-between gap-2"
+      className="sticky top-0 z-30 backdrop-blur-xl border-b elev-2 edge flex items-center justify-between gap-2 px-4 py-2"
       style={{
-        backgroundColor: 'var(--app-bg, #090B14)',
-        borderColor: 'var(--app-border, rgba(255,255,255,0.07))',
+        backgroundColor: 'var(--app-bg)',
         // Edge-to-edge (viewport-fit=cover, targetSdk 36): the status bar and
         // notch overlay the top of the viewport, so the header must inset
-        // itself or its content sits under the system bar. 0.625rem keeps the
-        // previous py-2.5 spacing when the inset is 0 (web/desktop). minHeight
-        // reserves a full 56px content strip BELOW the inset so the bar never
-        // measures short and never clips its children.
-        paddingTop: 'calc(0.625rem + env(safe-area-inset-top, 0px))',
+        // itself or its content sits under the system bar. minHeight reserves
+        // a full 56px content strip BELOW the inset so the bar never measures
+        // short and never clips its children.
+        paddingTop: 'calc(0.5rem + env(safe-area-inset-top, 0px))',
         minHeight: 'calc(3.5rem + env(safe-area-inset-top, 0px))',
       }}
     >
@@ -244,16 +265,16 @@ export const Header: React.FC<HeaderProps> = ({
         {!isDesktop ? (
           <button
             onClick={onOpenDrawer}
-            className="min-w-[44px] min-h-[44px] rounded-lg flex items-center justify-center text-slate-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] active:scale-95 transition-all border border-white/[0.06] shrink-0"
-            title={tx('openConversations', 'Open Conversations')}
-            aria-label={tx('openConversations', 'Open Conversations')}
+            className="min-w-[44px] min-h-[44px] r-xs edge flex items-center justify-center shrink-0 text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)] active:scale-95 transition-all"
+            title={tx('openChats', 'Open chats')}
+            aria-label={tx('openChats', 'Open chats')}
           >
             <Menu className="w-4 h-4" />
           </button>
         ) : (
           <button
             onClick={onToggleSidebar}
-            className="min-w-[44px] min-h-[44px] rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.05] transition shrink-0"
+            className="min-w-[44px] min-h-[44px] r-xs flex items-center justify-center shrink-0 text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)] transition"
             title={sidebarCollapsed ? tx('expandSidebar', 'Expand sidebar') : tx('collapseSidebar', 'Collapse sidebar')}
             aria-label={sidebarCollapsed ? tx('expandSidebar', 'Expand sidebar') : tx('collapseSidebar', 'Collapse sidebar')}
           >
@@ -261,12 +282,15 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         )}
 
-        <div className="flex items-center gap-2.5 min-w-0">
+        <div className="flex items-center gap-2 min-w-0">
           {!isDesktop && isHomeTitle && (
-            <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-indigo-500/20 via-violet-500/20 to-teal-500/20 border border-indigo-500/30 p-1 flex items-center justify-center shrink-0">
+            <div
+              className="w-8 h-8 r-xs edge p-1 flex items-center justify-center shrink-0"
+              style={{ backgroundColor: 'var(--app-accent-subtle)' }}
+            >
               <img
                 src="/ic_hermes_logo.png"
-                alt="Hermes Logo"
+                alt={tx('appLogoAlt', 'Hermes logo')}
                 className="w-full h-full object-contain"
                 onError={(e) => {
                   (e.target as HTMLElement).style.display = 'none';
@@ -276,12 +300,12 @@ export const Header: React.FC<HeaderProps> = ({
           )}
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className="font-semibold text-xs text-white tracking-tight truncate" aria-live="polite">
+              <span className="t-title font-semibold tracking-tight truncate text-[var(--app-text)]" aria-live="polite">
                 {screenTitle}
               </span>
               {isHomeTitle && (
-                <span className="text-[11px] text-slate-500 font-mono hidden sm:inline">
-                  {settings.modelId.split('/').pop()}
+                <span className="t-micro font-mono text-[var(--app-text-dim)] hidden sm:inline">
+                  {tx('activeModel', 'Active model')}: {settings.modelId.split('/').pop()}
                 </span>
               )}
             </div>
@@ -297,12 +321,22 @@ export const Header: React.FC<HeaderProps> = ({
         <div
           role="status"
           aria-live="polite"
-          aria-label={`${tx('gatewayStatus', 'Gateway status')}: ${statusLabel}`}
+          aria-label={`${tx('connectionStatus', 'Connection status')}: ${statusLabel}`}
           title={statusTitle}
-          className="flex items-center gap-1.5 text-xs bg-white/[0.02] px-2.5 h-6 rounded-lg border border-white/[0.05]"
+          className={`flex items-center gap-1 r-xs h-6 px-2 ${statusPillClass}`}
         >
-          <span className={`w-2 h-2 rounded-full shrink-0 ${statusDotClass}`} aria-hidden="true" />
-          <span className="font-medium text-[11px] text-slate-200 whitespace-nowrap">
+          <span
+            className="w-2 h-2 rounded-full shrink-0"
+            aria-hidden="true"
+            style={{
+              backgroundColor: statusDotColor,
+              boxShadow:
+                statusState === 'connected' || statusState === 'failed'
+                  ? `0 0 8px ${statusDotColor}`
+                  : undefined,
+            }}
+          />
+          <span className="t-caption font-medium whitespace-nowrap">
             {statusLabel}
           </span>
         </div>
@@ -311,20 +345,20 @@ export const Header: React.FC<HeaderProps> = ({
         <div className="relative" ref={menuWrapRef}>
           <button
             onClick={() => setMenuOpen((prev) => !prev)}
-            className={`relative min-w-[44px] min-h-[44px] rounded-lg flex items-center justify-center transition cursor-pointer border ${
+            className={`relative min-w-[44px] min-h-[44px] r-xs edge flex items-center justify-center transition cursor-pointer ${
               menuOpen
-                ? 'bg-white/[0.08] text-white border-white/[0.1]'
-                : 'text-slate-400 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border-white/[0.06]'
+                ? 'bg-[var(--app-card-hover)] text-[var(--app-text)]'
+                : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)]'
             }`}
-            title={tx('moreOptions', 'More options')}
-            aria-label={tx('moreOptions', 'More options')}
+            title={moreOptionsLabel}
+            aria-label={moreOptionsLabel}
             aria-haspopup="menu"
             aria-expanded={menuOpen}
           >
             <MoreVertical className="w-4 h-4" />
             {approvalCount > 0 && (
               <span
-                className="absolute -top-1 -end-1 min-w-[16px] h-4 px-1 rounded-full bg-rose-500 text-white font-mono text-[9px] font-bold flex items-center justify-center"
+                className="absolute -top-1 -end-1 pill-danger font-mono font-semibold"
                 aria-hidden="true"
               >
                 {approvalCount}
@@ -342,19 +376,20 @@ export const Header: React.FC<HeaderProps> = ({
               <div
                 role="menu"
                 aria-label={tx('moreOptions', 'More options')}
-                className="absolute end-0 top-full mt-2 z-50 w-56 rounded-lg bg-[var(--app-card,#11151B)] border border-white/[0.1] shadow-2xl p-1"
+                className="absolute end-0 top-full mt-2 z-50 w-56 r-sm edge elev-2 p-1"
+                style={{ backgroundColor: 'var(--app-card)' }}
               >
                 {/* Token telemetry, formerly its own bordered pill. */}
                 <div
-                  className="px-2.5 py-1.5 rounded-lg bg-white/[0.03] mb-1"
-                  aria-label={tx('tokenUsage', 'Token usage')}
+                  className="px-3 py-2 r-xs mb-1 bg-[var(--app-card-subtle)]"
+                  aria-label={tx('tokenUsage', 'Tokens used')}
                 >
-                  <div className="flex items-center justify-between gap-2 font-mono text-[11px] text-slate-400">
-                    <span className="text-slate-500">{tx('tokens', 'Tokens')}</span>
-                    <span className="flex items-center gap-1.5">
-                      <span title={tx('promptTokens', 'Prompt Input Tokens')}>↑ {fmtTok(usageIn)}</span>
-                      <span className="text-slate-600">·</span>
-                      <span title={tx('outputTokens', 'Generated Output Tokens')}>↓ {fmtTok(usageOut)}</span>
+                  <div className="flex items-center justify-between gap-2 t-micro font-mono text-[var(--app-text-muted)]">
+                    <span className="text-[var(--app-text-dim)]">{tx('tokens', 'Tokens')}</span>
+                    <span className="flex items-center gap-2">
+                      <span title={tx('promptTokens', 'Tokens sent to the model')}>↑ {fmtTok(usageIn)}</span>
+                      <span className="text-[var(--app-text-dim)]">·</span>
+                      <span title={tx('outputTokens', 'Tokens received from the model')}>↓ {fmtTok(usageOut)}</span>
                     </span>
                   </div>
                 </div>
@@ -366,10 +401,10 @@ export const Header: React.FC<HeaderProps> = ({
                       setMenuOpen(false);
                       onGoApprovals();
                     }}
-                    className="w-full min-h-[44px] px-2.5 flex items-center gap-2.5 rounded-lg text-xs text-rose-300 hover:bg-rose-500/10 transition cursor-pointer"
+                    className="w-full min-h-[44px] px-3 flex items-center gap-3 r-xs t-body text-[var(--app-danger)] hover:bg-[var(--app-danger-subtle)] transition cursor-pointer"
                   >
-                    <AlertCircle className="w-3.5 h-3.5 text-rose-400" />
-                    <span>{approvalCount} {approvalLabel}</span>
+                    <AlertCircle className="w-4 h-4 text-[var(--app-danger)]" />
+                    <span>{approvalsWaiting}</span>
                   </button>
                 )}
 
@@ -381,14 +416,14 @@ export const Header: React.FC<HeaderProps> = ({
                       onToggleInspector();
                     }}
                     aria-expanded={inspectorOpen}
-                    className={`w-full min-h-[44px] px-2.5 flex items-center gap-2.5 rounded-lg text-xs transition cursor-pointer ${
+                    className={`w-full min-h-[44px] px-3 flex items-center gap-3 r-xs t-body transition cursor-pointer ${
                       inspectorOpen
-                        ? 'bg-indigo-600/20 text-indigo-300'
-                        : 'text-slate-300 hover:bg-white/[0.06] hover:text-white'
+                        ? 'bg-[var(--app-accent-subtle)] text-[var(--app-accent-text)]'
+                        : 'text-[var(--app-text-muted)] hover:bg-[var(--app-card-hover)] hover:text-[var(--app-text)]'
                     }`}
                   >
-                    {inspectorOpen ? <PanelRightClose className="w-3.5 h-3.5" /> : <PanelRightOpen className="w-3.5 h-3.5" />}
-                    <span>{t('inspector') || tx('inspector', 'Inspector')}</span>
+                    {inspectorOpen ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
+                    <span>{tx('inspectorMenuLabel', 'Technical details')}</span>
                   </button>
                 )}
               </div>

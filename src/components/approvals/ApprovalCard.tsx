@@ -21,22 +21,24 @@ const documentLang = (): string => {
     const l = typeof document !== 'undefined' ? document.documentElement.lang : '';
     if (l) return l.toLowerCase().split('-')[0];
   } catch {
-    // ignore , default below
+    // ignore, default below
   }
   return 'en';
 };
 
-function riskStyle(risk: string | undefined): string {
+// Risk reads through the shared badge vocabulary: high danger, medium warning,
+// low or unknown neutral.
+function riskPillClass(risk: string | undefined): string {
   const r = (risk || '').toLowerCase();
-  if (r === 'high') return 'bg-red-500/20 text-red-300 border-red-500/30';
-  if (r === 'medium') return 'bg-amber-500/20 text-amber-300 border-amber-500/30';
-  return 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30';
+  if (r === 'high') return 'pill-danger';
+  if (r === 'medium') return 'pill-warning';
+  return 'pill-neutral';
 }
 
 const Field: React.FC<{ label: string; value: string; mono?: boolean }> = ({ label, value, mono }) => (
   <div className="min-w-0">
-    <p className="text-[10px] uppercase tracking-wide text-slate-500">{label}</p>
-    <p className={`text-xs text-slate-200 break-all leading-relaxed ${mono ? 'font-mono' : ''}`}>
+    <p className="t-caption uppercase tracking-wide text-[var(--app-text-dim)]">{label}</p>
+    <p className={`t-caption text-[var(--app-text-muted)] break-all leading-relaxed ${mono ? 'font-mono' : ''}`}>
       {value}
     </p>
   </div>
@@ -69,40 +71,49 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
     if (r === 'high') return tx('apprRiskHigh', 'High');
     if (r === 'medium') return tx('apprRiskMedium', 'Medium');
     if (r === 'low') return tx('apprRiskLow', 'Low');
-    return approval.risk || '';
+    return tx('apprRiskUnknown', 'Unknown');
   })();
 
+  const neutralBtn = 'bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] text-[var(--app-text-muted)] edge';
   const denyCls = destructive
-    ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-xs'
-    : 'bg-white/[0.05] hover:bg-white/[0.08] text-slate-300 border border-white/[0.08]';
+    ? 'bg-[var(--app-danger)] hover:brightness-110 text-[var(--app-bg)]'
+    : neutralBtn;
   const allowOnceCls = destructive
-    ? 'bg-white/[0.05] hover:bg-white/[0.08] text-slate-200 border border-white/[0.08]'
-    : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-xs';
+    ? neutralBtn
+    : 'bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)]';
   const allowSessionCls = destructive
-    ? 'bg-white/[0.05] hover:bg-white/[0.08] text-slate-200 border border-white/[0.08]'
-    : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-xs';
+    ? neutralBtn
+    : 'bg-[var(--app-success)] hover:brightness-110 text-[var(--app-bg)]';
 
   return (
     <div
       role="group"
       aria-label={approval.summary}
-      className={`rounded-xl border p-3 ${
-        destructive ? 'border-rose-500/30 bg-rose-500/[0.06]' : 'border-amber-500/20 bg-black/20'
+      className={`r-md elev-0 border p-3 ${
+        destructive
+          ? 'border-[var(--app-danger-border)] bg-[var(--app-danger-subtle)]'
+          : 'border-[var(--app-border)] bg-[var(--app-card)]'
       }`}
     >
       <div className="flex items-start gap-3">
         <div
-          className={`p-2 rounded-xl shrink-0 ${
-            destructive ? 'bg-rose-500/20 text-rose-300' : 'bg-amber-500/20 text-amber-300'
+          className={`p-2 r-xs shrink-0 ${
+            destructive
+              ? 'bg-[var(--app-danger-subtle)] text-[var(--app-danger)]'
+              : 'bg-[var(--app-warning-subtle)] text-[var(--app-warning)]'
           }`}
         >
           <AlertTriangle className="w-4 h-4" />
         </div>
         <div className="flex-1 min-w-0 space-y-2">
-          <p className="text-xs text-slate-200 leading-relaxed break-words">{approval.summary}</p>
+          {/* The summary is the strongest line on the card: body size with
+              heading emphasis. */}
+          <p className="t-body font-semibold tracking-tight text-[var(--app-text)] leading-relaxed break-words">
+            {approval.summary}
+          </p>
           {approval.risk && (
             <span
-              className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold border ${riskStyle(approval.risk)}`}
+              className={`inline-block t-micro font-semibold ${riskPillClass(approval.risk)}`}
             >
               {tr('apprRisk')}: {riskLabel}
             </span>
@@ -113,40 +124,40 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
             {approval.path && <Field label={tr('apprPath')} value={approval.path} mono />}
             {approval.cwd && <Field label={tr('apprCwd')} value={approval.cwd} mono />}
             {approval.reason && <Field label={tr('apprReason')} value={approval.reason} />}
-            <Field label={tr('apprRun')} value={approval.runId} mono />
-            {approval.sessionId && <Field label={tr('apprSession')} value={approval.sessionId} mono />}
+            <Field label={tx('apprRequestId', 'Request id')} value={approval.runId} mono />
+            {approval.sessionId && <Field label={tx('apprSessionLabel', 'Chat')} value={approval.sessionId} mono />}
           </div>
         </div>
       </div>
       {error && (
         <p
           role="alert"
-          className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-2 text-[11px] text-rose-200"
+          className="mt-3 r-xs px-3 py-2 t-caption border border-[var(--app-danger-border)] bg-[var(--app-danger-subtle)] text-[var(--app-danger)]"
         >
           {error}
         </p>
       )}
-      <div className="flex items-center gap-2 mt-3 pt-2 border-t border-white/[0.08]">
+      <div className="flex items-center gap-2 mt-3 pt-2 hairline border-t">
         <button
           onClick={() => onDeny(approval)}
           disabled={disabled}
-          className={`flex-1 min-h-[44px] py-2 rounded-xl text-xs font-medium transition cursor-pointer disabled:opacity-50 ${denyCls}`}
+          className={`flex-1 min-h-[44px] py-2 r-md t-caption font-medium transition cursor-pointer disabled:opacity-50 ${denyCls}`}
         >
           {tr('deny')}
         </button>
         <button
           onClick={() => onAllow(approval, 'once')}
           disabled={disabled}
-          className={`flex-1 min-h-[44px] py-2 rounded-xl text-xs font-semibold transition cursor-pointer disabled:opacity-50 ${allowOnceCls}`}
+          className={`flex-1 min-h-[44px] py-2 r-md t-caption font-semibold transition cursor-pointer disabled:opacity-50 ${allowOnceCls}`}
         >
-          {tr('allowOnce')}
+          {tx('apprAllowOnce', 'Allow once')}
         </button>
         <button
           onClick={() => onAllow(approval, 'session')}
           disabled={disabled}
-          className={`flex-1 min-h-[44px] py-2 rounded-xl text-xs font-semibold transition cursor-pointer disabled:opacity-50 ${allowSessionCls}`}
+          className={`flex-1 min-h-[44px] py-2 r-md t-caption font-semibold transition cursor-pointer disabled:opacity-50 ${allowSessionCls}`}
         >
-          {tr('allowSession')}
+          {tx('apprAllowSession', 'Allow for this chat')}
         </button>
       </div>
     </div>

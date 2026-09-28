@@ -1,8 +1,22 @@
 @import "tailwindcss";
 
+/* ==========================================================================
+   DESIGN VOCABULARY: USAGE CONTRACT (read this before styling anything)
+   Text: .t-* only (display/title/heading/body/label/caption/micro). Never
+   text-xs, never text-[Npx]. Shape: .r-* for every radius, .edge/.hairline for
+   every border, .elev-0..3 for every shadow, .pill-* for every status badge.
+   Color: var(--app-*) tokens only. Never a raw hex, never a Tailwind palette
+   color (indigo rose amber emerald sky teal cyan violet red). Space in 4px.
+   ========================================================================== */
+
 @layer base {
   :root {
     color-scheme: dark light;
+
+    /* Dark pre-paint defaults (Midnight). applyThemeToDom overrides these on
+       documentElement once settings load; they exist so the first frame is
+       already correct instead of flashing. Every token below is also defined
+       for light in the [data-mode="light"] block, so nothing is dark-only. */
     --app-bg: #090B14;
     --app-sidebar: #06070E;
     --app-card: #0E1222;
@@ -13,6 +27,7 @@
     --app-accent: #6366F1;
     --app-accent-hover: #4F46E5;
     --app-accent-subtle: rgba(99, 102, 241, 0.16);
+    --app-accent-border: rgba(99, 102, 241, 0.45);
     --app-accent-text: #A5B4FC;
     --app-text: #F8FAFC;
     --app-text-muted: #94A3B8;
@@ -30,29 +45,111 @@
     --app-info: #7DD3FC;
     --app-info-subtle: rgba(125, 211, 252, 0.12);
     --app-info-border: rgba(125, 211, 252, 0.35);
-    /* Radius scale: map one-off rounded-[*px] values onto these steps
-       (chat composer rounded-[22px] -> var(--radius-xl)). */
-    --radius-sm: 6px;
-    --radius-md: 10px;
-    --radius-lg: 14px;
-    --radius-xl: 20px;
+
+    /* Solid status surfaces plus the text/icon that sits on them, the
+       on-accent ink, and the modal backdrop. These existed only as hand
+       written text-white / bg-rose-600 / bg-black/70 before, which is what
+       broke the light theme. Values are mirrored in themes.ts (per palette for
+       --app-on-accent, shared for the solid status set) and every one is
+       defined for both modes. Contrast, WCAG AA for text on its own fill:
+       #FFFFFF on #E11D48 4.70, on #047857 5.48, on #0369A1 5.93, on #B45309
+       5.02; #FFFFFF on this palette's accent #6366F1 is 4.47 (see themes.ts).
+       --app-scrim is the one backdrop wash for every overlay: soft neutral on
+       dark surfaces, a stronger slightly blue-black wash on light pages so a
+       cream page never looks broken behind a modal. */
+    --app-on-accent: #FFFFFF;
+    --app-danger-solid: #E11D48;
+    --app-on-danger: #FFFFFF;
+    --app-success-solid: #047857;
+    --app-on-success: #FFFFFF;
+    --app-info-solid: #0369A1;
+    --app-on-info: #FFFFFF;
+    --app-warning-solid: #B45309;
+    --app-on-warning: #FFFFFF;
+    --app-scrim: rgba(4, 6, 12, 0.62);
+
+    /* Radius: four steps plus full. --radius-* are legacy aliases kept one
+       release so any straggler still resolves; new code uses --r-*. */
+    --r-xs: 8px;
+    --r-sm: 12px;
+    --r-md: 16px;
+    --r-lg: 24px;
+    --r-full: 9999px;
+    --radius-sm: var(--r-xs);
+    --radius-md: var(--r-sm);
+    --radius-lg: var(--r-md);
+    --radius-xl: var(--r-lg);
+
+    /* Chat font scale (Settings fontScale mirrors here from SettingsTab).
+       html font-size drives every rem-based size, so .t-* scales with it;
+       --msg-font-size is the explicit px knob for chat bubbles. */
     --font-scale: 1;
+    --msg-font-size: calc(14px * var(--font-scale, 1));
+  }
+
+  /* Light pre-paint defaults (Midnight light). Mirrors THEME_PALETTES[0].light
+     exactly, including the status triples, so light mode never inherits a
+     dark-only palette value. index.html pre-paints #F1F5F9, which is --app-bg
+     here. */
+  [data-mode="light"] {
+    color-scheme: light;
+    --app-bg: #F1F5F9;
+    --app-sidebar: #E2E8F0;
+    --app-card: #FFFFFF;
+    --app-card-subtle: #F8FAFC;
+    --app-card-hover: #EDF2F7;
+    --app-border: #CBD5E1;
+    --app-border-subtle: #E2E8F0;
+    --app-accent: #4F46E5;
+    --app-accent-hover: #4338CA;
+    --app-accent-subtle: rgba(79, 70, 229, 0.12);
+    --app-accent-border: #C7D2FE;
+    --app-accent-text: #4338CA;
+    --app-text: #0F172A;
+    --app-text-muted: #475569;
+    --app-text-dim: #64748B;
+    --app-input-bg: #FFFFFF;
+    --app-success: #047857;
+    --app-success-subtle: #ECFDF5;
+    --app-success-border: #A7F3D0;
+    --app-warning: #92400E;
+    --app-warning-subtle: #FFFBEB;
+    --app-warning-border: #FDE68A;
+    --app-danger: #BE123C;
+    --app-danger-subtle: #FFF1F2;
+    --app-danger-border: #FECDD3;
+    --app-info: #0369A1;
+    --app-info-subtle: #F0F9FF;
+    --app-info-border: #BAE6FD;
+    /* Light mirrors of the solid status set. Same hues as dark on purpose (a
+       destructive red and a success green must read the same in both modes and
+       on every palette), but the backdrop wash is stronger here so a light
+       page never shows a washed out black scrim, and on-accent is white on
+       this palette's #4F46E5 accent (6.29:1). Palette-by-palette on-accent
+       inks live in themes.ts. */
+    --app-on-accent: #FFFFFF;
+    --app-danger-solid: #E11D48;
+    --app-on-danger: #FFFFFF;
+    --app-success-solid: #047857;
+    --app-on-success: #FFFFFF;
+    --app-info-solid: #0369A1;
+    --app-on-info: #FFFFFF;
+    --app-warning-solid: #B45309;
+    --app-on-warning: #FFFFFF;
+    --app-scrim: rgba(10, 14, 30, 0.72);
   }
 
   [data-mode="dark"] {
     color-scheme: dark;
   }
 
-  /* Chat font scale (settings.fontScale mirrors here from SettingsTab).
-     Tailwind text-* sizes are rem-based, so this scales chrome text.
-     Message bubbles use px-based inline sizes and are unaffected. */
   html {
     font-size: calc(16px * var(--font-scale, 1));
   }
 
   body {
-    background-color: var(--app-bg, #090B14);
-    color: var(--app-text, #F8FAFC);
+    background-color: var(--app-bg);
+    color: var(--app-text);
     font-family: 'Plus Jakarta Sans', 'Segoe UI', Tahoma, 'Noto Kufi Arabic', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
     letter-spacing: -0.011em;
     min-height: 100vh;
@@ -60,7 +157,7 @@
     overflow-x: hidden;
   }
 
-  /* Ultra sleek scrollbar */
+  /* Ultra sleek scrollbar. Colors follow the mode-aware border/text tokens. */
   ::-webkit-scrollbar {
     width: 5px;
     height: 5px;
@@ -69,167 +166,138 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: var(--app-border, rgba(255, 255, 255, 0.12));
-    border-radius: 9999px;
+    background: var(--app-border);
+    border-radius: var(--r-full);
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: var(--app-text-muted, rgba(255, 255, 255, 0.25));
+    background: var(--app-text-muted);
   }
 }
 
 /* ==========================================================================
-   DYNAMIC THEME APPLIER & CONTAINER OVERRIDES
+   VOCABULARY: TYPE SCALE
+   One hierarchy, seven steps. The rem values are deliberate: they inherit the
+   html font-size set from --font-scale, so the Chat font scale setting keeps
+   working for all app text. .t-micro is the one fixed step (11px) because it
+   is a fixed-purpose uppercase microlabel. No text-xs / text-[Npx].
    ========================================================================== */
-
-/* Main dark backgrounds */
-.bg-\[\#090B0E\],
-.bg-\[\#080B0E\],
-.bg-\[\#0A0D11\],
-.bg-\[\#0B0F15\],
-.bg-\[\#090B0E\]\/90,
-.bg-\[\#090B0E\]\/95,
-.bg-\[\#090B0E\]\/80 {
-  background-color: var(--app-bg, #090B14) !important;
+.t-display {
+  font-size: 1.75rem;
+  line-height: 2.125rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
-
-/* Card surfaces */
-.bg-\[\#0E1217\],
-.bg-\[\#121721\],
-.bg-\[\#11151B\],
-.bg-\[\#0E1217\]\/90 {
-  background-color: var(--app-card, #0E1222) !important;
+.t-title {
+  font-size: 1.375rem;
+  line-height: 1.75rem;
+  font-weight: 600;
 }
-
-/* Elevated/subtle inputs and secondary containers */
-.bg-\[\#141920\],
-.bg-\[\#1A2230\],
-.bg-\[\#232D3F\],
-.bg-\[\#131924\],
-.bg-\[\#122232\],
-.bg-\[\#0E2938\],
-.bg-\[\#141A23\],
-.bg-\[\#141920\]\/60 {
-  background-color: var(--app-card-subtle, #14182E) !important;
+.t-heading {
+  font-size: 1.0625rem;
+  line-height: 1.5rem;
+  font-weight: 600;
 }
-
-/* Primary text & muted text */
-.text-\[\#F3F4F6\],
-.text-slate-100,
-.text-slate-200 {
-  color: var(--app-text, #F8FAFC) !important;
+.t-body {
+  font-size: 0.9375rem;
+  line-height: 1.375rem;
+  font-weight: 400;
 }
-
-.text-slate-400,
-.text-slate-500 {
-  color: var(--app-text-muted, #94A3B8) !important;
+.t-label {
+  font-size: 0.8125rem;
+  line-height: 1.125rem;
+  font-weight: 500;
 }
-
-.text-slate-600 {
-  color: var(--app-text-dim, #64748B) !important;
+.t-caption {
+  font-size: 0.75rem;
+  line-height: 1rem;
+  font-weight: 500;
 }
-
-/* Borders */
-.border-white\/\[0\.08\],
-.border-white\/\[0\.07\],
-.border-white\/\[0\.06\],
-.border-white\/\[0\.05\],
-.border-white\/\[0\.09\],
-.border-white\/\[0\.1\] {
-  border-color: var(--app-border, rgba(129, 140, 248, 0.16)) !important;
-}
-
-/* Accent buttons & highlights */
-.bg-indigo-600,
-.bg-indigo-500,
-.bg-indigo-600\/90,
-.bg-indigo-600\/80,
-.bg-indigo-500\/90 {
-  background-color: var(--app-accent, #6366F1) !important;
-}
-.bg-indigo-600:hover,
-.bg-indigo-500:hover,
-.bg-indigo-600\/90:hover,
-.hover\:bg-indigo-500:hover {
-  background-color: var(--app-accent-hover, #4F46E5) !important;
-}
-.text-indigo-400,
-.text-indigo-300 {
-  color: var(--app-accent-text, #A5B4FC) !important;
-}
-.border-indigo-500,
-.border-indigo-500\/40,
-.border-indigo-500\/50,
-.border-indigo-500\/30,
-.border-indigo-500\/20 {
-  border-color: var(--app-accent, #6366F1) !important;
-}
-.bg-indigo-500\/10,
-.bg-indigo-500\/15,
-.bg-indigo-500\/20,
-.bg-indigo-600\/20,
-.bg-indigo-600\/10 {
-  background-color: var(--app-accent-subtle, rgba(99, 102, 241, 0.16)) !important;
-}
-.ring-indigo-500\/50,
-.ring-indigo-500\/30,
-.ring-indigo-500 {
-  --tw-ring-color: var(--app-accent, #6366F1) !important;
-}
-.accent-indigo-500 {
-  accent-color: var(--app-accent, #6366F1) !important;
+.t-micro {
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 /* ==========================================================================
-   LIGHT MODE OVERRIDES
+   VOCABULARY: RADIUS, BORDERS, ELEVATION
+   Four radii, two borders, four depths. Depth follows stacking order: resting
+   surfaces elev-0/elev-1, raised menus and sheets elev-2, overlays, modals and
+   toasts elev-3.
    ========================================================================== */
-[data-mode="light"] {
-  color-scheme: light;
+.r-xs { border-radius: var(--r-xs); }
+.r-sm { border-radius: var(--r-sm); }
+.r-md { border-radius: var(--r-md); }
+.r-lg { border-radius: var(--r-lg); }
+.r-full { border-radius: var(--r-full); }
+
+.edge {
+  border: 1px solid var(--app-border);
+}
+.hairline {
+  border: 1px solid var(--app-border-subtle);
 }
 
-[data-mode="light"] body {
-  background-color: var(--app-bg, #F1F5F9) !important;
-  color: var(--app-text, #0F172A) !important;
-}
+.elev-0 { box-shadow: none; }
+.elev-1 { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18); }
+.elev-2 { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
+.elev-3 { box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6); }
 
-[data-mode="light"] .text-white:not(button.bg-indigo-600 *, button.bg-indigo-600, button.bg-indigo-600\/90, button.bg-indigo-600\/80, button.bg-indigo-500 *, button.bg-indigo-500, .bg-emerald-600 *, .bg-emerald-500 *, .bg-rose-500 *, .bg-rose-600 *, .bg-rose-600, .bg-amber-600 *, .bg-amber-600, .bg-red-600 *, .bg-red-600, .text-white-keep) {
-  color: var(--app-text, #0F172A) !important;
+/* ==========================================================================
+   VOCABULARY: STATUS PILLS
+   One geometry for every badge in the app, so states read identically.
+   Colors come from the --app-*-subtle / --app-* / --app-*-border triples; the
+   neutral pill uses the card-subtle / text-muted / border-subtle triple and is
+   the ONLY pill for Off, Disabled, Idle and unknown states (never green).
+   ========================================================================== */
+.pill-success,
+.pill-warning,
+.pill-danger,
+.pill-info,
+.pill-accent,
+.pill-neutral {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1875rem 0.5rem;
+  border-radius: var(--r-full);
+  border: 1px solid transparent;
+  font-size: 11px;
+  line-height: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
 }
-
-[data-mode="light"] .text-slate-300,
-[data-mode="light"] .text-slate-200 {
-  color: var(--app-text, #0F172A) !important;
+.pill-success {
+  background-color: var(--app-success-subtle);
+  color: var(--app-success);
+  border-color: var(--app-success-border);
 }
-
-[data-mode="light"] input:not([type="checkbox"]):not([type="radio"]),
-[data-mode="light"] select,
-[data-mode="light"] textarea {
-  color: var(--app-text, #0F172A) !important;
-  background-color: var(--app-input-bg, #FFFFFF) !important;
-  border-color: var(--app-border, #CBD5E1) !important;
+.pill-warning {
+  background-color: var(--app-warning-subtle);
+  color: var(--app-warning);
+  border-color: var(--app-warning-border);
 }
-
-[data-mode="light"] .bg-white\/\[0\.02\],
-[data-mode="light"] .bg-white\/\[0\.03\],
-[data-mode="light"] .bg-white\/\[0\.04\],
-[data-mode="light"] .bg-white\/\[0\.05\],
-[data-mode="light"] .bg-white\/\[0\.06\] {
-  background-color: rgba(0, 0, 0, 0.04) !important;
+.pill-danger {
+  background-color: var(--app-danger-subtle);
+  color: var(--app-danger);
+  border-color: var(--app-danger-border);
 }
-
-[data-mode="light"] .hover\:bg-white\/\[0\.02\]:hover,
-[data-mode="light"] .hover\:bg-white\/\[0\.04\]:hover,
-[data-mode="light"] .hover\:bg-white\/\[0\.06\]:hover,
-[data-mode="light"] .hover\:bg-white\/\[0\.08\]:hover,
-[data-mode="light"] .hover\:bg-white\/\[0\.1\]:hover,
-[data-mode="light"] .hover\:bg-white\/\[0\.12\]:hover {
-  background-color: rgba(0, 0, 0, 0.07) !important;
+.pill-info {
+  background-color: var(--app-info-subtle);
+  color: var(--app-info);
+  border-color: var(--app-info-border);
 }
-
-[data-mode="light"] ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.18);
+.pill-accent {
+  background-color: var(--app-accent-subtle);
+  color: var(--app-accent-text);
+  border-color: var(--app-accent-border);
 }
-[data-mode="light"] ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.3);
+.pill-neutral {
+  background-color: var(--app-card-subtle);
+  color: var(--app-text-muted);
+  border-color: var(--app-border-subtle);
 }
 
 /* ==========================================================================
@@ -241,20 +309,20 @@
    keep the border-highlight treatment.
    ========================================================================== */
 :where(a, button, input, select, textarea, [role="button"], [tabindex]):focus-visible {
-  outline: 2px solid var(--app-accent, #6366F1) !important;
+  outline: 2px solid var(--app-accent) !important;
   outline-offset: 2px;
-  border-radius: 6px;
+  border-radius: var(--r-xs);
 }
 
-/* Text fields keep the indigo border AND gain the ring on keyboard focus. */
+/* Text fields keep the accent border AND gain the ring on keyboard focus. */
 :where(input, select, textarea):focus-visible {
-  border-color: var(--app-accent, #6366F1) !important;
-  box-shadow: 0 0 0 2px var(--app-accent-subtle, rgba(99, 102, 241, 0.35));
+  border-color: var(--app-accent) !important;
+  box-shadow: 0 0 0 2px var(--app-accent-subtle);
 }
 
 /* Placeholders follow the dim token so they stay readable per mode. */
 :where(input, select, textarea)::placeholder {
-  color: var(--app-text-dim, #8296B1);
+  color: var(--app-text-dim);
   opacity: 1;
 }
 
@@ -423,60 +491,8 @@
 }
 
 /* ==========================================================================
-   F-THEME: STATUS TOKENS, TAB TRANSITION, MODAL ZOOM, SKELETON
+   TAB TRANSITION, MODAL ZOOM, SKELETON
    ========================================================================== */
-
-/* Status-text unification (both modes): legacy emerald/rose/amber/sky text
-   classes resolve onto the mode-aware status tokens, and the rose/red split
-   collapses onto --app-danger. Solid bg-* status badges are untouched. */
-.text-emerald-300,
-.text-emerald-400 {
-  color: var(--app-success, #34D399) !important;
-}
-.text-rose-200,
-.text-rose-300,
-.text-rose-400,
-.text-red-300,
-.text-red-400 {
-  color: var(--app-danger, #FDA4AF) !important;
-}
-.text-amber-300,
-.text-amber-400 {
-  color: var(--app-warning, #FCD34D) !important;
-}
-.text-sky-300,
-.text-sky-400 {
-  color: var(--app-info, #7DD3FC) !important;
-}
-
-/* Light-mode alert washes: translucent dark-mode tints are near-invisible
-   on white, so banner bg/border tints remap onto opaque light-safe tokens. */
-[data-mode="light"] .bg-rose-500\/10,
-[data-mode="light"] .bg-rose-500\/15,
-[data-mode="light"] .bg-rose-600\/20,
-[data-mode="light"] .bg-red-500\/10,
-[data-mode="light"] .bg-red-500\/20 {
-  background-color: var(--app-danger-subtle, #FFF1F2) !important;
-}
-[data-mode="light"] .bg-amber-500\/10,
-[data-mode="light"] .bg-amber-500\/20 {
-  background-color: var(--app-warning-subtle, #FFFBEB) !important;
-}
-[data-mode="light"] .bg-emerald-500\/15 {
-  background-color: var(--app-success-subtle, #ECFDF5) !important;
-}
-[data-mode="light"] .border-rose-500\/20,
-[data-mode="light"] .border-rose-500\/30,
-[data-mode="light"] .border-red-500\/30 {
-  border-color: var(--app-danger-border, #FECDD3) !important;
-}
-[data-mode="light"] .border-amber-500\/20,
-[data-mode="light"] .border-amber-500\/30 {
-  border-color: var(--app-warning-border, #FDE68A) !important;
-}
-[data-mode="light"] .border-emerald-500\/30 {
-  border-color: var(--app-success-border, #A7F3D0) !important;
-}
 
 /* Tab switch: tab roots remount on switch inside #main-content, so a
    mount-gated 150ms fade is a pure-CSS tab transition. Guarded to
@@ -519,12 +535,12 @@
 }
 
 /* Skeleton shimmer for lazy-tab fallbacks (see ui/Skeleton.tsx).
-   Track uses the card-subtle token; sheen uses the border token. */
+   Track uses the card-subtle token; sheen uses the border-subtle token. */
 .hm-skeleton {
   position: relative;
   overflow: hidden;
-  background-color: var(--app-card-subtle, #14182E);
-  border-radius: var(--radius-md, 10px);
+  background-color: var(--app-card-subtle);
+  border-radius: var(--r-xs);
   min-height: 0.75rem;
 }
 .hm-skeleton::after {
@@ -535,7 +551,7 @@
   background: linear-gradient(
     90deg,
     transparent,
-    var(--app-border-subtle, rgba(255, 255, 255, 0.06)),
+    var(--app-border-subtle),
     transparent
   );
   animation: hm-shimmer 1.4s ease-in-out infinite;
@@ -559,7 +575,7 @@
 }
 .hm-tab-skeleton-hero {
   height: 3.5rem;
-  border-radius: var(--radius-lg, 14px);
+  border-radius: var(--r-md);
 }
 .hm-tab-skeleton-row {
   height: 0.875rem;
@@ -666,4 +682,3 @@ body {
   position: absolute;
   inset: -8px;
 }
-

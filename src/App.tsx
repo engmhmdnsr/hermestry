@@ -11,7 +11,14 @@ import { OnboardingWizard } from './components/wizard/OnboardingWizard';
 import { AppLockGate } from './components/security/AppLockGate';
 import { HomeTab } from './components/tabs/HomeTab';
 import { ChatTab } from './components/tabs/ChatTab';
-import { TabPaneSkeleton } from './components/ui/Skeleton';
+import {
+  TabPaneSkeleton,
+  TabHeroSkeleton,
+  ListRowSkeleton,
+  CardSkeleton,
+  ChatBubbleSkeleton,
+} from './components/ui/Skeleton';
+import { ErrorBoundary } from './components/ui/ErrorBoundary';
 
 // PERF-01: code-split the heavy routes so the initial bundle stays lean.
 // Chat (default tab) and Home stay eager; Jobs (~26KB) and Settings (~67KB,
@@ -69,10 +76,18 @@ function readInitialTab(): number {
 }
 
 export const App: React.FC = () => {
-  const { settings, updateSettings, selectSession, newSession, vaultUnlocked } = useHermes();
+  const { settings, updateSettings, selectSession, newSession, vaultUnlocked, t } = useHermes();
   const [currentTab, setCurrentTab] = useState<number>(readInitialTab);
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
   const [isUnlocked, setIsUnlocked] = useState<boolean>(false);
+
+  // i18n with an English fallback, same pattern the tabs use: t() returns the
+  // key itself when no locale bundle ships it, and languages.ts is not ours to
+  // edit, so every string here is tx('key', 'English fallback').
+  const tx = (key: string, fallback: string): string => {
+    const v = t(key);
+    return !v || v === key ? fallback : v;
+  };
 
   // Latest tab, readable from the back-button listener without re-registering
   // it. The listener must exist exactly once for the lifetime of the app.
@@ -231,11 +246,7 @@ export const App: React.FC = () => {
 
   return (
     <div
-      className="h-screen h-[100dvh] w-screen flex overflow-hidden font-sans selection:bg-indigo-500/30 selection:text-indigo-200"
-      style={{
-        backgroundColor: 'var(--app-bg, #090B14)',
-        color: 'var(--app-text, #F3F4F6)',
-      }}
+      className="h-screen h-[100dvh] w-screen flex overflow-hidden font-sans bg-[var(--app-bg)] text-[var(--app-text)] selection:bg-[var(--app-accent-subtle)] selection:text-[var(--app-accent-text)]"
     >
       {/* Desktop 3-Panel: Left Sidebar */}
       {isDesktop && (
@@ -266,38 +277,117 @@ export const App: React.FC = () => {
         <main
           id="main-content"
           tabIndex={-1}
-          className={`flex-1 min-h-0 ${activeTab === 1 ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'}`}
-          style={{ backgroundColor: 'var(--app-bg, #090B14)' }}
+          className={`flex-1 min-h-0 bg-[var(--app-bg)] ${activeTab === 1 ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'}`}
         >
-          {activeTab === 0 && (
-            <HomeTab
-              onGoChat={() => setCurrentTab(1)}
-              // "Verify Gateway Diagnostics" card in HomeTab: the Diagnostics
-              // section lives in Settings, so the card navigates there.
-              onGoDiagnostics={() => setCurrentTab(3)}
-              onGoActivity={() => setCurrentTab(2)}
-              onGoSettings={() => setCurrentTab(3)}
-              // "View all" on Recent Sessions: opens the sessions drawer so
-              // every conversation is reachable, not just the newest four.
-              onGoSessions={() => setIsDrawerOpen(true)}
-            />
-          )}
-          {activeTab === 1 && (
-            <ChatTab
-              onGoSettings={() => setCurrentTab(3)}
-              isDesktop={isDesktop}
-            />
-          )}
-          {activeTab === 2 && (
-            <Suspense fallback={<TabPaneSkeleton />}>
-              <JobsTab />
+          {/* ONE error boundary for the whole content area. A rejected lazy
+              chunk (Jobs/Settings) or a render throw inside any tab used to
+              unmount the shell and leave a white screen. Now the failure is
+              contained to the content area: Header, BottomNav, the sessions
+              drawer and the Android back-button override all keep working. */}
+          <ErrorBoundary
+            onGoHome={() => setCurrentTab(HOME_TAB)}
+            labels={{
+              title: tx('screenFailedTitle', 'This screen did not load'),
+              message: tx(
+                'screenFailedBody',
+                'The screen failed to load. Your session is still here, so you can retry or go back home.'
+              ),
+              details: tx('screenFailedDetails', 'Technical details'),
+              retry: tx('retryAction', 'Retry'),
+              home: tx('goHomeAction', 'Go home'),
+            }}
+          >
+            {/* Shell-level Suspense, which keeps the shared skeleton as the
+                generic outer fallback. Tab-level boundaries below resolve
+                first, so this only catches a suspension from the shell. */}
+            <Suspense fallback={<TabPaneSkeleton label={tx('loadingScreen', 'Loading screen')} />}>
+              {activeTab === 0 && (
+                <Suspense
+                  // Home geometry: hero banner + stacked cards, gap-6/px-4/pt-4
+                  // like the real tab. The inset is applied exactly once, here,
+                  // never on the primitives, so it cannot double up.
+                  fallback={
+                    <div
+                      role="status"
+                      aria-label={tx('loadingHome', 'Loading home')}
+                      className="mx-auto flex max-w-2xl flex-col gap-6 px-4 pt-4 hm-tab-bottom"
+                    >
+                      <TabHeroSkeleton heightRem={8} />
+                      <CardSkeleton cards={3} lines={2} />
+                    </div>
+                  }
+                >
+                  <HomeTab
+                    onGoChat={() => setCurrentTab(1)}
+                    // "Verify Gateway Diagnostics" card in HomeTab: the Diagnostics
+                    // section lives in Settings, so the card navigates there.
+                    onGoDiagnostics={() => setCurrentTab(3)}
+                    onGoActivity={() => setCurrentTab(2)}
+                    onGoSettings={() => setCurrentTab(3)}
+                    // "View all" on Recent Sessions: opens the sessions drawer so
+                    // every conversation is reachable, not just the newest four.
+                    onGoSessions={() => setIsDrawerOpen(true)}
+                  />
+                </Suspense>
+              )}
+              {activeTab === 1 && (
+                <Suspense
+                  // Chat geometry: transcript bubbles. The label sits on the
+                  // first bubble so the announcement happens once, and the
+                  // second stays aria-hidden.
+                  fallback={
+                    <div className="flex flex-1 min-h-0 flex-col gap-3 px-3 sm:px-4 pt-4 hm-tab-bottom">
+                      <ChatBubbleSkeleton
+                        side="start"
+                        lines={3}
+                        label={tx('loadingChat', 'Loading chat')}
+                      />
+                      <ChatBubbleSkeleton side="end" lines={2} />
+                      <ChatBubbleSkeleton side="start" lines={4} />
+                    </div>
+                  }
+                >
+                  <ChatTab
+                    onGoSettings={() => setCurrentTab(3)}
+                    isDesktop={isDesktop}
+                  />
+                </Suspense>
+              )}
+              {activeTab === 2 && (
+                <Suspense
+                  // Jobs geometry: a list of thumb + two-line rows.
+                  fallback={
+                    <div className="space-y-6 max-w-2xl mx-auto px-4 pt-4 hm-tab-bottom">
+                      <ListRowSkeleton
+                        rows={5}
+                        label={tx('loadingJobs', 'Loading jobs')}
+                      />
+                    </div>
+                  }
+                >
+                  <JobsTab />
+                </Suspense>
+              )}
+              {activeTab === 3 && (
+                <Suspense
+                  // Settings geometry: a shorter hero (search/section header)
+                  // plus a longer stack of setting cards.
+                  fallback={
+                    <div
+                      role="status"
+                      aria-label={tx('loadingSettings', 'Loading settings')}
+                      className="space-y-4 max-w-2xl mx-auto px-4 pt-4 hm-tab-bottom"
+                    >
+                      <TabHeroSkeleton heightRem={6} />
+                      <CardSkeleton cards={4} lines={2} />
+                    </div>
+                  }
+                >
+                  <SettingsTab />
+                </Suspense>
+              )}
             </Suspense>
-          )}
-          {activeTab === 3 && (
-            <Suspense fallback={<TabPaneSkeleton />}>
-              <SettingsTab />
-            </Suspense>
-          )}
+          </ErrorBoundary>
         </main>
 
         {/* Mobile Navigation fallback when on smaller screens */}
@@ -329,7 +419,7 @@ export const App: React.FC = () => {
           <button
             aria-label="Close Inspector"
             onClick={() => setInspectorOpen(false)}
-            className="absolute inset-0 bg-black/60 cursor-pointer"
+            className="absolute inset-0 bg-[var(--app-scrim)] cursor-pointer"
           />
           <div className="relative h-full max-w-[20rem] w-full flex">
             <div className="flex-1 flex min-w-0 [&>aside]:w-full [&>aside]:h-full">
