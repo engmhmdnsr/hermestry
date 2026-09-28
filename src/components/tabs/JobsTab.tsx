@@ -9,8 +9,11 @@ import {
   Clock,
   Pencil,
   X,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
+import { GatewayService } from '../../services/gateway';
 import { CronJob } from '../../types/hermes';
 import {
   COMMON_TIMEZONES,
@@ -19,9 +22,13 @@ import {
   formatDateTimeInTimezone,
   formatRunTimestamp,
   formatTimeWithZone,
+  formatTimezoneOption,
   rejectionErrors,
   resolveDeviceTimezone,
+  scheduleSummary,
 } from '../../utils/jobTime';
+
+const gatewayService = new GatewayService();
 
 const OVERDUE_GRACE_MS = 5 * 60 * 1000;
 
@@ -63,7 +70,7 @@ const renderFieldErrors = (errors: ServerFieldError[]) => {
 
 export const JobsTab: React.FC = () => {
   const hermes = useHermes();
-  const { jobs, createJob, jobAction, cronRuns, fetchRuns, t } = hermes;
+  const { jobs, createJob, jobAction, cronRuns, fetchRuns, refreshJobs, t } = hermes;
   const updateJob = (hermes as unknown as {
     updateJob?: (id: string, patch: { name?: string; schedule?: string; prompt?: string }) => Promise<boolean>;
   }).updateJob;
@@ -75,28 +82,42 @@ export const JobsTab: React.FC = () => {
   const [name, setName] = useState('');
   const [schedule, setSchedule] = useState('');
   const [prompt, setPrompt] = useState('');
-  const [timezone, setTimezone] = useState(deviceTz);
+  // Single display timezone shared by the create form, the edit form, and
+  // every job card. It is display-only: the gateway create/update API
+  // carries no timezone field, so schedules run on gateway time and all
+  // times on this screen are rendered in this zone.
+  const [displayTz, setDisplayTz] = useState(deviceTz);
   const [createError, setCreateError] = useState('');
   const [createFieldErrors, setCreateFieldErrors] = useState<ServerFieldError[]>([]);
+  const [createMissing, setCreateMissing] = useState<string[]>([]);
   const [isCreating, setIsCreating] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
+  // Stacked toasts so concurrent create/action/delete notices don't
+  // overwrite each other (single-slot toasts lost all but the last).
+  const [toasts, setToasts] = useState<{ id: number; msg: string }[]>([]);
 
-  // Edit form state
+  // Edit form state (shares displayTz above; opening edit never resets it)
   const [editingJob, setEditingJob] = useState<CronJob | null>(null);
   const [editName, setEditName] = useState('');
   const [editSchedule, setEditSchedule] = useState('');
   const [editPrompt, setEditPrompt] = useState('');
-  const [editTimezone, setEditTimezone] = useState(deviceTz);
   const [editError, setEditError] = useState('');
   const [editFieldErrors, setEditFieldErrors] = useState<ServerFieldError[]>([]);
+  const [editMissing, setEditMissing] = useState<string[]>([]);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
+
+  // Jobs list sync state: distinguishes gateway error from a truly empty
+  // list (jobs.length === 0 alone cannot tell them apart).
+  const [jobsLoading, setJobsLoading] = useState(false);
+  const [jobsError, setJobsError] = useState<string | null>(null);
 
   // Search & history
   const [query, setQuery] = useState('');
   const [historyForId, setHistoryForId] = useState<string | null>(null);
+  const [runsLoading, setRunsLoading] = useState<Record<string, boolean>>({});
   const [pendingDeleteJob, setPendingDeleteJob] = useState<CronJob | null>(null);
   const [expandedPrompts, setExpandedPrompts] = useState<Record<string, boolean>>({});
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toastTimeouts = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const toastId = useRef(0);
 
   // JOB-04: optimistic overrides with rollback. Context jobs are the
   // source of truth; these layers apply instantly and roll back on failure.
@@ -106,8 +127,9 @@ export const JobsTab: React.FC = () => {
   const [actionError, setActionError] = useState('');
 
   useEffect(() => {
+    const timeouts = toastTimeouts.current;
     return () => {
-      if (toastTimer.current) clearTimeout(toastTimer.current);
+      for (const id of timeouts) clearTimeout(id);
     };
   }, []);
 
@@ -123,6 +145,8 @@ export const JobsTab: React.FC = () => {
   // Client-side schedule hints are UX only. The gateway is authoritative.
   const createHint = cronHint(schedule, presetVals);
   const editHint = editingJob ? cronHint(editSchedule, presetVals) : null;
+  const createSummary = scheduleSummary(schedule);
+  const editSummary = editingJob ? scheduleSummary(editSchedule) : null;
 
   const timezoneOptions = useMemo(() => {
     if (COMMON_TIMEZONES.includes(deviceTz)) return COMMON_TIMEZONES;
@@ -130,14 +154,66 @@ export const JobsTab: React.FC = () => {
   }, [deviceTz]);
 
   const showToast = (msg: string) => {
-    setToast(msg);
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 3000);
+    const id = ++toastId.current;
+    setToasts((prev) => [...prev.slice(-2), { id, msg }]);
+    const timer = setTimeout(() => {
+      setToasts((prev) => prev.filter((toastItem) => toastItem.id !== id));
+    }, 3000);
+    toastTimeouts.current.push(timer);
+  };
+
+  // Jobs list truthfulness: a live envelope check on mount so an empty
+  // list caused by a gateway failure renders as an error, not "no jobs".
+  useEffect(() => {
+    let cancelled = false;
+    setJobsLoading(true);
+    (async () => {
+      try {
+        const res = await gatewayService.jobsWithState();
+        if (cancelled) return;
+        setJobsError(!res.live && res.items.length === 0 ? (res.error ?? 'Could not load jobs.') : null);
+      } catch {
+        if (!cancelled) setJobsError('Could not load jobs. The gateway may be offline.');
+      } finally {
+        if (!cancelled) setJobsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleRetryJobs = async () => {
+    setJobsError(null);
+    setJobsLoading(true);
+    try {
+      await refreshJobs();
+    } catch {
+      // refreshJobs reports failure through the list state below.
+    }
+    try {
+      const res = await gatewayService.jobsWithState();
+      setJobsError(!res.live && res.items.length === 0 ? (res.error ?? 'Could not load jobs.') : null);
+    } catch {
+      setJobsError('Could not load jobs. The gateway may be offline.');
+    } finally {
+      setJobsLoading(false);
+    }
+  };
+
+  const missingFields = (vals: { name: string; schedule: string; prompt: string }): string[] => {
+    const missing: string[] = [];
+    if (!vals.name.trim()) missing.push('name');
+    if (!vals.schedule.trim()) missing.push('schedule');
+    if (!vals.prompt.trim()) missing.push('prompt');
+    return missing;
   };
 
   const handleCreate = async () => {
-    if (!name.trim() || !schedule.trim() || !prompt.trim()) {
-      setCreateError('Please fill in job title, schedule, and execution prompt');
+    const missing = missingFields({ name, schedule, prompt });
+    setCreateMissing(missing);
+    if (missing.length > 0) {
+      setCreateError('Please fill in the missing fields below.');
       setCreateFieldErrors([]);
       return;
     }
@@ -145,8 +221,8 @@ export const JobsTab: React.FC = () => {
     setCreateError('');
     setCreateFieldErrors([]);
     setIsCreating(true);
-    // Gateway createJob carries no timezone field, so the selected zone is
-    // the interpretation label for display (next run renders in this zone).
+    // Honest label: createJob carries no timezone field, so the selected
+    // zone only controls how times render on this screen.
     const ok = await createJob(name.trim(), schedule.trim(), prompt.trim());
     setIsCreating(false);
 
@@ -154,13 +230,13 @@ export const JobsTab: React.FC = () => {
       setName('');
       setSchedule('');
       setPrompt('');
-      setTimezone(deviceTz);
-      showToast(`Job created, runs interpreted in ${timezone}`);
+      setCreateMissing([]);
+      await handleRetryJobs();
+      showToast(`Job created. Times shown in ${displayTz}.`);
     } else {
       const errs = rejectionErrors('create');
       setCreateFieldErrors(errs);
       setCreateError(errs[0].message);
-      showToast('Failed to create job: gateway rejected the request');
     }
   };
 
@@ -169,15 +245,18 @@ export const JobsTab: React.FC = () => {
     setEditName(j.name);
     setEditSchedule(j.scheduleDisplay);
     setEditPrompt(j.prompt);
-    setEditTimezone(deviceTz);
+    // displayTz is shared and deliberately left untouched here.
     setEditError('');
     setEditFieldErrors([]);
+    setEditMissing([]);
   };
 
   const handleSaveEdit = async () => {
     if (!editingJob) return;
-    if (!editName.trim() || !editSchedule.trim() || !editPrompt.trim()) {
-      setEditError('Please fill in job title, schedule, and execution prompt');
+    const missing = missingFields({ name: editName, schedule: editSchedule, prompt: editPrompt });
+    setEditMissing(missing);
+    if (missing.length > 0) {
+      setEditError('Please fill in the missing fields below.');
       return;
     }
     if (typeof updateJob !== 'function') {
@@ -195,12 +274,12 @@ export const JobsTab: React.FC = () => {
     setIsSavingEdit(false);
     if (ok) {
       setEditingJob(null);
-      showToast(`Job updated, shown in ${editTimezone}`);
+      setEditMissing([]);
+      showToast(`Job updated. Times shown in ${displayTz}.`);
     } else {
       const errs = rejectionErrors('update');
       setEditFieldErrors(errs);
       setEditError(errs[0].message);
-      showToast('Failed to update job: gateway rejected the request');
     }
   };
 
@@ -245,11 +324,14 @@ export const JobsTab: React.FC = () => {
       return next;
     });
     if (ok) {
-      showToast('Run triggered');
+      // Open history on the job and refresh it so the triggered run
+      // becomes visible instead of leaving the user with a bare toast.
+      setHistoryForId(j.id);
+      await handleRetryRuns(j.id);
+      showToast(`Run triggered for "${j.name}". History opened below.`);
     } else {
       const errs = rejectionErrors('action');
       setActionError(errs[0].message);
-      showToast(`Failed to run "${j.name}", rolled back`);
     }
   };
 
@@ -278,6 +360,31 @@ export const JobsTab: React.FC = () => {
       setActionError(errs[0].message);
       showToast(`Failed to delete "${j.name}", restored`);
     }
+  };
+
+  // Runs history: the context list carries the gateway live flag
+  // (LiveList). A failed fetch stores an empty list with live === false,
+  // so the UI must not mistake it for a job with zero runs.
+  const handleRetryRuns = async (jobId: string) => {
+    setRunsLoading((p) => ({ ...p, [jobId]: true }));
+    try {
+      await fetchRuns(jobId);
+    } finally {
+      setRunsLoading((p) => {
+        const next = { ...p };
+        delete next[jobId];
+        return next;
+      });
+    }
+  };
+
+  const handleToggleHistory = async (j: CronJob) => {
+    if (historyForId === j.id) {
+      setHistoryForId(null);
+      return;
+    }
+    setHistoryForId(j.id);
+    await handleRetryRuns(j.id);
   };
 
   const isOverdue = (nextRunAt: string, enabled: boolean, state: string) => {
@@ -316,10 +423,19 @@ export const JobsTab: React.FC = () => {
 
   return (
     <div className="space-y-6 max-w-2xl mx-auto px-4 pt-4 pb-20">
-      {/* Toast popup */}
-      {toast && (
-        <div className="fixed top-16 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-semibold shadow-2xl animate-in fade-in slide-in-from-top-2">
-          {toast}
+      {/* Toast stack */}
+      {toasts.length > 0 && (
+        <div className="fixed top-16 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] space-y-2 w-max max-w-[calc(100vw-2rem)]">
+          {toasts.map((toastItem) => (
+            <div
+              key={toastItem.id}
+              role="status"
+              aria-live="polite"
+              className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-semibold shadow-2xl animate-in fade-in slide-in-from-top-2 text-center"
+            >
+              {toastItem.msg}
+            </div>
+          ))}
         </div>
       )}
       {/* 1. New Automation Schedule Builder Card */}
@@ -341,8 +457,12 @@ export const JobsTab: React.FC = () => {
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Morning Briefing"
-              className="w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
+              aria-invalid={createMissing.includes('name')}
+              className={`w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition ${createMissing.includes('name') ? 'border-rose-500/60' : 'border-white/[0.08]'}`}
             />
+            {createMissing.includes('name') && (
+              <p className="text-[11px] text-rose-400 mt-1">Job title is required.</p>
+            )}
           </div>
 
           <div>
@@ -354,8 +474,18 @@ export const JobsTab: React.FC = () => {
               value={schedule}
               onChange={(e) => setSchedule(e.target.value)}
               placeholder="e.g. every 1h, every day 9am, or 0 9 * * *"
-              className="w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
+              aria-invalid={createMissing.includes('schedule')}
+              className={`w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition ${createMissing.includes('schedule') ? 'border-rose-500/60' : 'border-white/[0.08]'}`}
             />
+            {createMissing.includes('schedule') && (
+              <p className="text-[11px] text-rose-400 mt-1">Schedule is required.</p>
+            )}
+            {createSummary && (
+              <p className="text-[11px] text-slate-400 mt-1">
+                {createSummary}{' '}
+                <span className="text-slate-500">Local reading only; the gateway decides.</span>
+              </p>
+            )}
             {createHint && (
               <p className="text-[11px] text-amber-300/90 mt-1">
                 Hint: {createHint}
@@ -368,7 +498,8 @@ export const JobsTab: React.FC = () => {
                   key={p.label}
                   type="button"
                   onClick={() => setSchedule(p.val)}
-                  className="px-2.5 py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-xs text-slate-300 hover:text-white transition cursor-pointer"
+                  title={p.val === 'once' ? 'Runs a single time, then stops' : p.val}
+                  className="px-2.5 py-1 min-h-[44px] rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-xs text-slate-300 hover:text-white transition cursor-pointer"
                 >
                   {p.label}
                 </button>
@@ -378,21 +509,22 @@ export const JobsTab: React.FC = () => {
 
           <div>
             <label className="block text-xs text-slate-400 font-medium mb-1">
-              Timezone
+              Display timezone
             </label>
             <select
-              value={timezone}
-              onChange={(e) => setTimezone(e.target.value)}
-              className="w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 transition"
+              value={displayTz}
+              onChange={(e) => setDisplayTz(e.target.value)}
+              className="w-full px-3.5 py-2 min-h-[44px] rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 transition"
             >
               {timezoneOptions.map((tz) => (
                 <option key={tz} value={tz}>
-                  {tz}
+                  {formatTimezoneOption(tz)}
                 </option>
               ))}
             </select>
             <p className="text-[11px] text-slate-500 mt-1">
-              Runs interpreted in {timezone}. Next run shows as clock time plus zone.
+              Display only: the gateway stores no timezone and runs schedules on gateway time.
+              Next-run and history times below render in {displayTz}.
             </p>
           </div>
 
@@ -405,8 +537,12 @@ export const JobsTab: React.FC = () => {
               value={prompt}
               onChange={(e) => setPrompt(e.target.value)}
               placeholder="Task instructions to execute at each scheduled interval..."
-              className="w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition resize-none"
+              aria-invalid={createMissing.includes('prompt')}
+              className={`w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition resize-none ${createMissing.includes('prompt') ? 'border-rose-500/60' : 'border-white/[0.08]'}`}
             />
+            {createMissing.includes('prompt') && (
+              <p className="text-[11px] text-rose-400 mt-1">Execution prompt is required.</p>
+            )}
           </div>
         </div>
 
@@ -427,15 +563,33 @@ export const JobsTab: React.FC = () => {
 
       {/* 2. Search & Filter Bar */}
       {jobs.length > 0 && (
-        <div className="relative">
-          <Search className="w-4 h-4 absolute start-3.5 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={t('search')}
-            className="w-full ps-10 pe-3.5 py-2 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
-          />
+        <div>
+          <div className="relative">
+            <Search className="w-4 h-4 absolute start-3.5 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={t('search')}
+              aria-label={t('search')}
+              className="w-full ps-10 pe-12 py-2 min-h-[44px] rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery('')}
+                aria-label="Clear job search"
+                className="absolute end-1 top-1/2 -translate-y-1/2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg text-slate-500 hover:text-white transition"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+          {query.trim() && (
+            <p className="text-[11px] text-slate-500 mt-1.5" role="status">
+              {visibleJobs.length} of {jobs.length} jobs match
+            </p>
+          )}
         </div>
       )}
 
@@ -446,7 +600,7 @@ export const JobsTab: React.FC = () => {
           <button
             type="button"
             onClick={() => setActionError('')}
-            className="text-rose-300/70 hover:text-rose-200 cursor-pointer"
+            className="text-rose-300/70 hover:text-rose-200 cursor-pointer min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg"
             aria-label="Dismiss action error"
           >
             <X className="w-3.5 h-3.5" />
@@ -460,13 +614,29 @@ export const JobsTab: React.FC = () => {
           {t('scheduledJobsTitle')} ({visibleJobs.length})
         </h3>
 
-        {jobs.length === 0 ? (
+        {jobsLoading && jobs.length === 0 ? (
+          <div className="p-8 rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] text-center text-xs text-slate-400" role="status">
+            Loading scheduled jobs...
+          </div>
+        ) : jobsError && jobs.length === 0 ? (
+          <div className="p-8 rounded-3xl bg-[var(--app-card,#0E1217)] border border-rose-500/20 text-center text-xs text-rose-300 space-y-3" role="alert">
+            <p>Could not load scheduled jobs. {jobsError}</p>
+            <button
+              type="button"
+              onClick={() => void handleRetryJobs()}
+              disabled={jobsLoading}
+              className="px-4 min-h-[44px] py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 disabled:opacity-50 text-rose-200 font-semibold cursor-pointer transition"
+            >
+              {jobsLoading ? 'Retrying...' : 'Retry'}
+            </button>
+          </div>
+        ) : jobs.length === 0 ? (
           <div className="p-8 rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] text-center text-xs text-slate-400">
             No scheduled automation jobs configured. Create your first job above using standard cadence or cron expressions.
           </div>
         ) : visibleJobs.length === 0 ? (
           <div className="p-8 rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] text-center text-xs text-slate-400">
-            No tasks match "{query}".
+            {`No tasks match "${query}".`}
           </div>
         ) : (
           visibleJobs.map((j) => {
@@ -476,13 +646,17 @@ export const JobsTab: React.FC = () => {
               j.lastStatus.toLowerCase() === 'error' ||
               Boolean(j.lastError);
             const isHistoryOpen = historyForId === j.id;
-            const runs = cronRuns[j.id] || [];
+            const runsRaw = cronRuns[j.id];
+            const runs = runsRaw || [];
+            const runsLive = (runsRaw as unknown as { live?: boolean } | undefined)?.live;
+            const isRunsLoading = Boolean(runsLoading[j.id]);
+            const runsFetchFailed = runsRaw !== undefined && runsLive === false;
             const pending = pendingOps[j.id];
             const nextRunLabel = j.nextRunAt
-              ? formatTimeWithZone(j.nextRunAt, deviceTz)
+              ? formatTimeWithZone(j.nextRunAt, displayTz)
               : '';
             const nextRunFull = j.nextRunAt
-              ? formatDateTimeInTimezone(j.nextRunAt, deviceTz, lang)
+              ? formatDateTimeInTimezone(j.nextRunAt, displayTz, lang)
               : '';
 
             return (
@@ -510,11 +684,11 @@ export const JobsTab: React.FC = () => {
                     <div className="flex items-center gap-2 text-xs text-slate-400 mt-0.5 flex-wrap">
                       <span>{j.scheduleDisplay}</span>
                       <span className="px-1.5 py-0.5 rounded-md bg-white/[0.04] border border-white/[0.06] text-[10px] font-mono text-slate-300">
-                        {deviceTz}
+                        {displayTz}
                       </span>
                       <span>·</span>
                       <span className={j.enabled ? 'text-emerald-400' : 'text-slate-500'}>
-                        {j.state || (j.enabled ? 'Active' : 'Paused')}
+                        {j.state || (j.enabled ? t('active') : 'Paused')}
                       </span>
                     </div>
                   </div>
@@ -526,7 +700,7 @@ export const JobsTab: React.FC = () => {
                         : 'bg-white/[0.04] text-slate-400 border border-white/[0.06]'
                     }`}
                   >
-                    {j.enabled ? 'Enabled' : 'Paused'}
+                    {j.enabled ? t('enabled') : 'Paused'}
                   </span>
                 </div>
 
@@ -543,16 +717,30 @@ export const JobsTab: React.FC = () => {
                   </div>
                 )}
 
-                <button
-                  type="button"
-                  onClick={() => setExpandedPrompts((prev) => ({ ...prev, [j.id]: !prev[j.id] }))}
-                  aria-expanded={!!expandedPrompts[j.id]}
-                  title={j.prompt}
-                  aria-label={`Job prompt: ${j.prompt}. Tap to ${expandedPrompts[j.id] ? 'collapse' : 'expand'}.`}
-                  className={`block w-full text-start text-xs text-slate-300 bg-[var(--app-card-subtle,#141920)] p-3 rounded-xl border border-white/[0.06] font-mono leading-relaxed cursor-pointer ${expandedPrompts[j.id] ? 'whitespace-pre-wrap break-all' : 'line-clamp-6'}`}
-                >
-                  {j.prompt}
-                </button>
+                {/* Selectable prompt text with a separate expand toggle so
+                    selection/copy is never hijacked by a button wrapper. */}
+                <div className="text-xs text-slate-300 bg-[var(--app-card-subtle,#141920)] rounded-xl border border-white/[0.06]">
+                  <p
+                    title={j.prompt}
+                    className={`px-3 pt-3 font-mono leading-relaxed select-text ${expandedPrompts[j.id] ? 'whitespace-pre-wrap break-words' : 'line-clamp-6'}`}
+                  >
+                    {j.prompt}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setExpandedPrompts((prev) => ({ ...prev, [j.id]: !prev[j.id] }))}
+                    aria-expanded={!!expandedPrompts[j.id]}
+                    aria-label={expandedPrompts[j.id] ? `Collapse prompt for ${j.name}` : `Expand prompt for ${j.name}`}
+                    className="w-full min-h-[44px] px-3 flex items-center gap-1.5 text-[11px] text-slate-500 hover:text-slate-200 transition cursor-pointer"
+                  >
+                    {expandedPrompts[j.id] ? (
+                      <ChevronUp className="w-3.5 h-3.5" />
+                    ) : (
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    )}
+                    <span>{expandedPrompts[j.id] ? 'Show less' : 'Show more'}</span>
+                  </button>
+                </div>
 
                 {/* Job Action Controls */}
                 <div className="flex items-center justify-between pt-2 border-t border-white/[0.06] text-xs">
@@ -583,7 +771,7 @@ export const JobsTab: React.FC = () => {
                       className="text-indigo-400 hover:text-indigo-300 disabled:opacity-50 cursor-pointer flex items-center gap-1.5 transition font-medium min-h-[44px]"
                     >
                       <Play className="w-3.5 h-3.5" />
-                      <span>{pending === 'run' ? 'Running...' : 'Run Now'}</span>
+                      <span>{pending === 'run' ? 'Running...' : t('runNow')}</span>
                     </button>
 
                     <button
@@ -592,30 +780,25 @@ export const JobsTab: React.FC = () => {
                       className="text-slate-400 hover:text-white disabled:opacity-50 cursor-pointer flex items-center gap-1.5 transition min-h-[44px]"
                     >
                       <Pencil className="w-3.5 h-3.5" />
-                      <span>Edit</span>
+                      <span>{t('edit')}</span>
                     </button>
 
                     <button
-                      onClick={async () => {
-                        if (isHistoryOpen) {
-                          setHistoryForId(null);
-                        } else {
-                          setHistoryForId(j.id);
-                          await fetchRuns(j.id);
-                        }
-                      }}
+                      onClick={() => handleToggleHistory(j)}
+                      aria-expanded={isHistoryOpen}
                       className="text-slate-400 hover:text-white cursor-pointer flex items-center gap-1.5 transition min-h-[44px]"
                     >
                       <History className="w-3.5 h-3.5" />
-                      <span>{isHistoryOpen ? 'Close History' : 'History'}</span>
+                      <span>{isHistoryOpen ? `Close ${t('runsHistory')}` : t('runsHistory')}</span>
                     </button>
                   </div>
 
                   <button
                     onClick={() => setPendingDeleteJob(j)}
                     disabled={Boolean(pending)}
-                    className="text-slate-500 hover:text-rose-400 disabled:opacity-50 cursor-pointer p-1.5 rounded-lg hover:bg-white/[0.04] transition"
+                    className="text-slate-500 hover:text-rose-400 disabled:opacity-50 cursor-pointer min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg hover:bg-white/[0.04] transition"
                     title={t('delete')}
+                    aria-label={`${t('delete')} ${j.name}`}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -625,40 +808,74 @@ export const JobsTab: React.FC = () => {
                 {isHistoryOpen && (
                   <div className="mt-3 pt-3 border-t border-white/[0.06] space-y-2 animate-in fade-in duration-150">
                     <span className="text-xs font-semibold text-slate-300 block">
-                      Execution History
+                      {t('runsHistory')}{runs.length > 0 ? ` (${runs.length})` : ''}
                     </span>
-                    {runs.length === 0 ? (
+                    {isRunsLoading && runsRaw === undefined ? (
+                      <p className="text-xs text-slate-500" role="status">
+                        Loading run history...
+                      </p>
+                    ) : runsFetchFailed && runs.length === 0 ? (
+                      <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 space-y-2" role="alert">
+                        <p className="text-xs text-rose-300">
+                          Could not load run history. The gateway may be offline.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => handleRetryRuns(j.id)}
+                          disabled={isRunsLoading}
+                          className="px-3 min-h-[44px] py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.08] text-xs text-slate-200 disabled:opacity-50 cursor-pointer transition"
+                        >
+                          {isRunsLoading ? 'Retrying...' : 'Retry'}
+                        </button>
+                      </div>
+                    ) : runs.length === 0 ? (
                       <p className="text-xs text-slate-500">
                         No previous runs logged for this job yet.
                       </p>
                     ) : (
-                      runs.slice(0, 10).map((r, i) => {
-                        const duration = formatDuration(r.startedAt, r.finishedAt);
-                        const startedLabel = r.startedAt
-                          ? formatRunTimestamp(r.startedAt, deviceTz)
-                          : '';
-                        const endedLabel = r.finishedAt
-                          ? formatRunTimestamp(r.finishedAt, deviceTz)
-                          : '';
-                        return (
-                          <div
-                            key={r.id || i}
-                            className="p-2.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] text-xs space-y-1"
-                          >
-                            <div className="flex items-center justify-between text-slate-300">
-                              <span className="font-medium capitalize">{r.status || 'Completed'}</span>
-                              <span className="text-slate-500 text-[11px] font-mono" title={r.startedAt}>{startedLabel}</span>
+                      <>
+                        {runs.length > 10 && (
+                          <p className="text-[11px] text-slate-500">
+                            Showing the 10 most recent of {runs.length} runs.
+                          </p>
+                        )}
+                        {runs.slice(0, 10).map((r, i) => {
+                          const duration = formatDuration(r.startedAt, r.finishedAt);
+                          const startedLabel = r.startedAt
+                            ? formatRunTimestamp(r.startedAt, displayTz)
+                            : '';
+                          const endedLabel = r.finishedAt
+                            ? formatRunTimestamp(r.finishedAt, displayTz)
+                            : '';
+                          const status = (r.status || 'completed').toLowerCase();
+                          const badgeClass =
+                            status === 'failed' || status === 'error'
+                              ? 'bg-rose-500/10 text-rose-300 border-rose-500/20'
+                              : status === 'running' || status === 'pending'
+                                ? 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+                                : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20';
+                          return (
+                            <div
+                              key={r.id || i}
+                              className="p-2.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] text-xs space-y-1"
+                            >
+                              <div className="flex items-center justify-between gap-2 text-slate-300">
+                                <span className={`px-2 py-0.5 rounded-md border text-[10px] font-medium capitalize ${badgeClass}`}>
+                                  {r.status || 'Completed'}
+                                </span>
+                                <span className="text-slate-500 text-[11px] font-mono" title={r.startedAt}>{startedLabel}</span>
+                              </div>
+                              <div className="flex items-center gap-2 text-[11px] text-slate-500 font-mono">
+                                {endedLabel && <span>Ended {endedLabel}</span>}
+                                {duration && <span>· {duration}</span>}
+                              </div>
+                              {r.error && (
+                                <p className="text-rose-400 text-[11px] whitespace-pre-wrap break-words">{r.error}</p>
+                              )}
                             </div>
-                            <div className="flex items-center gap-2 text-[11px] text-slate-500 font-mono">
-                              {endedLabel && <span>Ended {endedLabel}</span>}
-                              {duration && <span>· {duration}</span>}
-                            </div>
-                            {r.error && (
-                              <p className="text-rose-400 text-[11px] truncate">{r.error}</p>
-                            )}
-                          </div>
-                        );
-                      })
+                          );
+                        })}
+                      </>
                     )}
                   </div>
                 )}
@@ -671,6 +888,9 @@ export const JobsTab: React.FC = () => {
       {/* Delete Modal */}
       {pendingDeleteJob && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Delete ${pendingDeleteJob.name}`}
           className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
           onClick={(e) => {
             if (e.target === e.currentTarget) setPendingDeleteJob(null);
@@ -684,20 +904,20 @@ export const JobsTab: React.FC = () => {
               Delete Schedule?
             </h3>
             <p className="text-xs text-slate-400 leading-relaxed">
-              Are you sure you want to permanently delete "{pendingDeleteJob.name}"? It hides at once and restores if the gateway rejects the delete.
+              Are you sure you want to permanently delete &ldquo;{pendingDeleteJob.name}&rdquo;? This cannot be undone.
             </p>
             <div className="flex justify-end gap-2.5 pt-2">
               <button
                 onClick={() => setPendingDeleteJob(null)}
-                className="px-4 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white hover:bg-white/[0.06] cursor-pointer"
+                className="px-4 min-h-[44px] py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white hover:bg-white/[0.06] cursor-pointer"
               >
                 {t('cancel')}
               </button>
               <button
                 onClick={() => handleDeleteConfirm(pendingDeleteJob)}
-                className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold cursor-pointer transition"
+                className="px-4 min-h-[44px] py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold cursor-pointer transition"
               >
-                Delete
+                {t('delete')}
               </button>
             </div>
           </div>
@@ -707,6 +927,9 @@ export const JobsTab: React.FC = () => {
       {/* Edit Modal */}
       {editingJob && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Edit ${editingJob.name}`}
           className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
           onClick={(e) => {
             if (e.target === e.currentTarget) setEditingJob(null);
@@ -720,7 +943,8 @@ export const JobsTab: React.FC = () => {
               <span className="text-sm font-semibold text-white">Edit Schedule</span>
               <button
                 onClick={() => setEditingJob(null)}
-                className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-white"
+                aria-label="Close edit dialog"
+                className="min-w-[44px] min-h-[44px] rounded-lg flex items-center justify-center text-slate-400 hover:text-white"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -735,8 +959,12 @@ export const JobsTab: React.FC = () => {
                   type="text"
                   value={editName}
                   onChange={(e) => setEditName(e.target.value)}
-                  className="w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 transition"
+                  aria-invalid={editMissing.includes('name')}
+                  className={`w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border text-xs text-white focus:outline-none focus:border-indigo-500 transition ${editMissing.includes('name') ? 'border-rose-500/60' : 'border-white/[0.08]'}`}
                 />
+                {editMissing.includes('name') && (
+                  <p className="text-[11px] text-rose-400 mt-1">Job title is required.</p>
+                )}
               </div>
               <div>
                 <label className="block text-xs text-slate-400 font-medium mb-1">
@@ -747,8 +975,18 @@ export const JobsTab: React.FC = () => {
                   value={editSchedule}
                   onChange={(e) => setEditSchedule(e.target.value)}
                   placeholder="e.g. every 1h, every day 9am, or 0 9 * * *"
-                  className="w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 transition"
+                  aria-invalid={editMissing.includes('schedule')}
+                  className={`w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border text-xs text-white focus:outline-none focus:border-indigo-500 transition ${editMissing.includes('schedule') ? 'border-rose-500/60' : 'border-white/[0.08]'}`}
                 />
+                {editMissing.includes('schedule') && (
+                  <p className="text-[11px] text-rose-400 mt-1">Schedule is required.</p>
+                )}
+                {editSummary && (
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    {editSummary}{' '}
+                    <span className="text-slate-500">Local reading only; the gateway decides.</span>
+                  </p>
+                )}
                 {editHint && (
                   <p className="text-[11px] text-amber-300/90 mt-1">
                     Hint: {editHint}
@@ -760,7 +998,8 @@ export const JobsTab: React.FC = () => {
                       key={p.label}
                       type="button"
                       onClick={() => setEditSchedule(p.val)}
-                      className="px-2.5 py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-xs text-slate-300 hover:text-white transition cursor-pointer"
+                      title={p.val === 'once' ? 'Runs a single time, then stops' : p.val}
+                      className="px-2.5 py-1 min-h-[44px] rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-xs text-slate-300 hover:text-white transition cursor-pointer"
                     >
                       {p.label}
                     </button>
@@ -769,21 +1008,21 @@ export const JobsTab: React.FC = () => {
               </div>
               <div>
                 <label className="block text-xs text-slate-400 font-medium mb-1">
-                  Timezone
+                  Display timezone
                 </label>
                 <select
-                  value={editTimezone}
-                  onChange={(e) => setEditTimezone(e.target.value)}
-                  className="w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 transition"
+                  value={displayTz}
+                  onChange={(e) => setDisplayTz(e.target.value)}
+                  className="w-full px-3.5 py-2 min-h-[44px] rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 transition"
                 >
                   {timezoneOptions.map((tz) => (
                     <option key={tz} value={tz}>
-                      {tz}
+                      {formatTimezoneOption(tz)}
                     </option>
                   ))}
                 </select>
                 <p className="text-[11px] text-slate-500 mt-1">
-                  Displayed in {editTimezone}.
+                  Display only: the gateway stores no timezone. Times render in {displayTz}.
                 </p>
               </div>
               <div>
@@ -794,8 +1033,12 @@ export const JobsTab: React.FC = () => {
                   rows={2}
                   value={editPrompt}
                   onChange={(e) => setEditPrompt(e.target.value)}
-                  className="w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 transition resize-none"
+                  aria-invalid={editMissing.includes('prompt')}
+                  className={`w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border text-xs text-white focus:outline-none focus:border-indigo-500 transition resize-none ${editMissing.includes('prompt') ? 'border-rose-500/60' : 'border-white/[0.08]'}`}
                 />
+                {editMissing.includes('prompt') && (
+                  <p className="text-[11px] text-rose-400 mt-1">Execution prompt is required.</p>
+                )}
               </div>
             </div>
 
@@ -807,16 +1050,16 @@ export const JobsTab: React.FC = () => {
             <div className="flex justify-end gap-2.5 pt-2">
               <button
                 onClick={() => setEditingJob(null)}
-                className="px-4 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white hover:bg-white/[0.06] cursor-pointer"
+                className="px-4 min-h-[44px] py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white hover:bg-white/[0.06] cursor-pointer"
               >
                 {t('cancel')}
               </button>
               <button
                 onClick={handleSaveEdit}
                 disabled={isSavingEdit}
-                className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer transition"
+                className="px-4 min-h-[44px] py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer transition"
               >
-                {isSavingEdit ? 'Saving...' : 'Save Changes'}
+                {isSavingEdit ? 'Saving...' : t('save')}
               </button>
             </div>
           </div>

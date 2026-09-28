@@ -1,6 +1,5 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react';
 import {
-  ArrowUp,
   Square,
   RefreshCw,
   Plus,
@@ -13,28 +12,239 @@ import {
   ChevronDown,
   ChevronUp,
   Mic,
-  MicOff,
   GitFork,
-  AlertTriangle,
   Clock,
   Sparkles,
   Sliders,
-  CheckCircle,
-  FileText,
-  Terminal,
-  Paperclip,
-  Code2,
   MoreHorizontal,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import { ChatMessage, PendingApproval } from '../../types/hermes';
 import { PROVIDER_OPTIONS, normProvider } from '../../constants/providers';
 import { speechLocaleForLanguage } from '../../constants/languages';
+import { processAttachBatch, buildTextChoiceNotice, MAX_IMAGE_COUNT } from '../../services/attachments';
+import type { AttachmentRef } from '../../services/attachmentRefs';
+import {
+  appendAttachmentRefs,
+  previewUrlFor,
+  registerBlob,
+  refsFromTexts,
+  revokeRef,
+} from '../../services/attachmentRefs';
+import { ApprovalCard } from '../approvals/ApprovalCard';
 
 interface ChatTabProps {
   onGoSettings: () => void;
   isDesktop?: boolean;
 }
+
+interface MessageRowProps {
+  msg: ChatMessage;
+  isLiveTail: boolean;
+  modelLabel: string | null;
+  durationLabel: string | null;
+  fontScale: number;
+  formulatingLabel: string;
+  copied: boolean;
+  speaking: boolean;
+  menuOpen: boolean;
+  streamBusy: boolean;
+  menuContainerRef?: React.RefObject<HTMLDivElement | null>;
+  onCopy: (id: string, content: string) => void;
+  onSpeak: (id: string, content: string) => void;
+  onRegenerate: (content: string) => void;
+  onFork: () => void;
+  onToggleMenu: (id: string | null) => void;
+}
+
+// Memoized so 50ms batched streaming flushes only re-render the live tail
+// row instead of every bubble on every token.
+const MessageRow: React.FC<MessageRowProps> = memo(
+  ({
+    msg,
+    isLiveTail,
+    modelLabel,
+    durationLabel,
+    fontScale,
+    formulatingLabel,
+    copied,
+    speaking,
+    menuOpen,
+    streamBusy,
+    menuContainerRef,
+    onCopy,
+    onSpeak,
+    onRegenerate,
+    onFork,
+    onToggleMenu,
+  }) => {
+    const isUser = msg.sender === 'you';
+    return (
+      <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
+        {/* Bubble Container */}
+        <div
+          role="article"
+          aria-label={isUser ? 'Your message' : 'Hermes response'}
+          className={`w-full max-w-[94%] sm:max-w-[88%] rounded-2xl p-4 transition-all ${
+            isUser
+              ? 'bg-indigo-600/90 text-white shadow-xs'
+              : 'bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-slate-200'
+          }`}
+          style={{
+            fontSize: `${fontScale * 14}px`,
+          }}
+        >
+          {/* Clean unboxed metadata row */}
+          <div className="flex items-center justify-between gap-4 text-[11px] mb-2 pb-1.5 border-b border-white/[0.08]">
+            <span className="font-semibold text-xs tracking-tight text-white/90">
+              {isUser ? 'You' : 'Hermes'}
+            </span>
+
+            <div className="flex items-center gap-2 text-slate-400 font-mono text-[10px]">
+              {!isUser && (modelLabel || durationLabel) && (
+                <span>
+                  {modelLabel}
+                  {durationLabel && ` · ${durationLabel}`}
+                </span>
+              )}
+              <button
+                onClick={() => onCopy(msg.id, msg.content || msg.thinking || '')}
+                className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-white cursor-pointer ms-1"
+                title="Copy message"
+                aria-label="Copy message"
+              >
+                {copied ? (
+                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                ) : (
+                  <Copy className="w-3.5 h-3.5" />
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Thinking Block */}
+          {msg.thinking && (
+            <ThinkingAccordion
+              thinking={msg.thinking}
+              isDone={msg.thinkingDone !== false}
+              fontScale={fontScale}
+            />
+          )}
+
+          {/* Tool Invocations */}
+          {msg.tools && msg.tools.length > 0 && (
+            <div className="mb-2.5 space-y-1.5">
+              <div className="flex flex-wrap gap-1.5">
+                {msg.tools.map((toolName, idx) => (
+                  <span
+                    key={idx}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.04] border border-white/[0.08] text-[11px] font-mono text-teal-300"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-teal-400" />
+                    <span>{toolName}</span>
+                  </span>
+                ))}
+              </div>
+
+              {msg.toolOutputs && msg.toolOutputs.length > 0 && (
+                <div className="rounded-xl bg-[var(--app-bg,#090B0E)] p-2.5 border border-white/[0.06] text-xs font-mono text-slate-400 space-y-1">
+                  {msg.toolOutputs.map((out, i) => (
+                    <div key={i} className="leading-relaxed break-all whitespace-pre-wrap">
+                      <span className="text-teal-400 font-medium">{out.toolName}:</span>{' '}
+                      <span>{out.output}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Message Body */}
+          {msg.content ? (
+            <div className="prose dark:prose-invert max-w-none text-sm leading-relaxed whitespace-pre-wrap break-words [overflow-wrap:anywhere] select-text font-sans">
+              {msg.content}
+              {isLiveTail && !isUser && (
+                <span className="inline-block w-1.5 h-4 ms-1 bg-indigo-400 animate-pulse align-middle" />
+              )}
+            </div>
+          ) : isLiveTail ? (
+            <div className="flex items-center gap-2 text-xs text-slate-400 py-1">
+              <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
+              <span>{formulatingLabel}</span>
+            </div>
+          ) : null}
+
+          {/* Message Actions: Regenerate stays visible, rest behind overflow menu */}
+          <div className="relative flex items-center justify-end gap-3 mt-3 pt-2 border-t border-white/[0.06] text-xs">
+            {isUser && (
+              <button
+                onClick={() => onRegenerate(msg.content)}
+                disabled={streamBusy || !msg.content.trim()}
+                aria-label={streamBusy ? 'Regenerate (disabled while generating)' : 'Regenerate response'}
+                title={streamBusy ? 'Wait for generation to finish' : 'Regenerate response'}
+                className="min-h-[44px] px-2 hover:text-white cursor-pointer flex items-center gap-1 transition text-white/70 disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <RefreshCw className="w-3 h-3" />
+                <span>Regenerate</span>
+              </button>
+            )}
+            <button
+              onClick={() => onToggleMenu(menuOpen ? null : msg.id)}
+              className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-white transition cursor-pointer"
+              title="More actions"
+              aria-label="More message actions"
+              aria-expanded={menuOpen}
+            >
+              <MoreHorizontal className="w-4 h-4" />
+            </button>
+            {menuOpen && (
+              <div
+                ref={menuOpen ? menuContainerRef : undefined}
+                role="menu"
+                className="absolute bottom-full end-0 mb-1.5 min-w-[140px] rounded-xl bg-[var(--app-card-subtle,#1A2230)] border border-white/[0.1] shadow-2xl py-1 z-20"
+              >
+                {isUser && (
+                  <button
+                    onClick={() => {
+                      onFork();
+                      onToggleMenu(null);
+                    }}
+                    role="menuitem"
+                    className="w-full min-h-[44px] px-3 py-2 flex items-center gap-2 text-start text-slate-300 hover:text-white hover:bg-white/[0.06] transition cursor-pointer"
+                  >
+                    <GitFork className="w-3.5 h-3.5" />
+                    <span>Branch</span>
+                  </button>
+                )}
+                <button
+                  onClick={() => {
+                    onSpeak(msg.id, msg.content);
+                    onToggleMenu(null);
+                  }}
+                  role="menuitem"
+                  className="w-full min-h-[44px] px-3 py-2 flex items-center gap-2 text-start text-slate-300 hover:text-white hover:bg-white/[0.06] transition cursor-pointer"
+                  title={speaking ? 'Stop audio playback' : 'Read aloud'}
+                >
+                  {speaking ? (
+                    <>
+                      <VolumeX className="w-3.5 h-3.5 text-rose-400" />
+                      <span className="text-rose-400 font-medium">Stop</span>
+                    </>
+                  ) : (
+                    <>
+                      <Volume2 className="w-3.5 h-3.5" />
+                      <span>Read aloud</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+);
 
 export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = false }) => {
   const {
@@ -61,12 +271,25 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     configuredProviders,
     activateProvider,
     retryLast,
+    connected,
+    gatewayFailed,
+    gatewayFailureReason,
     t,
   } = useHermes();
 
   // Composer and input state
   const [text, setText] = useState('');
-  const [attachedImages, setAttachedImages] = useState<string[]>([]);
+  interface AttachedImage {
+    previewUrl: string;
+    dataUrl: string;
+    name: string;
+    ref: AttachmentRef;
+  }
+  const [attached, setAttached] = useState<AttachedImage[]>([]);
+  const [attaching, setAttaching] = useState(false);
+  const [attachNotice, setAttachNotice] = useState<string | null>(null);
+  const [resolvingRunId, setResolvingRunId] = useState<string | null>(null);
+  const [dismissedErrors, setDismissedErrors] = useState<string[]>([]);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showModelsSheet, setShowModelsSheet] = useState(false);
@@ -74,28 +297,51 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [actionToast, setActionToast] = useState<string | null>(null);
+  const [toastKind, setToastKind] = useState<'info' | 'success' | 'error'>('info');
   const [modelPillExpanded, setModelPillExpanded] = useState(false);
+  const [confirmSessionRunId, setConfirmSessionRunId] = useState<string | null>(null);
+  const [streamErrorDismissed, setStreamErrorDismissed] = useState<string | null>(null);
+  const [stickToBottom, setStickToBottom] = useState(true);
 
+  // Optional context surface (lands with the context owner's stream-error
+  // work): the live failure banner below activates when present, and stays
+  // hidden otherwise. Never touch HermesContext.tsx from this file.
+  const streamError =
+    (useHermes() as unknown as { streamError?: string | null }).streamError ?? null;
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const textRef = useRef('');
+  const attachedRef = useRef<AttachedImage[]>([]);
+  const sheetSearchRef = useRef<HTMLInputElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const recognitionRef = useRef<any>(null);
-  const fileReadersRef = useRef<FileReader[]>([]);
+  const attachAbortRef = useRef<AbortController | null>(null);
+  const pendingRefsRef = useRef<AttachmentRef[]>([]);
+  const flushTimerRef = useRef<number | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const getDraftRef = useRef(getDraft);
   getDraftRef.current = getDraft;
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
-  const showActionToast = (msg: string) => {
+  const showActionToast = (msg: string, kind: 'info' | 'success' | 'error' = 'info') => {
     setActionToast(msg);
+    setToastKind(kind);
     if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
     toastTimerRef.current = window.setTimeout(() => {
       setActionToast(null);
       toastTimerRef.current = null;
     }, 2500);
   };
+  const toastClass =
+    toastKind === 'error'
+      ? 'bg-rose-600 text-white'
+      : toastKind === 'success'
+        ? 'bg-emerald-600 text-white'
+        : 'bg-slate-800 text-slate-100 border border-white/[0.1]';
 
-  // Abort in-flight speech recognition, file reads, and timers on unmount
+  // Abort in-flight speech recognition, attachment processing, and timers on unmount
   useEffect(() => {
     return () => {
       try {
@@ -103,21 +349,27 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       } catch {
         /* ignore */
       }
-      fileReadersRef.current.forEach((r) => {
+      attachAbortRef.current?.abort();
+      if (flushTimerRef.current !== null) window.clearTimeout(flushTimerRef.current);
+      // Revoke composer preview URLs; sent-session blobs stay registered
+      // so persisted attachment refs keep resolving.
+      pendingRefsRef.current.forEach((r) => {
         try {
-          if (r.readyState === FileReader.LOADING) r.abort();
+          if (r.type === 'image') revokeRef(r);
         } catch {
           /* ignore */
         }
       });
-      fileReadersRef.current = [];
+      pendingRefsRef.current = [];
       if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
       if (window.speechSynthesis) window.speechSynthesis.cancel();
     };
   }, []);
 
   useEffect(() => {
-    setText(getDraftRef.current(currentSessionId));
+    const draft = getDraftRef.current(currentSessionId);
+    textRef.current = draft;
+    setText(draft);
   }, [currentSessionId]);
 
   // Model selection modal search & category filters
@@ -214,96 +466,271 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   };
 
   const handleTextChange = (val: string) => {
+    textRef.current = val;
     setText(val);
     setDraft(currentSessionId, val);
   };
+
+  // Keep the dictation-safe ref in sync with attachments for cap accounting
+  useEffect(() => {
+    attachedRef.current = attached;
+  }, [attached]);
 
   useEffect(() => {
     adjustTextareaHeight();
   }, [text]);
 
+  // Batched streaming updates: sync context chat into local display state at
+  // most once per 50ms while streaming so rapid deltas do not re-render every
+  // row on every token. Idle updates apply immediately.
+  const [displayChat, setDisplayChat] = useState<ChatMessage[]>(chat);
+  const chatLatestRef = useRef(chat);
+  chatLatestRef.current = chat;
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chat.length, streaming]);
+    if (!streaming) {
+      if (flushTimerRef.current !== null) {
+        window.clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+      setDisplayChat(chat);
+      return;
+    }
+    if (flushTimerRef.current !== null) return;
+    flushTimerRef.current = window.setTimeout(() => {
+      flushTimerRef.current = null;
+      setDisplayChat(chatLatestRef.current);
+    }, 50);
+  }, [chat, streaming]);
+
+  const scrollToBottom = (smooth = true) => {
+    const el = scrollRef.current;
+    if (el) {
+      el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+    } else {
+      messagesEndRef.current?.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto' });
+    }
+  };
+
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    setStickToBottom(nearBottom);
+  };
+
+  // Stick-to-bottom follow: auto-scroll on every batched token flush while
+  // the user is pinned to the tail; never yank them mid-read. A new user
+  // turn re-pins. The jump-to-latest pill (below) recovers the tail.
+  useEffect(() => {
+    if (stickToBottom) scrollToBottom(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayChat, stickToBottom]);
 
   const visibleMessages = useMemo(() => {
-    if (!searchOpen || !searchQuery.trim()) return chat;
+    if (!searchOpen || !searchQuery.trim()) return displayChat;
     const q = searchQuery.toLowerCase();
-    return chat.filter(
+    return displayChat.filter(
       (m) =>
         m.content.toLowerCase().includes(q) ||
         (m.thinking && m.thinking.toLowerCase().includes(q))
     );
-  }, [chat, searchOpen, searchQuery]);
+  }, [displayChat, searchOpen, searchQuery]);
+
+  // Stream errors arrive as hermes bubbles from context; surface them as a
+  // distinct banner with retry/dismiss instead of rendering error-as-bubble.
+  const isStreamError = (m: ChatMessage) =>
+    m.sender === 'hermes' && m.content.startsWith('Stream error:');
+  const bubbleMessages = useMemo(() => visibleMessages.filter((m) => !isStreamError(m)), [visibleMessages]);
+  const errorMessages = useMemo(() => visibleMessages.filter(isStreamError), [visibleMessages]);
+  const visibleErrors = useMemo(
+    () => errorMessages.filter((m) => !dismissedErrors.includes(m.id)),
+    [errorMessages, dismissedErrors]
+  );
+
+  // Search-safe live tail: resolved against the unfiltered stream, never the
+  // filtered index, so the typing cursor can't land on the wrong bubble.
+  const liveTailId = streaming && displayChat.length > 0 ? displayChat[displayChat.length - 1].id : null;
 
   const pendingApprovals = approvals;
 
-  const handleSend = () => {
-    if (!text.trim() && attachedImages.length === 0) return;
-    if (streaming) {
-      queueMessage(text, attachedImages);
-    } else {
-      sendMessage(text, attachedImages);
-    }
+  const attachedPayloads = useMemo(() => attached.map((a) => a.dataUrl), [attached]);
+
+  const hasComposerContent = text.trim().length > 0 || attached.length > 0;
+  const canSendNow = hasComposerContent && !!settings.modelId && !attaching;
+
+  const clearComposer = () => {
     handleTextChange('');
-    setAttachedImages([]);
+    setAttached([]);
+    setAttachNotice(null);
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
   };
 
-  const MAX_TEXT_FILE_CHARS = 20000;
-
-  const handleImageAttach = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
-    // Abort any in-flight reads from a rapid reselect before starting new ones
-    fileReadersRef.current.forEach((r) => {
-      try {
-        if (r.readyState === FileReader.LOADING) r.abort();
-      } catch {
-        /* ignore */
-      }
-    });
-    fileReadersRef.current = [];
-
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      if (!file) continue;
-      if (file.type.startsWith('image/')) {
-        if (attachedImages.length + fileReadersRef.current.filter((r) => (r as unknown as { __kind?: string }).__kind === 'image').length >= 4) continue;
-        const reader = new FileReader();
-        (reader as unknown as { __kind?: string }).__kind = 'image';
-        fileReadersRef.current.push(reader);
-        reader.onload = (event) => {
-          if (event.target?.result) {
-            setAttachedImages((prev) => [...prev, event.target!.result as string].slice(0, 4));
-          }
-        };
-        reader.readAsDataURL(file);
-      } else if (/\.(txt|md|markdown|csv|json)$/i.test(file.name) || file.type.startsWith('text/') || file.type === 'application/json') {
-        const reader = new FileReader();
-        (reader as unknown as { __kind?: string }).__kind = 'text';
-        fileReadersRef.current.push(reader);
-        reader.onload = (event) => {
-          const raw = typeof event.target?.result === 'string' ? event.target.result : '';
-          if (!raw) return;
-          const block = `--- ${file.name} ---\n${raw.slice(0, MAX_TEXT_FILE_CHARS)}${raw.length > MAX_TEXT_FILE_CHARS ? '\n[truncated]' : ''}`;
-          // Functional update avoids stale composer text when several files resolve async
-          setText((prev) => {
-            const next = prev ? `${prev}\n\n${block}` : block;
-            setDraft(currentSessionId, next);
-            return next;
-          });
-        };
-        reader.readAsText(file);
-      } else {
-        showActionToast(`Unsupported file type: ${file.name} (images and .txt/.md/.csv/.json only)`);
-      }
+  // Unified guarded send: model guard, trim, failure-safe draft. The draft
+  // and attachments clear ONLY on success; a failed send keeps everything.
+  const handleSend = () => {
+    const raw = textRef.current;
+    const trimmed = raw.trim();
+    const payloads = attachedRef.current.map((a) => a.dataUrl);
+    if (!trimmed && payloads.length === 0) return;
+    if (!settings.modelId) {
+      showActionToast('Select a model first', 'error');
+      setShowModelsSheet(true);
+      return;
     }
+    const ok = streaming ? queueMessage(trimmed, payloads) : sendMessage(trimmed, payloads);
+    if (!ok) {
+      showActionToast(streaming ? 'Could not queue message' : 'Send failed , draft kept', 'error');
+      return;
+    }
+    if (streaming) showActionToast('Queued for next turn', 'info');
+    // Persist metadata-only refs for history; blobs stay registered so the
+    // refs keep resolving. Blobs are revoked only on remove, never on send.
+    if (currentSessionId && pendingRefsRef.current.length > 0) {
+      appendAttachmentRefs(currentSessionId, pendingRefsRef.current);
+      pendingRefsRef.current = [];
+    }
+    clearComposer();
+    setStickToBottom(true);
+  };
+
+  // Streaming "Send now": stop-then-send via sendNow with the same guards
+  // and failure-safe clear as the unified path.
+  const handleSendNow = () => {
+    const raw = textRef.current;
+    const trimmed = raw.trim();
+    const payloads = attachedRef.current.map((a) => a.dataUrl);
+    if (!trimmed && payloads.length === 0) return;
+    if (!settings.modelId) {
+      showActionToast('Select a model first', 'error');
+      setShowModelsSheet(true);
+      return;
+    }
+    const result = sendNow(trimmed, payloads);
+    if (!result) {
+      showActionToast('Send failed , draft kept', 'error');
+      return;
+    }
+    if (result === 'queued') showActionToast('Queued for next turn', 'info');
+    if (currentSessionId && pendingRefsRef.current.length > 0) {
+      appendAttachmentRefs(currentSessionId, pendingRefsRef.current);
+      pendingRefsRef.current = [];
+    }
+    clearComposer();
+    setStickToBottom(true);
+  };
+
+  const handleResolveApproval = async (
+    approval: PendingApproval,
+    allow: boolean,
+    scope?: 'once' | 'session'
+  ) => {
+    // Session-allow is broad: require an explicit two-tap confirm.
+    if (allow && scope === 'session' && confirmSessionRunId !== approval.runId) {
+      setConfirmSessionRunId(approval.runId);
+      showActionToast('Tap Allow Session again to confirm', 'info');
+      return;
+    }
+    setConfirmSessionRunId(null);
+    setResolvingRunId(approval.runId);
+    try {
+      await resolveApproval(approval, allow, scope);
+    } finally {
+      setResolvingRunId((cur) => (cur === approval.runId ? null : cur));
+    }
+  };
+
+  const dataUrlToBlob = async (dataUrl: string): Promise<Blob> => {
+    const res = await fetch(dataUrl);
+    return res.blob();
+  };
+
+  const removeAttachment = (index: number) => {
+    setAttached((prev) => {
+      const target = prev[index];
+      if (target) {
+        try {
+          revokeRef(target.ref);
+        } catch {
+          /* ignore */
+        }
+        pendingRefsRef.current = pendingRefsRef.current.filter((r) => r.id !== target.ref.id);
+      }
+      return prev.filter((_, idx) => idx !== index);
+    });
+  };
+
+  const handleImageAttach = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files ? Array.from(e.target.files) : [];
     // Allow reselecting the same file
     e.target.value = '';
+    if (files.length === 0 || attaching) return;
+
+    // Abort any in-flight batch from a rapid reselect before starting a new one
+    attachAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    attachAbortRef.current = ctrl;
+    setAttaching(true);
+    try {
+      const batch = await processAttachBatch(files, {
+        imageCountAlreadyAttached: attachedRef.current.length,
+        signal: ctrl.signal,
+      });
+      if (ctrl.signal.aborted) return;
+
+      // Cap without split-brain: only refs for kept items enter the pending
+      // list, so attached[] and pendingRefs stay 1:1. Over-cap drops revoke
+      // immediately and toast loudly instead of slicing silently.
+      const room = Math.max(0, MAX_IMAGE_COUNT - attachedRef.current.length);
+      const keptImages = batch.images.slice(0, room);
+      const droppedImages = batch.images.slice(room);
+      const newItems: AttachedImage[] = [];
+      for (const img of keptImages) {
+        const blob = await dataUrlToBlob(img.dataUrl);
+        const ref = registerBlob(blob, {
+          type: 'image',
+          name: img.sourceName,
+          mime: img.mime,
+          size: img.bytes,
+          width: img.width,
+          height: img.height,
+        });
+        const previewUrl = previewUrlFor(ref) || img.dataUrl;
+        pendingRefsRef.current.push(ref);
+        newItems.push({ previewUrl, dataUrl: img.dataUrl, name: img.sourceName, ref });
+      }
+      if (newItems.length > 0) {
+        setAttached((prev) => [...prev, ...newItems]);
+      }
+      if (droppedImages.length > 0) {
+        showActionToast(
+          `${droppedImages.length} image${droppedImages.length > 1 ? 's' : ''} omitted: ${MAX_IMAGE_COUNT}-image cap reached`,
+          'error'
+        );
+      }
+
+      if (batch.texts.length > 0) {
+        const textRefs = refsFromTexts(batch.texts);
+        pendingRefsRef.current.push(...textRefs);
+        // Ref-based (no setState-updater side effect): StrictMode-safe.
+        const blocks = batch.texts.map((r) => r.block).join('\n\n');
+        const base = textRef.current;
+        const next = base ? `${base}\n\n${blocks}` : blocks;
+        handleTextChange(next);
+        const notice = buildTextChoiceNotice(batch.texts);
+        if (notice) setAttachNotice(notice);
+      }
+
+      if (batch.errors.length > 0) {
+        showActionToast(batch.errors.join('\n'), 'error');
+      }
+    } catch {
+      if (!ctrl.signal.aborted) showActionToast('Could not attach files', 'error');
+    } finally {
+      if (attachAbortRef.current === ctrl) attachAbortRef.current = null;
+      setAttaching(false);
+    }
   };
 
   const toggleVoice = () => {
@@ -330,7 +757,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       recognition.onstart = () => setIsListening(true);
       recognition.onresult = (event: any) => {
         const transcript = event.results[0][0].transcript;
-        handleTextChange(text ? `${text} ${transcript}` : transcript);
+        // Ref-based: the closure over `text` goes stale while dictating.
+        const base = textRef.current;
+        handleTextChange(base ? `${base} ${transcript}` : transcript);
         setIsListening(false);
       };
       recognition.onerror = () => setIsListening(false);
@@ -371,10 +800,11 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     const utter = new SpeechSynthesisUtterance(
       truncated ? cleanText.slice(0, MAX_SPEECH_CHARS) : cleanText
     );
+    utter.lang = speechLocaleForLanguage(settings.language || 'en');
     utter.onend = () => setSpeakingMsgId(null);
     utter.onerror = () => setSpeakingMsgId(null);
     setSpeakingMsgId(msgId);
-    if (truncated) showActionToast('Message truncated for read-aloud');
+    if (truncated) showActionToast('Message truncated for read-aloud', 'info');
     window.speechSynthesis.speak(utter);
   };
 
@@ -384,9 +814,81 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       setCopiedId(id);
       setTimeout(() => setCopiedId(null), 1800);
     } catch {
-      showActionToast(t('copyFailed'));
+      showActionToast(t('copyFailed'), 'error');
     }
   };
+
+  // Stable callbacks for memoized message rows
+  const onCopyMessage = useCallback(
+    (id: string, content: string) => {
+      void handleCopy(id, content);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [t]
+  );
+  const onSpeakMessage = useCallback(
+    (id: string, content: string) => {
+      handleSpeak(id, content);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [speakingMsgId]
+  );
+  const onRegenerateMessage = useCallback(
+    (content: string) => {
+      // Stream guard: never fire a second turn mid-stream; the row button is
+      // also disabled, this is the keyboard/edge-path backstop.
+      if (streaming) {
+        showActionToast('Still generating , wait or stop first', 'info');
+        return;
+      }
+      if (!content.trim()) return;
+      const ok = sendMessage(content.trim());
+      if (!ok) showActionToast('Regenerate failed', 'error');
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [sendMessage, streaming]
+  );
+  const onForkMessage = useCallback(() => {
+    if (currentSessionId) forkSession(currentSessionId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSessionId, forkSession]);
+  const onToggleMenu = useCallback((id: string | null) => {
+    setOpenMenuId(id);
+  }, []);
+
+  // Model sheet: Escape closes, search input autofocuses on open.
+  useEffect(() => {
+    if (!showModelsSheet) return;
+    sheetSearchRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowModelsSheet(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showModelsSheet]);
+
+  // Overflow menu: close on outside tap or Escape.
+  useEffect(() => {
+    if (openMenuId === null) return;
+    const onPointer = (e: PointerEvent) => {
+      const el = menuRef.current;
+      if (el && !el.contains(e.target as Node)) setOpenMenuId(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpenMenuId(null);
+    };
+    window.addEventListener('pointerdown', onPointer);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('pointerdown', onPointer);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [openMenuId]);
+
+  // A new stream error re-arms the banner after a previous dismiss.
+  useEffect(() => {
+    setStreamErrorDismissed(null);
+  }, [streamError]);
 
   const curModelName =
     models.find((m) => m.id === settings.modelId)?.displayName ||
@@ -408,14 +910,36 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       },
     },
     { label: '/find', action: () => setSearchOpen(true) },
-    { label: '/help', action: () => sendMessage('/help') },
-    { label: '/status', action: () => sendMessage('/status') },
+    { label: '/help', action: () => quickSend('/help') },
+    { label: '/status', action: () => quickSend('/status') },
   ];
+
+  // Guarded one-shot send for starters + slash shortcuts (bypasses composer).
+  const quickSend = (content: string) => {
+    const trimmed = content.trim();
+    if (!trimmed) return;
+    if (!settings.modelId) {
+      showActionToast('Select a model first', 'error');
+      setShowModelsSheet(true);
+      return;
+    }
+    if (streaming) {
+      if (!queueMessage(trimmed, [])) showActionToast('Could not queue message', 'error');
+      else showActionToast('Queued for next turn', 'info');
+      return;
+    }
+    if (!sendMessage(trimmed, [])) showActionToast('Send failed', 'error');
+    else setStickToBottom(true);
+  };
 
   return (
     <div className={`flex flex-col flex-1 min-h-0 h-full ${isDesktop ? 'max-w-4xl mx-auto w-full px-6' : 'px-3 sm:px-4'} pt-2 pb-1`}>
       {actionToast && (
-        <div role="status" aria-live="polite" className="fixed top-16 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] px-4 py-2 rounded-xl bg-rose-600 text-white text-xs font-semibold shadow-2xl">
+        <div
+          role={toastKind === 'error' ? 'alert' : 'status'}
+          aria-live={toastKind === 'error' ? 'assertive' : 'polite'}
+          className={`fixed top-16 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] px-4 py-2 rounded-xl text-xs font-semibold shadow-2xl max-w-[90vw] break-words ${toastClass}`}
+        >
           {actionToast}
         </div>
       )}
@@ -452,9 +976,33 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       )}
 
       {/* 2. Messages List Scroll Area */}
-      <div className="flex-1 min-h-0 overflow-y-auto space-y-4 pe-1 pb-2">
-        {visibleMessages.length === 0 ? (
+      <div
+        ref={scrollRef}
+        onScroll={handleScroll}
+        aria-label="Conversation messages"
+        className="relative flex-1 min-h-0 overflow-y-auto space-y-4 pe-1 pb-2"
+      >
+        {bubbleMessages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center py-12 px-4 space-y-4">
+            {(!connected || gatewayFailed) && (
+              <div
+                role="alert"
+                className="w-full max-w-md px-3.5 py-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-start"
+              >
+                <p className="text-xs font-semibold text-rose-300">
+                  Gateway offline{gatewayFailed && gatewayFailureReason ? `: ${gatewayFailureReason}` : ''}
+                </p>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  You are disconnected. New messages will queue until the gateway reconnects.
+                </p>
+                <button
+                  onClick={onGoSettings}
+                  className="mt-1.5 min-h-[44px] px-3 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.1] text-xs text-white cursor-pointer"
+                >
+                  Open Settings
+                </button>
+              </div>
+            )}
             <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-500/20 to-teal-500/20 border border-indigo-500/30 flex items-center justify-center shadow-xs">
               <Sparkles className="w-6 h-6 text-indigo-400" />
             </div>
@@ -472,7 +1020,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
               {starterChips.map((chip, idx) => (
                 <button
                   key={idx}
-                  onClick={() => sendMessage(chip)}
+                  onClick={() => quickSend(chip)}
                   title={chip}
                   className="px-3.5 py-2.5 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] hover:border-indigo-500/30 text-xs text-slate-300 text-start transition hover:bg-white/[0.02] cursor-pointer"
                 >
@@ -480,172 +1028,82 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                 </button>
               ))}
             </div>
-          </div>
-        ) : (
-          visibleMessages.map((msg, index) => {
-            const isUser = msg.sender === 'you';
-            const meta = turnMeta[msg.id];
-            const isLiveTail = streaming && index === visibleMessages.length - 1;
-
-            return (
+            {(!settings.modelId || configuredProviders.length === 0) && (
               <div
-                key={msg.id}
-                className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
+                role="note"
+                className="w-full max-w-md px-3.5 py-2.5 rounded-xl bg-sky-500/10 border border-sky-500/30 text-start"
               >
-                {/* Bubble Container */}
-                <div
-                  className={`w-full max-w-[94%] sm:max-w-[88%] rounded-2xl p-4 transition-all ${
-                    isUser
-                      ? 'bg-indigo-600/90 text-white shadow-xs'
-                      : 'bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-slate-200'
-                  }`}
-                  style={{
-                    fontSize: `${settings.fontScale * 14}px`,
-                  }}
-                >
-                  {/* Clean unboxed metadata row */}
-                  <div className="flex items-center justify-between gap-4 text-[11px] mb-2 pb-1.5 border-b border-white/[0.08]">
-                    <span className="font-semibold text-xs tracking-tight text-white/90">
-                      {isUser ? 'You' : 'Hermes'}
-                    </span>
-
-                    <div className="flex items-center gap-2 text-slate-400 font-mono text-[10px]">
-                      {!isUser && meta && (
-                        <span>
-                          {meta.model.split('/').pop()}
-                          {meta.durationMs > 0 && ` · ${(meta.durationMs / 1000).toFixed(1)}s`}
-                        </span>
-                      )}
-                      <button
-                        onClick={() => handleCopy(msg.id, msg.content || msg.thinking || '')}
-                        className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-white cursor-pointer ms-1"
-                        title="Copy message"
-                        aria-label="Copy message"
-                      >
-                        {copiedId === msg.id ? (
-                          <Check className="w-3.5 h-3.5 text-emerald-400" />
-                        ) : (
-                          <Copy className="w-3.5 h-3.5" />
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Thinking Block */}
-                  {msg.thinking && (
-                    <ThinkingAccordion
-                      thinking={msg.thinking}
-                      isDone={msg.thinkingDone !== false}
-                      fontScale={settings.fontScale}
-                    />
-                  )}
-
-                  {/* Tool Invocations */}
-                  {msg.tools && msg.tools.length > 0 && (
-                    <div className="mb-2.5 space-y-1.5">
-                      <div className="flex flex-wrap gap-1.5">
-                        {msg.tools.map((t, idx) => (
-                          <span
-                            key={idx}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/[0.04] border border-white/[0.08] text-[11px] font-mono text-teal-300"
-                          >
-                            <span className="w-1.5 h-1.5 rounded-full bg-teal-400" />
-                            <span>{t}</span>
-                          </span>
-                        ))}
-                      </div>
-
-                      {msg.toolOutputs && msg.toolOutputs.length > 0 && (
-                        <div className="rounded-xl bg-[var(--app-bg,#090B0E)] p-2.5 border border-white/[0.06] text-xs font-mono text-slate-400 space-y-1">
-                          {msg.toolOutputs.map((out, i) => (
-                            <div key={i} className="leading-relaxed break-all whitespace-pre-wrap">
-                              <span className="text-teal-400 font-medium">{out.toolName}:</span>{' '}
-                              <span>{out.output}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Message Body */}
-                  {msg.content ? (
-                    <div className="prose dark:prose-invert max-w-none text-sm leading-relaxed whitespace-pre-wrap select-text font-sans">
-                      {msg.content}
-                      {isLiveTail && !isUser && (
-                        <span className="inline-block w-1.5 h-4 ms-1 bg-indigo-400 animate-pulse align-middle" />
-                      )}
-                    </div>
-                  ) : isLiveTail ? (
-                    <div className="flex items-center gap-2 text-xs text-slate-400 py-1">
-                      <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
-                      <span>{t('formulating')}</span>
-                    </div>
-                  ) : null}
-
-                  {/* Message Actions: Regenerate stays visible, rest behind overflow menu */}
-                  <div className="relative flex items-center justify-end gap-3 mt-3 pt-2 border-t border-white/[0.06] text-xs">
-                    {isUser && (
-                      <button
-                        onClick={() => sendMessage(msg.content)}
-                        className="min-h-[44px] px-2 hover:text-white cursor-pointer flex items-center gap-1 transition text-white/70"
-                      >
-                        <RefreshCw className="w-3 h-3" />
-                        <span>Regenerate</span>
-                      </button>
-                    )}
+                <p className="text-xs font-semibold text-sky-200">
+                  {!settings.modelId ? 'No model selected' : 'No providers configured'}
+                </p>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  {!settings.modelId
+                    ? 'Pick a model to start chatting.'
+                    : 'Add a provider before picking a model.'}
+                </p>
+                <div className="flex items-center gap-2 mt-1.5">
+                  {!settings.modelId && models.length > 0 && (
                     <button
-                      onClick={() => setOpenMenuId(openMenuId === msg.id ? null : msg.id)}
-                      className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-white transition cursor-pointer"
-                      title="More actions"
-                      aria-label="More message actions"
-                      aria-expanded={openMenuId === msg.id}
+                      onClick={() => setShowModelsSheet(true)}
+                      className="min-h-[44px] px-3 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold cursor-pointer"
                     >
-                      <MoreHorizontal className="w-4 h-4" />
+                      Select a model
                     </button>
-                    {openMenuId === msg.id && (
-                      <div className="absolute bottom-full end-0 mb-1.5 min-w-[140px] rounded-xl bg-[var(--app-card-subtle,#1A2230)] border border-white/[0.1] shadow-2xl py-1 z-20">
-                        {isUser && (
-                          <button
-                            onClick={() => {
-                              if (currentSessionId) forkSession(currentSessionId);
-                              setOpenMenuId(null);
-                            }}
-                            className="w-full px-3 py-2 flex items-center gap-2 text-start text-slate-300 hover:text-white hover:bg-white/[0.06] transition cursor-pointer"
-                          >
-                            <GitFork className="w-3.5 h-3.5" />
-                            <span>Branch</span>
-                          </button>
-                        )}
-                        <button
-                          onClick={() => {
-                            handleSpeak(msg.id, msg.content);
-                            setOpenMenuId(null);
-                          }}
-                          className="w-full px-3 py-2 flex items-center gap-2 text-start text-slate-300 hover:text-white hover:bg-white/[0.06] transition cursor-pointer"
-                          title={speakingMsgId === msg.id ? 'Stop audio playback' : 'Read aloud'}
-                        >
-                          {speakingMsgId === msg.id ? (
-                            <>
-                              <VolumeX className="w-3.5 h-3.5 text-rose-400" />
-                              <span className="text-rose-400 font-medium">Stop</span>
-                            </>
-                          ) : (
-                            <>
-                              <Volume2 className="w-3.5 h-3.5" />
-                              <span>Read aloud</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    )}
-                  </div>
+                  )}
+                  <button
+                    onClick={onGoSettings}
+                    className="min-h-[44px] px-3 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.1] text-xs text-white cursor-pointer"
+                  >
+                    Open Settings
+                  </button>
                 </div>
               </div>
+            )}
+          </div>
+        ) : (
+          bubbleMessages.map((msg) => {
+            const meta = turnMeta[msg.id];
+            const modelLabel =
+              meta && msg.sender !== 'you' ? meta.model.split('/').pop() || null : null;
+            const durationLabel =
+              meta && meta.durationMs > 0 ? `${(meta.durationMs / 1000).toFixed(1)}s` : null;
+            return (
+              <MessageRow
+                key={msg.id}
+                msg={msg}
+                isLiveTail={msg.id === liveTailId}
+                modelLabel={modelLabel}
+                durationLabel={durationLabel}
+                fontScale={settings.fontScale}
+                formulatingLabel={t('formulating')}
+                copied={copiedId === msg.id}
+                speaking={speakingMsgId === msg.id}
+                menuOpen={openMenuId === msg.id}
+                streamBusy={streaming}
+                menuContainerRef={menuRef}
+                onCopy={onCopyMessage}
+                onSpeak={onSpeakMessage}
+                onRegenerate={onRegenerateMessage}
+                onFork={onForkMessage}
+                onToggleMenu={onToggleMenu}
+              />
             );
           })
         )}
         <div ref={messagesEndRef} />
+        {!stickToBottom && bubbleMessages.length > 0 && (
+          <button
+            onClick={() => {
+              setStickToBottom(true);
+              scrollToBottom(true);
+            }}
+            aria-label="Jump to latest messages"
+            className="sticky bottom-2 ms-auto me-2 min-h-[44px] px-3 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-2xl cursor-pointer flex items-center gap-1.5"
+          >
+            <ChevronDown className="w-3.5 h-3.5" />
+            Latest
+          </button>
+        )}
       </div>
 
       <div className="shrink-0 min-h-0 max-h-[32vh] overflow-y-auto space-y-2 overscroll-contain">
@@ -662,36 +1120,13 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           </div>
           <div className="space-y-3">
             {pendingApprovals.map((approval) => (
-              <div key={approval.runId} className="rounded-xl border border-amber-500/20 bg-black/20 p-3">
-                <div className="flex items-start gap-3">
-                  <div className="p-2 rounded-xl bg-amber-500/20 text-amber-300 shrink-0">
-                    <AlertTriangle className="w-4 h-4" />
-                  </div>
-                  <p className="text-xs text-slate-300 mt-1 break-all leading-relaxed flex-1 min-w-0">
-                    {approval.summary}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2 mt-3 pt-2 border-t border-amber-500/20">
-                  <button
-                    onClick={() => resolveApproval(approval, false)}
-                    className="flex-1 min-h-[44px] py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] text-slate-300 text-xs font-medium border border-white/[0.08] transition cursor-pointer"
-                  >
-                    {t('deny')}
-                  </button>
-                  <button
-                    onClick={() => resolveApproval(approval, true, 'once')}
-                    className="flex-1 min-h-[44px] py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
-                  >
-                    {t('allowOnce')}
-                  </button>
-                  <button
-                    onClick={() => resolveApproval(approval, true, 'session')}
-                    className="flex-1 min-h-[44px] py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
-                  >
-                    {t('allowSession')}
-                  </button>
-                </div>
-              </div>
+              <ApprovalCard
+                key={approval.runId}
+                approval={approval}
+                resolving={resolvingRunId === approval.runId}
+                onDeny={(a) => void handleResolveApproval(a, false)}
+                onAllow={(a, scope) => void handleResolveApproval(a, true, scope)}
+              />
             ))}
           </div>
         </div>
@@ -699,12 +1134,18 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
 
       {/* Queued Messages Ribbon */}
       {queuedMessages.length > 0 && (
-        <div className="mb-2 px-3.5 py-2 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-between gap-2 text-xs text-indigo-300">
+        <div
+          role="status"
+          aria-live="polite"
+          aria-label={`${queuedMessages.length} messages queued for next turn`}
+          className="mb-2 px-3.5 py-2 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-between gap-2 text-xs text-indigo-300"
+        >
           <span className="min-w-0 truncate">
             {queuedMessages.length} queued{queuedMessages[0]?.text ? `: ${queuedMessages[0].text.slice(0, 60)}` : ` ${t('queuedFor')}`}
           </span>
           <button
             onClick={cancelQueued}
+            aria-label={`Cancel ${queuedMessages.length} queued messages`}
             className="text-rose-400 hover:underline cursor-pointer shrink-0 min-h-[44px] px-2"
           >
             Cancel
@@ -712,14 +1153,99 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
         </div>
       )}
 
-      {/* Attached Images preview */}
-      {attachedImages.length > 0 && (
+      {/* Live stream failure banner (context streamError surface, never a bubble) */}
+      {streamError && streamErrorDismissed !== streamError && (
+        <div
+          role="alert"
+          className="mb-2 px-3.5 py-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs"
+        >
+          <p className="text-rose-200 break-words leading-relaxed">Stream error: {streamError}</p>
+          <div className="flex items-center gap-2 mt-2">
+            <button
+              onClick={() => {
+                if (streaming) {
+                  showActionToast('Still generating , wait or stop first', 'info');
+                  return;
+                }
+                if (!retryLast()) showActionToast('Nothing to retry', 'error');
+              }}
+              disabled={streaming}
+              className="min-h-[44px] px-3 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Retry
+            </button>
+            <button
+              onClick={() => setStreamErrorDismissed(streamError)}
+              className="min-h-[44px] px-3 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 text-xs cursor-pointer"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Legacy stream error bubbles (older persisted history), with retry/dismiss */}
+      {visibleErrors.map((err) => (
+        <div
+          key={err.id}
+          role="alert"
+          className="mb-2 px-3.5 py-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs"
+        >
+          <p className="text-rose-200 break-words leading-relaxed">{err.content}</p>
+          <div className="flex items-center gap-2 mt-2">
+            <button
+              onClick={() => {
+                if (streaming) {
+                  showActionToast('Still generating , wait or stop first', 'info');
+                  return;
+                }
+                if (!retryLast()) showActionToast('Nothing to retry', 'error');
+              }}
+              disabled={streaming}
+              className="min-h-[44px] px-3 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Retry
+            </button>
+            <button
+              onClick={() => setDismissedErrors((prev) => [...prev, err.id])}
+              className="min-h-[44px] px-3 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 text-xs cursor-pointer"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      ))}
+
+      {/* Text-file truncation choice notice with included/omitted counts */}
+      {attachNotice && (
+        <div
+          role="status"
+          className="mb-2 px-3.5 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs"
+        >
+          <p className="text-amber-200 font-semibold">Large text file truncated</p>
+          <p className="text-slate-300 mt-0.5 whitespace-pre-wrap break-words">{attachNotice}</p>
+          <button
+            onClick={() => setAttachNotice(null)}
+            className="mt-1.5 min-h-[44px] px-3 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 text-xs cursor-pointer"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Attached Images preview (object URLs; compressed payloads sent on submit) */}
+      {attaching && attached.length === 0 && (
+        <div className="mb-2 px-3.5 py-2 rounded-xl bg-white/[0.03] border border-white/[0.08] text-[11px] text-slate-400">
+          Processing attachments...
+        </div>
+      )}
+      {attached.length > 0 && (
         <div className="flex items-center gap-2 mb-2 p-2 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] overflow-x-auto">
-          {attachedImages.map((src, i) => (
-            <div key={i} className="relative w-12 h-12 rounded-lg overflow-hidden shrink-0 border border-white/10 group">
-              <img src={src} alt="Attached" className="w-full h-full object-cover" />
+          {attached.map((item, i) => (
+            <div key={item.ref.id} className="relative w-12 h-12 rounded-lg overflow-hidden shrink-0 border border-white/10 group">
+              <img src={item.previewUrl} alt={item.name || 'Attached'} className="w-full h-full object-cover" />
               <button
-                onClick={() => setAttachedImages((prev) => prev.filter((_, idx) => idx !== i))}
+                onClick={() => removeAttachment(i)}
                 aria-label={`Remove attachment ${i + 1}`}
                 className="absolute -top-2 -end-2 min-w-[44px] min-h-[44px] flex items-start justify-end p-1.5 text-white"
               >
@@ -730,14 +1256,18 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             </div>
           ))}
           <span className="text-[11px] text-slate-400">
-            {attachedImages.length}/4 attached
+            {attached.length}/{MAX_IMAGE_COUNT} attached{attaching ? '...' : ''}
           </span>
         </div>
       )}
 
       {/* Slash command helpers: visible on empty composer and while typing a / command */}
       {!streaming && (text === '' || text.startsWith('/')) && (
-        <div className="flex items-center gap-1.5 mb-2 overflow-x-auto pb-1 text-xs shrink-0">
+        <div
+          role="toolbar"
+          aria-label="Slash commands"
+          className="flex items-center gap-1.5 mb-2 overflow-x-auto pb-1 text-xs shrink-0"
+        >
           {slashCommands
             .filter((cmd) => {
               if (text === '') return true;
@@ -748,6 +1278,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             <button
               key={cmd.label}
               onClick={cmd.action}
+              aria-label={`Run ${cmd.label} command`}
               className="px-2.5 min-h-[44px] py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-slate-400 hover:text-white transition cursor-pointer shrink-0 font-mono text-[11px]"
             >
               {cmd.label}
@@ -772,8 +1303,13 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             }
           }}
           placeholder={t('askHermes') || 'Message Hermes or paste instructions...'}
+          aria-label={t('askHermes') || 'Message Hermes'}
+          aria-describedby="composer-hint"
           className="w-full bg-transparent px-1 py-1 text-[13.5px] sm:text-sm text-slate-100 placeholder-slate-400 focus:outline-none resize-none leading-relaxed font-sans min-h-[32px] max-h-[160px]"
         />
+        <p id="composer-hint" className="sr-only">
+          Enter sends, Shift plus Enter adds a new line.
+        </p>
 
         {/* Action Toolbar Row: wraps on narrow screens so mic/send never scroll off-canvas */}
         <div className="flex items-center justify-between flex-wrap pt-1.5 gap-1.5 sm:gap-2 border-t border-white/[0.04]">
@@ -884,9 +1420,11 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                 </span>
                 <button
                   type="button"
-                  onClick={() => text && sendNow(text, attachedImages)}
-                  disabled={!text}
-                  className="px-2 py-1 rounded-full text-[11px] font-medium bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25 disabled:opacity-40 cursor-pointer"
+                  onClick={handleSendNow}
+                  disabled={!canSendNow}
+                  aria-label="Send now (stop and send)"
+                  title={!settings.modelId ? 'Select a model first' : 'Stop and send now'}
+                  className="px-2 min-h-[44px] py-1 rounded-full text-[11px] font-medium bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25 disabled:opacity-40 cursor-pointer"
                 >
                   Send
                 </button>
@@ -904,11 +1442,12 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
               <button
                 type="button"
                 onClick={handleSend}
-                disabled={(!text.trim() && attachedImages.length === 0) || !settings.modelId}
+                disabled={!canSendNow}
                 title={!settings.modelId ? (t('noModel') || 'Select a model first') : 'Send Message'}
                 aria-label={!settings.modelId ? (t('noModel') || 'Select a model first') : 'Send Message'}
+                aria-disabled={!canSendNow}
                 className={`min-w-[44px] min-h-[44px] rounded-full flex items-center justify-center transition-all cursor-pointer shrink-0 shadow-xs border ${
-                  text.trim() || attachedImages.length > 0
+                  canSendNow
                     ? 'bg-white hover:bg-slate-100 text-slate-900 border-white shadow-md active:scale-95'
                     : 'bg-[var(--app-card-subtle,#1A2230)] text-slate-500 border-white/[0.08] opacity-50 cursor-not-allowed'
                 }`}
@@ -965,6 +1504,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             <div className="relative flex items-center px-3.5 py-2.5 rounded-xl bg-[var(--app-card-subtle,#141A23)] border border-white/[0.08] focus-within:border-cyan-500/50 transition shrink-0 mb-3">
               <Search className="w-4 h-4 text-slate-400 me-2.5 shrink-0" />
               <input
+                ref={sheetSearchRef}
                 type="text"
                 value={modelSearchQuery}
                 onChange={(e) => setModelSearchQuery(e.target.value)}
@@ -991,7 +1531,8 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                   <button
                     key={opt.id}
                     onClick={() => setModelFilterProvider(opt.id)}
-                    className={`px-3 py-1 rounded-lg text-xs font-mono transition cursor-pointer shrink-0 border whitespace-nowrap ${
+                    aria-pressed={isActive}
+                    className={`px-3 min-h-[44px] py-1 rounded-lg text-xs font-mono transition cursor-pointer shrink-0 border whitespace-nowrap ${
                       isActive
                         ? 'bg-[var(--app-card-subtle,#0E2938)] text-cyan-400 border-cyan-500/60 font-semibold shadow-xs'
                         : 'bg-[var(--app-card-subtle,#131924)] text-slate-400 border-white/[0.08] hover:text-slate-200 hover:bg-[var(--app-card-subtle,#1A2230)] font-normal'
@@ -1078,7 +1619,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                   setShowModelsSheet(false);
                   onGoSettings();
                 }}
-                className="text-cyan-400 hover:text-cyan-300 font-medium cursor-pointer transition"
+                className="min-h-[44px] px-2 text-cyan-400 hover:text-cyan-300 font-medium cursor-pointer transition flex items-center"
               >
                 + Manage Providers in Settings
               </button>
@@ -1099,8 +1640,9 @@ interface ThinkingAccordionProps {
 const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({ thinking, isDone, fontScale }) => {
   const [expanded, setExpanded] = useState(!isDone);
 
+  // Follow the live state: expand while reasoning, auto-collapse when done.
   useEffect(() => {
-    if (!isDone) setExpanded(true);
+    setExpanded(!isDone);
   }, [isDone]);
 
   return (

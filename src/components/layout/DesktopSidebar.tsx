@@ -11,6 +11,7 @@ import {
   SidebarOpen,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
+import { resolveListUiState } from '../../services/pagination';
 
 interface DesktopSidebarProps {
   currentTab: number;
@@ -37,17 +38,43 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
     approvals,
     jobs,
     settings,
+    refreshNow,
     t,
   } = useHermes();
 
   const [sessionSearch, setSessionSearch] = useState('');
   const [showAllRecent, setShowAllRecent] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
+
+  // Session list truthfulness: the context list is the cache; when the
+  // gateway is unreachable it is stale, not live. Never render it as live.
+  const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+  const sidebarListState = resolveListUiState(
+    {
+      live: connected,
+      stale: !connected && sessions.length > 0,
+      error: !connected && sessions.length === 0 ? 'Gateway unreachable' : undefined,
+    },
+    sessions.length,
+    { offline: browserOffline || !connected }
+  );
+
+  const handleRetrySessions = async () => {
+    setListError(null);
+    try {
+      await refreshNow();
+    } catch {
+      setListError('Retry failed. The gateway is still unreachable.');
+    }
+  };
 
   const navItems = [
     { id: 0, label: t('home') || 'Overview', icon: LayoutGrid },
-    { id: 1, label: t('chat') || 'Workspace Chat', icon: MessageSquare },
+    // Approvals are actioned in Chat (ApprovalCard queue), so the pending
+    // count lives here, not on Settings.
+    { id: 1, label: t('chat') || 'Workspace Chat', icon: MessageSquare, badge: approvals.length },
     { id: 2, label: t('jobs') || 'Cron & Tasks', icon: CalendarClock, badge: jobs.filter(j => j.enabled).length },
-    { id: 3, label: t('settings') || 'Ops & Settings', icon: SlidersHorizontal, alert: approvals.length > 0 },
+    { id: 3, label: t('settings') || 'Ops & Settings', icon: SlidersHorizontal },
   ];
 
   const filteredSessions = sessions.filter(s =>
@@ -143,9 +170,6 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
                   {item.badge}
                 </span>
               )}
-              {item.alert && (
-                <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
-              )}
             </button>
           );
         })}
@@ -167,6 +191,27 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
       {/* 4. Desktop Sessions Panel */}
       {!collapsed ? (
         <div className="flex-1 overflow-y-auto px-2 space-y-3 pb-3">
+          {(sidebarListState === 'stale' || sidebarListState === 'offline') && (
+            <div role="status" className="mx-1 px-2.5 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300">
+              <p className="font-semibold">Offline, showing cached sessions</p>
+            </div>
+          )}
+          {sidebarListState === 'error' && (
+            <div role="alert" className="mx-1 px-2.5 py-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-[11px] text-rose-300 space-y-1.5">
+              <p>Could not load sessions. Gateway unreachable.</p>
+              <button
+                onClick={() => void handleRetrySessions()}
+                className="px-2.5 min-h-[44px] rounded-lg bg-rose-600/20 hover:bg-rose-600/30 text-rose-200 font-semibold cursor-pointer"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+          {listError && (
+            <div role="alert" className="mx-1 px-2.5 py-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-[11px] text-rose-300">
+              <p>{listError}</p>
+            </div>
+          )}
           {/* Quick Search */}
           <div className="relative px-1 pt-1">
             <Search className="w-3.5 h-3.5 absolute start-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
@@ -242,7 +287,9 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
               )}
             </div>
             {recentList.length === 0 ? (
-              <p className="px-2 text-[11px] text-slate-600">{t('noSessionsYet')}</p>
+              sidebarListState === 'error' ? null : (
+                <p className="px-2 text-[11px] text-slate-600">{t('noSessionsYet')}</p>
+              )
             ) : (
               recentList.map((s) => (
                 <div

@@ -8,13 +8,15 @@ interface BottomNavProps {
 }
 
 export const BottomNav: React.FC<BottomNavProps> = ({ currentTab, onSelectTab }) => {
-  const { approvals, t } = useHermes();
+  const { approvals, jobs, t } = useHermes();
 
+  // Tab labels match the canonical en strings in constants/languages.ts so
+  // BottomNav, DesktopSidebar, and i18n never diverge. Ids are stable keys.
   const tabs = [
-    { label: t('home') || 'Overview', icon: LayoutGrid, badge: 0 },
-    { label: t('chat') || 'Chat', icon: MessageSquare, badge: approvals.length },
-    { label: t('jobs') || 'Jobs', icon: CalendarClock, badge: 0 },
-    { label: t('settings') || 'Settings', icon: SlidersHorizontal, badge: 0 },
+    { id: 0, label: t('home') || 'Overview', icon: LayoutGrid, badge: 0 },
+    { id: 1, label: t('chat') || 'Workspace Chat', icon: MessageSquare, badge: approvals.length },
+    { id: 2, label: t('jobs') || 'Cron & Tasks', icon: CalendarClock, badge: jobs.filter((j) => j.enabled).length },
+    { id: 3, label: t('settings') || 'Ops & Settings', icon: SlidersHorizontal, badge: 0 },
   ];
 
   return (
@@ -26,14 +28,14 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentTab, onSelectTab })
       }}
     >
       <div className="flex items-center justify-around max-w-lg mx-auto h-16 px-2">
-        {tabs.map((tab, idx) => {
+        {tabs.map((tab) => {
           const Icon = tab.icon;
-          const isActive = currentTab === idx;
+          const isActive = currentTab === tab.id;
 
           return (
             <button
-              key={tab.label}
-              onClick={() => onSelectTab(idx)}
+              key={tab.id}
+              onClick={() => onSelectTab(tab.id)}
               aria-label={tab.label}
               aria-current={isActive ? 'page' : undefined}
               className={`flex-1 flex flex-col items-center justify-center h-full relative cursor-pointer transition-all duration-150 min-h-[44px] min-w-[44px] ${

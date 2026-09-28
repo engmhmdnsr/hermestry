@@ -2,8 +2,6 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   X,
   Plus,
-  RefreshCw,
-  Share2,
   Search,
   Star,
   Edit2,
@@ -11,11 +9,11 @@ import {
   Trash2,
   Download,
   Copy,
-  Check,
-  MessageSquare,
+  MoreHorizontal,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import { GatewayService } from '../../services/gateway';
+import { resolveListUiState } from '../../services/pagination';
 import { MobileSession } from '../../types/hermes';
 
 const gatewayService = new GatewayService();
@@ -34,6 +32,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
   const {
     sessions,
     currentSessionId,
+    connected,
     newSession,
     deleteSession,
     renameSession,
@@ -44,26 +43,37 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
   } = useHermes();
 
   const [query, setQuery] = useState('');
-  const [sourceFilter, setSourceFilter] = useState('ALL');
   const [sortMode, setSortMode] = useState<0 | 1 | 2>(0);
 
   const [renameTarget, setRenameTarget] = useState<MobileSession | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<MobileSession | null>(null);
-  const [exportTarget, setExportTarget] = useState<MobileSession | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [drawerToast, setDrawerToast] = useState<string | null>(null);
   const [renameError, setRenameError] = useState('');
   const [deleteError, setDeleteError] = useState('');
   const [isSavingRename, setIsSavingRename] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Paginated session list truthfulness (DATA-01/03/04/05). The context owns
+  // the first page; pages beyond it accumulate here without clobbering it.
+  const [pageMeta, setPageMeta] = useState<{
+    live: boolean;
+    stale: boolean;
+    lastSyncedAt: number | null;
+    error?: string;
+  }>({ live: true, stale: false, lastSyncedAt: null });
+  const [extraSessions, setExtraSessions] = useState<MobileSession[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [nextOffset, setNextOffset] = useState<number | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [metaLoading, setMetaLoading] = useState(false);
+  const [pageError, setPageError] = useState<string | null>(null);
 
   useEffect(() => {
     return () => {
       if (toastTimer.current) clearTimeout(toastTimer.current);
-      if (copiedTimer.current) clearTimeout(copiedTimer.current);
     };
   }, []);
 
@@ -73,26 +83,115 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     toastTimer.current = setTimeout(() => setDrawerToast(null), 2500);
   };
 
-  // Canonical session source is 'web'. Legacy values ('', 'system') map to it at read time.
-  const normalizeSource = (source: string | undefined): string => {
-    if (!source || source === 'system') return 'web';
-    return source;
+  // First-page sync metadata for the stale/offline banner. Uses the same
+  // page the context loads (limit 100, offset 0) so the local cache write
+  // inside fetchSessionsPage matches what refreshNow already does.
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    setMetaLoading(true);
+    setPageError(null);
+    (async () => {
+      try {
+        const page = await gatewayService.fetchSessionsPage({ limit: 100, offset: 0 });
+        if (cancelled) return;
+        setPageMeta({ live: page.live, stale: page.stale, lastSyncedAt: page.lastSyncedAt, error: page.error });
+        setHasMore(page.hasMore);
+        setNextOffset(page.nextOffset);
+      } catch (e) {
+        if (cancelled) return;
+        setPageError(e instanceof Error ? e.message : 'Could not load conversations.');
+      } finally {
+        if (!cancelled) setMetaLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
+
+  const handleLoadMore = async () => {
+    if (loadingMore || !hasMore || nextOffset === null) return;
+    setLoadingMore(true);
+    setPageError(null);
+    try {
+      const page = await gatewayService.fetchSessionsPage({ limit: 50, offset: nextOffset });
+      setPageMeta({ live: page.live, stale: page.stale, lastSyncedAt: page.lastSyncedAt, error: page.error });
+      const knownIds = new Set(sessions.map((s) => s.id));
+      setExtraSessions((prev) => {
+        const ids = new Set([...knownIds, ...prev.map((s) => s.id)]);
+        return [...prev, ...page.items.filter((s) => !ids.has(s.id))];
+      });
+      setHasMore(page.hasMore);
+      setNextOffset(page.nextOffset);
+      if (page.error && !page.stale) setPageError(page.error);
+    } catch (e) {
+      setPageError(e instanceof Error ? e.message : 'Could not load more conversations.');
+    } finally {
+      setLoadingMore(false);
+    }
   };
 
-  const presentSources = useMemo(() => {
-    return Array.from(new Set(sessions.map((s) => normalizeSource(s.source)))).sort();
-  }, [sessions]);
+  const handleRetryList = async () => {
+    setPageError(null);
+    try {
+      await refreshNow();
+    } catch {
+      // refreshNow signals failure via connected=false; fall through to meta.
+    }
+    try {
+      const page = await gatewayService.fetchSessionsPage({ limit: 100, offset: 0 });
+      setPageMeta({ live: page.live, stale: page.stale, lastSyncedAt: page.lastSyncedAt, error: page.error });
+      setHasMore(page.hasMore);
+      setNextOffset(page.nextOffset);
+    } catch (e) {
+      setPageError(e instanceof Error ? e.message : 'Could not load conversations.');
+    }
+  };
+
+  const handleNewSession = async () => {
+    try {
+      const newId = await newSession();
+      onSelectSession(newId);
+      onClose();
+    } catch {
+      showDrawerToast('Could not create session. Gateway unreachable.');
+    }
+  };
+
+  const handleFork = async (id: string) => {
+    try {
+      await forkSession(id);
+    } catch {
+      showDrawerToast('Branch failed. The conversation was not branched.');
+    }
+  };
+
+  // Context list plus paged-in older sessions, deduped by id.
+  const allSessions = useMemo(() => {
+    const ids = new Set(sessions.map((s) => s.id));
+    return [...sessions, ...extraSessions.filter((s) => !ids.has(s.id))];
+  }, [sessions, extraSessions]);
+
+  const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+  const listState = resolveListUiState(
+    { live: pageMeta.live, stale: pageMeta.stale, error: pageMeta.error },
+    allSessions.length,
+    { loading: metaLoading, offline: browserOffline || !connected }
+  );
+  const syncedLabel = pageMeta.lastSyncedAt
+    ? new Date(pageMeta.lastSyncedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : null;
 
   const visibleSessions = useMemo(() => {
-    let list = sessions.filter((s) => {
+    let list = allSessions.filter((s) => {
       const q = query.toLowerCase().trim();
-      const matchesQuery =
+      return (
         !q ||
         s.title.toLowerCase().includes(q) ||
-        s.id.toLowerCase().includes(q);
-      const matchesSource =
-        sourceFilter === 'ALL' || normalizeSource(s.source) === sourceFilter;
-      return matchesQuery && matchesSource;
+        s.id.toLowerCase().includes(q) ||
+        (s.model || '').toLowerCase().includes(q)
+      );
     });
 
     list = [...list].sort((a, b) => {
@@ -102,7 +201,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     });
 
     return list;
-  }, [sessions, query, sourceFilter, sortMode]);
+  }, [allSessions, query, sortMode]);
 
   const pinnedSessions = useMemo(() => {
     return visibleSessions.filter((s) => pinnedIds.includes(s.id));
@@ -112,36 +211,104 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     return visibleSessions.filter((s) => !pinnedIds.includes(s.id));
   }, [visibleSessions, pinnedIds]);
 
-  const handleExportMarkdown = (sess: MobileSession) => {
-    const targetMessages = gatewayService.loadLocalMessages(sess.id);
-    let md = `# ${sess.title}\nID: ${sess.id}\nModel: ${sess.model}\nDate: ${new Date().toISOString()}\n\n---\n\n`;
+  // Prefer gateway history so exports do not silently truncate to whatever
+  // happens to be cached locally; fall back to the local cache offline.
+  const loadTranscriptMessages = async (sessId: string) => {
+    try {
+      const server = await gatewayService.sessionMessages(sessId);
+      if (server.length > 0) return server;
+    } catch {
+      // Fall through to the local cache below.
+    }
+    return gatewayService.loadLocalMessages(sessId);
+  };
+
+  const sessionDateStamp = (sess: MobileSession): string => {
+    const d = new Date(sess.lastActiveAt);
+    return Number.isNaN(d.getTime())
+      ? new Date().toISOString().slice(0, 10)
+      : d.toISOString().slice(0, 10);
+  };
+
+  const sessionFileSlug = (sess: MobileSession): string => {
+    const base = (sess.title || 'untitled').replace(/[^a-z0-9_-]/gi, '_');
+    return `${base}_${sessionDateStamp(sess)}`;
+  };
+
+  const buildTranscriptMarkdown = (
+    sess: MobileSession,
+    targetMessages: { sender: string; content: string; thinking?: string }[],
+  ): string => {
+    const dateStamp = sessionDateStamp(sess);
+    let md = `# ${sess.title}\nID: ${sess.id}\nModel: ${sess.model}\nDate: ${dateStamp}\n\n---\n\n`;
     for (const msg of targetMessages) {
       md += `### ${msg.sender === 'you' ? 'User' : 'Hermes'}\n\n${msg.content}\n\n`;
       if (msg.thinking) {
         md += `> **Thinking:**\n> ${msg.thinking.replace(/\n/g, '\n> ')}\n\n`;
       }
     }
+    return md;
+  };
 
-    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${sess.title.replace(/[^a-z0-9_-]/gi, '_')}.md`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const shareNative = async (sess: MobileSession, md: string): Promise<boolean> => {
+    try {
+      const nav = navigator as Navigator & {
+        canShare?: (data: { files: File[] }) => boolean;
+      };
+      if (typeof nav.canShare === 'function') {
+        const file = new File([md], `${sessionFileSlug(sess)}.md`, {
+          type: 'text/markdown;charset=utf-8',
+        });
+        if (nav.canShare({ files: [file] }) && typeof navigator.share === 'function') {
+          await navigator.share({ files: [file], title: sess.title });
+          return true;
+        }
+      } else if (typeof navigator.share === 'function') {
+        await navigator.share({ title: sess.title, text: md });
+        return true;
+      }
+    } catch {
+      // User dismissed the sheet or share failed; fall through to download.
+    }
+    return false;
+  };
+
+  const handleExportMarkdown = async (sess: MobileSession) => {
+    const targetMessages = await loadTranscriptMessages(sess.id);
+    const md = buildTranscriptMarkdown(sess, targetMessages);
+    // On mobile WebViews a blob download often goes nowhere, so prefer
+    // the native share sheet when it can take the file.
+    if (await shareNative(sess, md)) {
+      showDrawerToast('Transcript shared.');
+      return;
+    }
+    try {
+      const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${sessionFileSlug(sess)}.md`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showDrawerToast('Transcript exported.');
+    } catch {
+      try {
+        await navigator.clipboard.writeText(md);
+        showDrawerToast('Download unavailable. Transcript copied instead.');
+      } catch {
+        showDrawerToast('Export failed: no download, share, or clipboard available.');
+      }
+    }
   };
 
   const handleCopyTranscript = async (sess: MobileSession) => {
-    const targetMessages = gatewayService.loadLocalMessages(sess.id);
-    let md = `# Session Transcript\n\n`;
-    for (const msg of targetMessages) {
-      md += `**${msg.sender === 'you' ? 'User' : 'Hermes'}:**\n${msg.content}\n\n`;
-    }
+    const targetMessages = await loadTranscriptMessages(sess.id);
+    const md = buildTranscriptMarkdown(sess, targetMessages);
     try {
       await navigator.clipboard.writeText(md);
-      setCopied(true);
-      if (copiedTimer.current) clearTimeout(copiedTimer.current);
-      copiedTimer.current = setTimeout(() => setCopied(false), 2000);
+      showDrawerToast('Transcript copied.');
     } catch {
       showDrawerToast('Copy failed: clipboard unavailable');
     }
@@ -171,17 +338,13 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
               Conversations
             </span>
             <span className="text-[11px] text-slate-500 ms-1.5">
-              ({sessions.length})
+              ({allSessions.length})
             </span>
           </div>
 
           <div className="flex items-center gap-1">
             <button
-              onClick={async () => {
-                const newId = await newSession();
-                onSelectSession(newId);
-                onClose();
-              }}
+              onClick={() => void handleNewSession()}
               className="w-7 h-7 min-w-[44px] min-h-[44px] rounded-lg flex items-center justify-center text-indigo-400 hover:text-white hover:bg-white/[0.06] transition"
               title="New Session"
               aria-label="New Session"
@@ -202,16 +365,31 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
         {/* Search & Filters */}
         <div className="p-3 border-b border-white/[0.06] space-y-2.5">
           <div className="relative">
-            <Search className="w-3.5 h-3.5 absolute start-3 top-1/2 -translate-y-1/2 text-slate-500" />
+            <Search className="w-3.5 h-3.5 absolute start-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
             <input
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search conversations..."
+              placeholder="Search title, model, or id..."
               aria-label="Search conversations"
-              className="w-full ps-9 pe-3 py-1.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+              className="w-full ps-9 pe-9 py-1.5 min-h-[44px] rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
             />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery('')}
+                aria-label="Clear search"
+                className="absolute end-1 top-1/2 -translate-y-1/2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg text-slate-500 hover:text-white transition"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
+          {query.trim() && (
+            <p className="text-[11px] text-slate-500" role="status">
+              {visibleSessions.length} of {allSessions.length} conversations match
+            </p>
+          )}
 
           {/* Clean Segmented Sort Control */}
           <div className="flex items-center gap-1 text-[11px]">
@@ -239,15 +417,43 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
 
         {/* Sessions Scroll List */}
         <div className="flex-1 overflow-y-auto p-2.5 space-y-1.5">
-          {sessions.length === 0 ? (
+          {(listState === 'stale' || listState === 'offline') && (
+            <div role="status" className="px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300">
+              <p className="font-semibold">Offline, showing cached data</p>
+              {syncedLabel && <p className="text-amber-300/70 mt-0.5">Last synced {syncedLabel}</p>}
+            </div>
+          )}
+          {pageError && (
+            <div role="alert" className="px-3 py-2 rounded-xl bg-rose-500/10 border border-rose-500/30 text-[11px] text-rose-300 space-y-1.5">
+              <p>{pageError}</p>
+              <button
+                onClick={() => void handleRetryList()}
+                className="px-2.5 min-h-[44px] rounded-lg bg-rose-600/20 hover:bg-rose-600/30 text-rose-200 font-semibold cursor-pointer"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+          {listState === 'loading' ? (
+            <div className="py-12 text-center text-xs text-slate-400" role="status" aria-label="Loading conversations">
+              <p>Loading conversations...</p>
+            </div>
+          ) : listState === 'error' ? (
+            <div className="py-12 text-center text-xs text-slate-400 space-y-3" role="alert">
+              <p>Could not load conversations.</p>
+              {pageMeta.error && <p className="text-[11px] text-slate-500">{pageMeta.error}</p>}
+              <button
+                onClick={() => void handleRetryList()}
+                className="px-4 min-h-[44px] py-1.5 rounded-xl bg-indigo-600 text-white text-xs font-medium cursor-pointer"
+              >
+                Retry
+              </button>
+            </div>
+          ) : allSessions.length === 0 ? (
             <div className="py-12 text-center text-xs text-slate-400">
               <p>No conversations yet</p>
               <button
-                onClick={async () => {
-                  const id = await newSession();
-                  onSelectSession(id);
-                  onClose();
-                }}
+                onClick={() => void handleNewSession()}
                 className="mt-3 px-3 py-1.5 rounded-xl bg-indigo-600 text-white text-xs font-medium cursor-pointer"
               >
                 Create First Session
@@ -280,11 +486,17 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                       onRename={() => {
                         setRenameTarget(sess);
                         setRenameTitle(sess.title);
+                        setRenameError('');
                       }}
-                      onFork={() => forkSession(sess.id)}
+                      onFork={() => void handleFork(sess.id)}
                       onDelete={() => setDeleteTarget(sess)}
-                      onExport={() => handleExportMarkdown(sess)}
-                      onCopy={() => handleCopyTranscript(sess)}
+                      onExport={() => void handleExportMarkdown(sess)}
+                      onCopy={() => void handleCopyTranscript(sess)}
+                      isMenuOpen={openMenuId === sess.id}
+                      onToggleMenu={() =>
+                        setOpenMenuId((prev) => (prev === sess.id ? null : sess.id))
+                      }
+                      onCloseMenu={() => setOpenMenuId(null)}
                     />
                   ))}
                 </div>
@@ -306,14 +518,29 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                     onRename={() => {
                       setRenameTarget(sess);
                       setRenameTitle(sess.title);
+                      setRenameError('');
                     }}
-                    onFork={() => forkSession(sess.id)}
+                    onFork={() => void handleFork(sess.id)}
                     onDelete={() => setDeleteTarget(sess)}
-                    onExport={() => handleExportMarkdown(sess)}
-                    onCopy={() => handleCopyTranscript(sess)}
-                  />
+                    onExport={() => void handleExportMarkdown(sess)}
+                    onCopy={() => void handleCopyTranscript(sess)}
+                    isMenuOpen={openMenuId === sess.id}
+                    onToggleMenu={() =>
+                      setOpenMenuId((prev) => (prev === sess.id ? null : sess.id))
+                    }
+                    onCloseMenu={() => setOpenMenuId(null)}
+                    />
                 ))}
               </div>
+              {hasMore && nextOffset !== null && (
+                <button
+                  onClick={() => void handleLoadMore()}
+                  disabled={loadingMore}
+                  className="w-full mt-2 px-3 min-h-[44px] py-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.07] disabled:opacity-50 text-xs font-medium text-slate-300 border border-white/[0.07] transition cursor-pointer"
+                >
+                  {loadingMore ? 'Loading...' : 'Load more conversations'}
+                </button>
+              )}
             </>
           )}
         </div>
@@ -341,11 +568,31 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
               type="text"
               value={renameTitle}
               onChange={(e) => setRenameTitle(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && renameTitle.trim() && !isSavingRename) {
+                  e.preventDefault();
+                  void (async () => {
+                    setRenameError('');
+                    setIsSavingRename(true);
+                    try {
+                      await renameSession(renameTarget.id, renameTitle.trim());
+                      setRenameTarget(null);
+                      showDrawerToast('Conversation renamed.');
+                    } catch {
+                      setRenameError('Rename failed. The conversation was not renamed.');
+                    } finally {
+                      setIsSavingRename(false);
+                    }
+                  })();
+                }
+              }}
+              // eslint-disable-next-line jsx-a11y/no-autofocus
+              autoFocus
               aria-label="Conversation title"
               className="w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
             />
             {renameError && (
-              <p className="text-xs text-rose-400">{renameError}</p>
+              <p className="text-xs text-rose-400" role="alert">{renameError}</p>
             )}
             <div className="flex justify-end gap-2 pt-1">
               <button
@@ -365,6 +612,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                   try {
                     await renameSession(renameTarget.id, renameTitle.trim());
                     setRenameTarget(null);
+                    showDrawerToast('Conversation renamed.');
                   } catch {
                     setRenameError('Rename failed. The conversation was not renamed.');
                   } finally {
@@ -403,7 +651,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
               Are you sure you want to delete "{deleteTarget.title}"?
             </p>
             {deleteError && (
-              <p className="text-xs text-rose-400">{deleteError}</p>
+              <p className="text-xs text-rose-400" role="alert">{deleteError}</p>
             )}
             <div className="flex justify-end gap-2 pt-2">
               <button
@@ -452,6 +700,9 @@ interface SessionCardProps {
   onDelete: () => void;
   onExport: () => void;
   onCopy: () => void;
+  isMenuOpen: boolean;
+  onToggleMenu: () => void;
+  onCloseMenu: () => void;
 }
 
 const SessionCard: React.FC<SessionCardProps> = ({
@@ -465,11 +716,38 @@ const SessionCard: React.FC<SessionCardProps> = ({
   onDelete,
   onExport,
   onCopy,
+  isMenuOpen,
+  onToggleMenu,
+  onCloseMenu,
 }) => {
+  const title = session.title || 'Untitled Session';
+  const menuItems: {
+    label: string;
+    icon: React.ReactNode;
+    danger?: boolean;
+    run: () => void;
+  }[] = [
+    { label: 'Export', icon: <Download className="w-3.5 h-3.5" />, run: onExport },
+    { label: 'Copy transcript', icon: <Copy className="w-3.5 h-3.5" />, run: onCopy },
+    { label: 'Rename', icon: <Edit2 className="w-3.5 h-3.5" />, run: onRename },
+    { label: 'Branch', icon: <GitFork className="w-3.5 h-3.5" />, run: onFork },
+    { label: 'Delete', icon: <Trash2 className="w-3.5 h-3.5" />, danger: true, run: onDelete },
+  ];
+
   return (
     <div
+      role="button"
+      tabIndex={0}
       onClick={onSelect}
-      className={`group relative p-3 rounded-2xl border transition-all cursor-pointer ${
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      aria-current={isSelected ? 'true' : undefined}
+      aria-label={`${title}${isSelected ? ', current conversation' : ''}`}
+      className={`group relative p-3 rounded-2xl border transition-all cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
         isSelected
           ? 'bg-indigo-600/10 border-indigo-500/40 text-white'
           : 'bg-[var(--app-card-subtle,#141920)]/60 hover:bg-[var(--app-card-subtle,#141920)] border-white/[0.05] hover:border-white/[0.1]'
@@ -477,80 +755,85 @@ const SessionCard: React.FC<SessionCardProps> = ({
     >
       <div className="flex items-start justify-between gap-2">
         <h4 className="text-xs font-medium text-slate-200 line-clamp-1 flex-1 leading-snug">
-          {session.title || 'Untitled Session'}
+          {title}
         </h4>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onTogglePin();
-          }}
-          className={`min-w-[44px] min-h-[44px] flex items-center justify-center p-1 rounded-md transition ${
-            isPinned ? 'text-amber-400' : 'text-slate-500 hover:text-slate-300'
-          }`}
-          title={isPinned ? 'Unpin' : 'Pin to favorites'}
-          aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${session.title || 'Untitled session'}`}
-          aria-pressed={isPinned}
-        >
-          <Star className={`w-3.5 h-3.5 ${isPinned ? 'fill-amber-400' : ''}`} />
-        </button>
+        <div className="flex items-center gap-0.5">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onTogglePin();
+            }}
+            className={`min-w-[44px] min-h-[44px] flex items-center justify-center p-1 rounded-md transition ${
+              isPinned ? 'text-amber-400' : 'text-slate-500 hover:text-slate-300'
+            }`}
+            title={isPinned ? 'Unpin' : 'Pin to favorites'}
+            aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${title}`}
+            aria-pressed={isPinned}
+          >
+            <Star className={`w-3.5 h-3.5 ${isPinned ? 'fill-amber-400' : ''}`} />
+          </button>
+          <div className="relative">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleMenu();
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') onCloseMenu();
+              }}
+              aria-haspopup="menu"
+              aria-expanded={isMenuOpen}
+              aria-label={`More actions for ${title}`}
+              className="min-w-[44px] min-h-[44px] flex items-center justify-center p-1 rounded-md text-slate-500 hover:text-white transition"
+            >
+              <MoreHorizontal className="w-4 h-4" />
+            </button>
+            {isMenuOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-40"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onCloseMenu();
+                  }}
+                />
+                <div
+                  role="menu"
+                  aria-label={`Actions for ${title}`}
+                  className="absolute end-0 top-full z-50 w-44 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] shadow-2xl p-1"
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') onCloseMenu();
+                  }}
+                >
+                  {menuItems.map((item) => (
+                    <button
+                      key={item.label}
+                      role="menuitem"
+                      onClick={() => {
+                        onCloseMenu();
+                        item.run();
+                      }}
+                      className={`w-full min-h-[44px] px-3 flex items-center gap-2.5 rounded-lg text-xs transition cursor-pointer ${
+                        item.danger
+                          ? 'text-rose-400 hover:bg-rose-500/10'
+                          : 'text-slate-300 hover:bg-white/[0.06] hover:text-white'
+                      }`}
+                    >
+                      {item.icon}
+                      <span>{item.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       </div>
 
       <div className="flex items-center justify-between mt-1 text-[11px] text-slate-400">
         <span>{session.messageCount} msgs</span>
         <span>{new Date(session.lastActiveAt).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span>
-      </div>
-
-      <div className="mt-2 pt-2 border-t border-white/[0.05] flex items-center justify-end flex-wrap gap-3 text-[11px] text-slate-400">
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onExport();
-          }}
-          className="hover:text-white transition flex items-center gap-1 min-h-[44px]"
-        >
-          <Download className="w-3 h-3" />
-          <span>Export</span>
-        </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onCopy();
-          }}
-          className="hover:text-white transition flex items-center gap-1 min-h-[44px]"
-        >
-          <Copy className="w-3 h-3" />
-          <span>Copy</span>
-        </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onRename();
-          }}
-          className="hover:text-white transition flex items-center gap-1 min-h-[44px]"
-        >
-          <Edit2 className="w-3 h-3" />
-          <span>Rename</span>
-        </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onFork();
-          }}
-          className="hover:text-indigo-400 transition flex items-center gap-1 min-h-[44px]"
-        >
-          <GitFork className="w-3 h-3" />
-          <span>Branch</span>
-        </button>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-          className="hover:text-rose-400 transition flex items-center gap-1 min-h-[44px]"
-        >
-          <Trash2 className="w-3 h-3" />
-          <span>Delete</span>
-        </button>
       </div>
     </div>
   );

@@ -22,6 +22,7 @@ import type {
   LogLine,
   MemoryInfo,
   MobileSession,
+  PendingApproval,
   SkillInfo,
   UsageAnalytics,
 } from '../types/hermes';
@@ -142,16 +143,17 @@ export class GatewayRepository {
 
   async sessions(signal?: AbortSignal): Promise<QueryState<MobileSession[]>> {
     try {
-      const data = await withRetry(() => this.gateway.fetchSessions(signal), {
-        idempotent: true,
-        signal,
-      });
-      return live(data);
+      // fetchSessionsPage never throws: transport failures come back as a
+      // stale/error envelope, so branch on its live/stale flags instead of
+      // treating every resolved list as live.
+      const page = await withRetry(
+        () => this.gateway.fetchSessionsPage({ limit: 100, offset: 0 }, signal),
+        { idempotent: true, signal }
+      );
+      if (page.live) return live([...page.items]);
+      if (page.stale) return stale([...page.items], toAppError(page.error || 'Sessions unavailable.'));
+      return failed([], toAppError(page.error || 'Sessions unavailable.'));
     } catch (raw) {
-      // NOTE: GatewayService.fetchSessions currently falls back to its
-      // private local cache internally and never throws, so this branch only
-      // runs once T7 lets transport errors propagate. Then it surfaces as an
-      // explicit error state instead of a silent empty list.
       return failed([], toAppError(raw));
     }
   }
@@ -195,11 +197,17 @@ export class GatewayRepository {
 
   async skills(signal?: AbortSignal): Promise<QueryState<SkillInfo[]>> {
     try {
-      const data = await withRetry(() => this.gateway.skillsList(signal), {
+      // skillsWithState never throws: failures arrive as a non-live envelope,
+      // so map non-live to failed instead of live([]).
+      const result = await withRetry(() => this.gateway.skillsWithState(signal), {
         idempotent: true,
         signal,
       });
-      return live(unwrapList(data));
+      if (result.live) return live([...result.items]);
+      if (result.stale) {
+        return stale([...result.items], toAppError(result.error || 'Skills unavailable.'));
+      }
+      return failed([], toAppError(result.error || 'Skills unavailable.'));
     } catch (raw) {
       return failed([], toAppError(raw));
     }
@@ -222,11 +230,17 @@ export class GatewayRepository {
 
   async blueprints(signal?: AbortSignal): Promise<QueryState<Blueprint[]>> {
     try {
-      const data = await withRetry(() => this.gateway.blueprints(signal), {
+      // blueprintsWithState never throws: failures arrive as a non-live
+      // envelope, so map non-live to failed instead of live([]).
+      const result = await withRetry(() => this.gateway.blueprintsWithState(signal), {
         idempotent: true,
         signal,
       });
-      return live(data);
+      if (result.live) return live([...result.items]);
+      if (result.stale) {
+        return stale([...result.items], toAppError(result.error || 'Blueprints unavailable.'));
+      }
+      return failed([], toAppError(result.error || 'Blueprints unavailable.'));
     } catch (raw) {
       return failed([], toAppError(raw));
     }
@@ -375,6 +389,24 @@ export class GatewayRepository {
       return done ? ok() : fail(toAppError(`Stop run failed for ${runId}.`));
     } catch (raw) {
       return fail(toAppError(raw));
+    }
+  }
+
+  async listPendingApprovalsDetailed(
+    signal?: AbortSignal
+  ): Promise<{ items: PendingApproval[]; reachable: boolean }> {
+    // Additive: GatewayService.listPendingApprovals returns [] both when the
+    // queue is empty and when the gateway is unreachable, so disambiguate
+    // with a health probe only when the list comes back empty.
+    try {
+      const items = await withRetry(() => this.gateway.listPendingApprovals(signal), {
+        idempotent: true,
+        signal,
+      });
+      if (items.length > 0) return { items, reachable: true };
+      return { items, reachable: await this.health(signal) };
+    } catch {
+      return { items: [], reachable: false };
     }
   }
 

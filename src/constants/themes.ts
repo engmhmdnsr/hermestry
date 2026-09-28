@@ -73,8 +73,8 @@ export const THEME_PALETTES: ThemePalette[] = [
       accentText: '#A5B4FC',
       text: '#F8FAFC',
       textMuted: '#94A3B8',
-      textDim: '#64748B',
-      inputBg: '#101426',
+      textDim: '#8296B1',
+            inputBg: '#101426',
     },
     light: {
       bg: '#F1F5F9',
@@ -90,12 +90,12 @@ export const THEME_PALETTES: ThemePalette[] = [
       accentText: '#4338CA',
       text: '#0F172A',
       textMuted: '#475569',
-      textDim: '#94A3B8',
-      inputBg: '#FFFFFF',
-    },
-  },
-  {
-    id: 'nous',
+            textDim: '#64748B',
+            inputBg: '#FFFFFF',
+          },
+        },
+        {
+          id: 'nous',
     name: 'Nous',
     description: 'Engineering dark slate, electric blue accents',
     preview: {
@@ -119,8 +119,8 @@ export const THEME_PALETTES: ThemePalette[] = [
       accentText: '#93C5FD',
       text: '#F9FAFB',
       textMuted: '#9CA3AF',
-      textDim: '#6B7280',
-      inputBg: '#141D2E',
+      textDim: '#8B94A7',
+            inputBg: '#141D2E',
     },
     light: {
       bg: '#F8FAFC',
@@ -134,9 +134,9 @@ export const THEME_PALETTES: ThemePalette[] = [
       accentHover: '#1D4ED8',
       accentSubtle: 'rgba(37, 99, 235, 0.1)',
       accentText: '#1D4ED8',
-      text: '#0F172A',
-      textMuted: '#475569',
-      textDim: '#94A3B8',
+            text: '#0F172A',
+            textMuted: '#475569',
+            textDim: '#64748B',
       inputBg: '#FFFFFF',
     },
   },
@@ -165,7 +165,7 @@ export const THEME_PALETTES: ThemePalette[] = [
       accentText: '#7EE787',
       text: '#F0F6FC',
       textMuted: '#8B949E',
-      textDim: '#6E7681',
+      textDim: '#939BA5',
       inputBg: '#0D1117',
     },
     light: {
@@ -211,7 +211,7 @@ export const THEME_PALETTES: ThemePalette[] = [
       accentText: '#CBA6F7',
       text: '#CDD6F4',
       textMuted: '#A6ADC8',
-      textDim: '#7F849C',
+      textDim: '#8B91A9',
       inputBg: '#181825',
     },
     light: {
@@ -257,7 +257,7 @@ export const THEME_PALETTES: ThemePalette[] = [
       accentText: '#D3C6AA',
       text: '#D3C6AA',
       textMuted: '#9DA9A0',
-      textDim: '#7A8478',
+      textDim: '#8B978D',
       inputBg: '#232A2E',
     },
     light: {
@@ -303,8 +303,8 @@ export const THEME_PALETTES: ThemePalette[] = [
       accentText: '#93A1A1',
       text: '#93A1A1',
       textMuted: '#839496',
-      textDim: '#586E75',
-      inputBg: '#002630',
+      textDim: '#759AA0',
+            inputBg: '#002630',
     },
     light: {
       bg: '#FDF6E3',
@@ -366,7 +366,7 @@ export const THEME_PALETTES: ThemePalette[] = [
       accentText: '#92400E',
       text: '#082F49',
       textMuted: '#0369A1',
-      textDim: '#0284C7',
+      textDim: '#1970A2',
       inputBg: '#FFFFFF',
     },
   },
@@ -441,8 +441,8 @@ export const THEME_PALETTES: ThemePalette[] = [
       accentText: '#FFFFFF',
       text: '#FAFAFA',
       textMuted: '#A3A3A3',
-      textDim: '#737373',
-      inputBg: '#101010',
+      textDim: '#8F8F8F',
+            inputBg: '#101010',
     },
     light: {
       bg: '#FFFFFF',
@@ -463,6 +463,45 @@ export const THEME_PALETTES: ThemePalette[] = [
     },
   },
 ];
+
+export interface StatusRole {
+  /** Light-safe text/icon color for this status (>=4.5:1 on card in both modes). */
+  fg: string;
+  /** Tint background for alert banners (replaces bg-*-500/10 washes in light mode). */
+  subtleBg: string;
+  /** Tint border for alert banners. */
+  border: string;
+}
+
+export interface StatusTokens {
+  success: StatusRole;
+  warning: StatusRole;
+  danger: StatusRole;
+  info: StatusRole;
+}
+
+/**
+ * Shared, palette-independent status tokens. Status hues intentionally do NOT
+ * vary per theme: success/warning/danger/info must stay recognizable across
+ * palettes, and only the fg ramp switches per mode so light-mode text keeps
+ * >=4.5:1 contrast on light cards. Components should prefer these vars over
+ * raw emerald/rose/amber/sky classes; index.css remaps the legacy status-text
+ * classes onto these tokens (and unifies the rose/red split onto danger).
+ */
+export const STATUS_TOKENS: Record<'dark' | 'light', StatusTokens> = {
+  dark: {
+    success: { fg: '#34D399', subtleBg: 'rgba(52, 211, 153, 0.12)', border: 'rgba(52, 211, 153, 0.35)' },
+    warning: { fg: '#FCD34D', subtleBg: 'rgba(252, 211, 77, 0.12)', border: 'rgba(252, 211, 77, 0.35)' },
+    danger: { fg: '#FDA4AF', subtleBg: 'rgba(253, 164, 175, 0.12)', border: 'rgba(253, 164, 175, 0.35)' },
+    info: { fg: '#7DD3FC', subtleBg: 'rgba(125, 211, 252, 0.12)', border: 'rgba(125, 211, 252, 0.35)' },
+  },
+  light: {
+    success: { fg: '#047857', subtleBg: '#ECFDF5', border: '#A7F3D0' },
+    warning: { fg: '#92400E', subtleBg: '#FFFBEB', border: '#FDE68A' },
+    danger: { fg: '#BE123C', subtleBg: '#FFF1F2', border: '#FECDD3' },
+    info: { fg: '#0369A1', subtleBg: '#F0F9FF', border: '#BAE6FD' },
+  },
+};
 
 export const applyThemeToDom = (paletteId: string, mode: ThemeMode) => {
   const palette = THEME_PALETTES.find((p) => p.id === paletteId) || THEME_PALETTES[0];
@@ -493,13 +532,27 @@ export const applyThemeToDom = (paletteId: string, mode: ThemeMode) => {
   root.style.setProperty('--app-text-dim', themeColors.textDim);
   root.style.setProperty('--app-input-bg', themeColors.inputBg);
 
+  const status = resolvedDark ? STATUS_TOKENS.dark : STATUS_TOKENS.light;
+  root.style.setProperty('--app-success', status.success.fg);
+  root.style.setProperty('--app-success-subtle', status.success.subtleBg);
+  root.style.setProperty('--app-success-border', status.success.border);
+  root.style.setProperty('--app-warning', status.warning.fg);
+  root.style.setProperty('--app-warning-subtle', status.warning.subtleBg);
+  root.style.setProperty('--app-warning-border', status.warning.border);
+  root.style.setProperty('--app-danger', status.danger.fg);
+  root.style.setProperty('--app-danger-subtle', status.danger.subtleBg);
+  root.style.setProperty('--app-danger-border', status.danger.border);
+  root.style.setProperty('--app-info', status.info.fg);
+  root.style.setProperty('--app-info-subtle', status.info.subtleBg);
+  root.style.setProperty('--app-info-border', status.info.border);
+
   root.setAttribute('data-theme', palette.id);
   root.setAttribute('data-mode', resolvedDark ? 'dark' : 'light');
-  if (resolvedDark) {
-    root.classList.add('dark');
-  } else {
-    root.classList.remove('dark');
-  }
+  // NOTE: data-mode is the single source of truth for light/dark. The legacy
+  // `.dark` class toggle was a dead path (the only `dark:` variant in the
+  // tree is ChatTab's `dark:prose-invert`, and Tailwind v4 resolves `dark:`
+  // from prefers-color-scheme, not from `.dark`), so it is intentionally not
+  // toggled. index.html must also drop its hardcoded `class="dark"`.
 };
 
 // Live OS-theme tracking for `system` mode. Returns an unsubscribe function.

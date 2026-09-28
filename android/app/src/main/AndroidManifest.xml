@@ -46,15 +46,18 @@
         <service
             android:name=".service.MobileGatewayService"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="dataSync|specialUse">
+            <!-- dataSync covers SDK 29-33 (specialUse needs API 34+); the
+                 service and BootWorker pick specialUse on 34+ and dataSync
+                 below, so the runtime type always matches this declaration. -->
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Local AI gateway process: keeps the on-device Hermes server reachable while you use the app" />
         </service>
-        <!-- WorkManager internal FGS host: specialUse to match the BootWorker ForegroundInfo type. -->
+        <!-- WorkManager internal FGS host: both types to match the BootWorker ForegroundInfo fallback. -->
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
-            android:foregroundServiceType="specialUse"
+            android:foregroundServiceType="dataSync|specialUse"
             tools:node="merge">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
@@ -75,6 +78,7 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- No POST_NOTIFICATIONS by design: the FGS notification needs no permission. -->

@@ -2,6 +2,7 @@
 
 @layer base {
   :root {
+    color-scheme: dark light;
     --app-bg: #090B14;
     --app-sidebar: #06070E;
     --app-card: #0E1222;
@@ -15,9 +16,31 @@
     --app-accent-text: #A5B4FC;
     --app-text: #F8FAFC;
     --app-text-muted: #94A3B8;
-    --app-text-dim: #64748B;
+    --app-text-dim: #8296B1;
     --app-input-bg: #101426;
+    --app-success: #34D399;
+    --app-success-subtle: rgba(52, 211, 153, 0.12);
+    --app-success-border: rgba(52, 211, 153, 0.35);
+    --app-warning: #FCD34D;
+    --app-warning-subtle: rgba(252, 211, 77, 0.12);
+    --app-warning-border: rgba(252, 211, 77, 0.35);
+    --app-danger: #FDA4AF;
+    --app-danger-subtle: rgba(253, 164, 175, 0.12);
+    --app-danger-border: rgba(253, 164, 175, 0.35);
+    --app-info: #7DD3FC;
+    --app-info-subtle: rgba(125, 211, 252, 0.12);
+    --app-info-border: rgba(125, 211, 252, 0.35);
+    /* Radius scale: map one-off rounded-[*px] values onto these steps
+       (chat composer rounded-[22px] -> var(--radius-xl)). */
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --radius-xl: 20px;
     --font-scale: 1;
+  }
+
+  [data-mode="dark"] {
+    color-scheme: dark;
   }
 
   /* Chat font scale (settings.fontScale mirrors here from SettingsTab).
@@ -168,7 +191,7 @@
   color: var(--app-text, #0F172A) !important;
 }
 
-[data-mode="light"] .text-white:not(button.bg-indigo-600 *, button.bg-indigo-600, button.bg-indigo-600\/90, button.bg-indigo-600\/80, button.bg-indigo-500 *, button.bg-indigo-500, .bg-emerald-600 *, .bg-rose-500 *, .bg-emerald-500 *, .text-white-keep) {
+[data-mode="light"] .text-white:not(button.bg-indigo-600 *, button.bg-indigo-600, button.bg-indigo-600\/90, button.bg-indigo-600\/80, button.bg-indigo-500 *, button.bg-indigo-500, .bg-emerald-600 *, .bg-emerald-500 *, .bg-rose-500 *, .bg-rose-600 *, .bg-rose-600, .bg-amber-600 *, .bg-amber-600, .bg-red-600 *, .bg-red-600, .text-white-keep) {
   color: var(--app-text, #0F172A) !important;
 }
 
@@ -229,15 +252,28 @@
   box-shadow: 0 0 0 2px var(--app-accent-subtle, rgba(99, 102, 241, 0.35));
 }
 
+/* Placeholders follow the dim token so they stay readable per mode. */
+:where(input, select, textarea)::placeholder {
+  color: var(--app-text-dim, #8296B1);
+  opacity: 1;
+}
+
 /* Credential / token fields stay LTR under RTL so typed secrets,
    placeholders and mono alignment behave (Arabic UI test case). */
-[dir="rtl"] :where(input[type="password"], input[type="email"], input[type="url"], input[type="tel"]) {
+[dir="rtl"] :where(input[type="password"], input[type="email"]) {
   direction: ltr;
   text-align: left;
 }
-[dir="rtl"] :where(input[type="password"], input[type="email"], input[type="url"], input[type="tel"])::placeholder {
+/* Placeholder LTR is scoped to password secrets only: email/url/tel
+   placeholders (and all other fields) follow the UI direction so Arabic
+   placeholder text aligns right instead of being forced left. */
+[dir="rtl"] :where(input[type="password"])::placeholder {
   direction: ltr;
   text-align: left;
+}
+[dir="rtl"] :where(input[type="email"], input[type="url"], input[type="tel"])::placeholder {
+  direction: inherit;
+  text-align: right;
 }
 
 /* ==========================================================================
@@ -383,5 +419,164 @@
   .slide-in-from-left,
   .slide-in-from-right {
     animation: none;
+  }
+}
+
+/* ==========================================================================
+   F-THEME: STATUS TOKENS, TAB TRANSITION, MODAL ZOOM, SKELETON
+   ========================================================================== */
+
+/* Status-text unification (both modes): legacy emerald/rose/amber/sky text
+   classes resolve onto the mode-aware status tokens, and the rose/red split
+   collapses onto --app-danger. Solid bg-* status badges are untouched. */
+.text-emerald-300,
+.text-emerald-400 {
+  color: var(--app-success, #34D399) !important;
+}
+.text-rose-200,
+.text-rose-300,
+.text-rose-400,
+.text-red-300,
+.text-red-400 {
+  color: var(--app-danger, #FDA4AF) !important;
+}
+.text-amber-300,
+.text-amber-400 {
+  color: var(--app-warning, #FCD34D) !important;
+}
+.text-sky-300,
+.text-sky-400 {
+  color: var(--app-info, #7DD3FC) !important;
+}
+
+/* Light-mode alert washes: translucent dark-mode tints are near-invisible
+   on white, so banner bg/border tints remap onto opaque light-safe tokens. */
+[data-mode="light"] .bg-rose-500\/10,
+[data-mode="light"] .bg-rose-500\/15,
+[data-mode="light"] .bg-rose-600\/20,
+[data-mode="light"] .bg-red-500\/10,
+[data-mode="light"] .bg-red-500\/20 {
+  background-color: var(--app-danger-subtle, #FFF1F2) !important;
+}
+[data-mode="light"] .bg-amber-500\/10,
+[data-mode="light"] .bg-amber-500\/20 {
+  background-color: var(--app-warning-subtle, #FFFBEB) !important;
+}
+[data-mode="light"] .bg-emerald-500\/15 {
+  background-color: var(--app-success-subtle, #ECFDF5) !important;
+}
+[data-mode="light"] .border-rose-500\/20,
+[data-mode="light"] .border-rose-500\/30,
+[data-mode="light"] .border-red-500\/30 {
+  border-color: var(--app-danger-border, #FECDD3) !important;
+}
+[data-mode="light"] .border-amber-500\/20,
+[data-mode="light"] .border-amber-500\/30 {
+  border-color: var(--app-warning-border, #FDE68A) !important;
+}
+[data-mode="light"] .border-emerald-500\/30 {
+  border-color: var(--app-success-border, #A7F3D0) !important;
+}
+
+/* Tab switch: tab roots remount on switch inside #main-content, so a
+   mount-gated 150ms fade is a pure-CSS tab transition. Guarded to
+   no-preference so reduced-motion users get instant switches. */
+#main-content {
+  transition: background-color 150ms ease;
+}
+@media (prefers-reduced-motion: no-preference) {
+  #main-content > * {
+    animation: hm-fade-in 150ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #main-content {
+    transition: none;
+  }
+}
+
+/* Modal entrance standard: `animate-in fade-in zoom-in-95 duration-150` on
+   the panel. Replaces the current fade-only entrances for consistency. */
+@keyframes hm-zoom-in-95 {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+.zoom-in-95 {
+  animation-name: hm-zoom-in-95;
+  animation-duration: 150ms;
+  animation-fill-mode: both;
+}
+.animate-in.fade-in.zoom-in-95 {
+  animation-name: hm-fade-in, hm-zoom-in-95;
+  animation-duration: 150ms;
+  animation-fill-mode: both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .zoom-in-95,
+  .animate-in.fade-in.zoom-in-95 {
+    animation: none;
+  }
+}
+
+/* Skeleton shimmer for lazy-tab fallbacks (see ui/Skeleton.tsx).
+   Track uses the card-subtle token; sheen uses the border token. */
+.hm-skeleton {
+  position: relative;
+  overflow: hidden;
+  background-color: var(--app-card-subtle, #14182E);
+  border-radius: var(--radius-md, 10px);
+  min-height: 0.75rem;
+}
+.hm-skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--app-border-subtle, rgba(255, 255, 255, 0.06)),
+    transparent
+  );
+  animation: hm-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes hm-shimmer {
+  100% { transform: translateX(100%); }
+}
+@keyframes hm-shimmer-rtl {
+  from { transform: translateX(100%); }
+  to { transform: translateX(-100%); }
+}
+[dir="rtl"] .hm-skeleton::after {
+  animation-name: hm-shimmer-rtl;
+}
+.hm-tab-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  flex: 1;
+}
+.hm-tab-skeleton-hero {
+  height: 3.5rem;
+  border-radius: var(--radius-lg, 14px);
+}
+.hm-tab-skeleton-row {
+  height: 0.875rem;
+}
+@media (prefers-reduced-motion: reduce) {
+  .hm-skeleton::after {
+    animation: none;
+  }
+}
+
+/* Perf/a11y guard: drop backdrop blur entirely when the OS requests reduced
+   transparency. Parent-side trim (unowned tsx): Header/BottomNav
+   backdrop-blur-xl -> blur-md, and remove blur from stacked modal/scrim
+   backdrops (SessionsDrawer x3, JobsTab x2, SettingsTab x4, ChatTab x1). */
+@media (prefers-reduced-transparency: reduce) {
+  :where([class*="backdrop-blur"]) {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 }

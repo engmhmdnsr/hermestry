@@ -1,3 +1,19 @@
+// Terminology freeze (U15 microcopy standard). Use exactly one name per
+// concept across ALL locales and components , do not reintroduce synonyms:
+//   Gateway  = the local on-device service the app talks to (user copy).
+//              "Daemon"/"Server" appear only in developer diagnostics.
+//   Provider = an LLM endpoint profile (DeepSeek, OpenAI, ...). Never
+//              "Profile" in user copy; "profile" survives only as the
+//              settings-storage field name (profileLabel = Profile Name).
+//   Cron Job = a scheduled background job. "Cron" is always kept as the
+//              Latin gloss: EN "Cron Job", AR "مهمة Cron". Never bare "Job".
+//   Session  = one workspace conversation. Forking = "Fork Session" /
+//              "استنساخ الجلسة". Never "branch"/"dump"/"تفريغ".
+//   Assistant= the agent persona. AR "المساعد". Never "الوكيل" (that word
+//              is reserved for a network proxy: customProxy = "وكيل مخصص").
+//   Blueprint= kept as the Latin gloss: EN "Blueprint", AR "Blueprint".
+// Brand/Latin tokens inside RTL strings MUST be wrapped in U+2068..U+2069
+// isolates so "(DeepSeek وOpenAI)"-style runs render in the right order.
 export interface LanguageItem {
   id: string;
   name: string;
@@ -57,7 +73,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
 
     // Agent States
     agentStatusOnline: 'Active & Listening',
-    agentStatusThinking: 'Deliberating',
+    agentStatusThinking: 'Thinking',
     agentStatusExecuting: 'Executing Tools',
     agentStatusWaiting: 'Action Required',
     agentStatusConnecting: 'Connecting Daemon',
@@ -65,7 +81,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     agentStatusError: 'Agent Error',
     agentStatusOnlineDesc: 'Ready to process commands, tools, and background requests',
     agentStatusThinkingDesc: 'Formulating step-by-step reasoning and plan of action',
-    agentStatusExecutingDesc: 'Running tool invocations and streaming generated payload',
+    agentStatusExecutingDesc: 'Running tools and streaming the result',
 
     // Home Overview
     daemonSupervised: 'Daemon Supervised',
@@ -251,7 +267,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     launchRoutine: 'Launch Routine',
     editModelProvider: 'Edit Model Provider',
     addModelProvider: 'Add Model Provider',
-    profileLabel: 'Profile Label',
+    profileLabel: 'Profile Name',
     profilePlaceholder: 'e.g. My Anthropic Key / DeepSeek Work',
     optionalLocal: '(optional for local providers)',
     optionalSuffix: '(optional)',
@@ -271,7 +287,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     stepCredentials: 'API Credentials',
     stepStart: 'Start Daemon',
     welcomeTitle: 'Welcome to Hermes Mobile',
-    welcomeDesc: 'Hermes Mobile gives you a native on-device gateway experience with streaming tool executions, reasoning accordions, autonomous scheduled cron jobs, and multi-model access.',
+    welcomeDesc: 'Chat with Hermes on your device: live tool runs, visible reasoning, scheduled jobs, and multiple models.',
     zeroTelemetry: 'Zero-Cloud Telemetry',
     zeroTelemetryDesc: 'Your keys, chat histories, and cron triggers stay strictly on your device.',
     continue: 'Continue',
@@ -313,6 +329,91 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     timeHourAgo: '{n} hr ago',
     timeDayAgo: '{n} days ago',
     timeNever: 'Never',
+
+    // Plural unit forms (formatHomeAgo picks via Intl.PluralRules)
+    timeMinAgoZero: '{n} min ago',
+    timeMinAgoOne: '{n} min ago',
+    timeMinAgoTwo: '{n} min ago',
+    timeMinAgoFew: '{n} min ago',
+    timeMinAgoMany: '{n} min ago',
+    timeMinAgoOther: '{n} min ago',
+    timeHourAgoZero: '{n} hr ago',
+    timeHourAgoOne: '{n} hr ago',
+    timeHourAgoTwo: '{n} hr ago',
+    timeHourAgoFew: '{n} hr ago',
+    timeHourAgoMany: '{n} hr ago',
+    timeHourAgoOther: '{n} hr ago',
+    timeDayAgoZero: '{n} days ago',
+    timeDayAgoOne: '{n} day ago',
+    timeDayAgoTwo: '{n} days ago',
+    timeDayAgoFew: '{n} days ago',
+    timeDayAgoMany: '{n} days ago',
+    timeDayAgoOther: '{n} days ago',
+
+    // Approval card field labels
+    apprRisk: 'Risk',
+    apprTool: 'Tool',
+    apprCommand: 'Command',
+    apprPath: 'Path',
+    apprCwd: 'Working directory',
+    apprReason: 'Reason',
+    apprRun: 'Run',
+    apprSession: 'Session',
+
+    // Auto-approve gate
+    gateTitle: 'Auto-Approve Tool Actions',
+    gateOffDesc: 'OFF by default. Enabling skips shell and file confirmations for the scopes you pick.',
+    gateOnFor: 'Auto-approve is ON for:',
+    gateOnNone: 'none',
+    gateAdvice: 'Shell and file actions in these scopes run without confirmation. Disable when done.',
+    gateDisable: 'Disable auto-approve',
+    gateWarning: 'Warning: auto-approved commands run without review and can modify files, leak data, or install software. Pick the narrowest scopes you need.',
+    gateAck: 'I understand auto-approved actions run without confirmation.',
+    gateTypeToConfirm: 'Type {phrase} to confirm enabling.',
+    gateConfirmAria: 'Confirmation phrase input. Type ENABLE to enable auto-approve.',
+    gateEnableFor: 'Enable for selected scopes',
+    gateErrAck: 'Confirm you understand the risk first.',
+    gateErrScope: 'Select at least one scope. Enabling with no scopes is not allowed.',
+    gateErrPhrase: 'Type {phrase} to confirm.',
+    scopeRead: 'Read',
+    scopeDescRead: 'Read-only actions: file reads and listings.',
+    scopeWrite: 'Write',
+    scopeDescWrite: 'File writes and edits.',
+    scopeExec: 'Run commands',
+    scopeDescExec: 'Shell and command execution.',
+    scopeNetwork: 'Network',
+    scopeDescNetwork: 'Outbound network calls and fetches.',
+    scopeInstall: 'Install',
+    scopeDescInstall: 'Package installs and system changes.',
+
+    // App lock gate (single sentence , never concatenate fragments)
+    lockEnterPin: 'Enter your {n}-digit PIN to access Hermes Mobile',
+
+    // Error center: cause + action, no raw addresses or log paths
+    errUnavailable: 'The gateway is unreachable. Make sure it is running, then try again.',
+    errAuth: 'The gateway rejected the key. Check the gateway server key, then try again.',
+    errProvider: 'The model provider refused the request (billing, quota, or key). Check the provider key, then try again.',
+    errModel: 'The selected model is unknown or unavailable. Pick a different model, then try again.',
+    errTooLarge: 'The request is too large for the gateway. Shorten the chat or attachments, then try again.',
+    errApproval: 'This action needs your approval before it can run. Review it under Approvals.',
+    errRateLimited: 'The gateway is rate-limiting requests. Wait a moment, then try again.',
+    errBusy: 'The gateway is busy. Wait a moment, then try again.',
+    errValidation: 'The gateway rejected the request as invalid. Fix the highlighted fields, then try again.',
+    errNotFound: 'The requested item was not found. It may have been deleted. Refresh, then try again.',
+    errUnknown: 'Something went wrong. Try again, and run diagnostics if it continues.',
+    errCancelled: 'The request was cancelled.',
+
+    // Confirm dialogs (keys only , SettingsTab owns the dialogs)
+    confirmDeleteProvider: 'Delete this provider? This cannot be undone.',
+    confirmClearLogs: 'Clear all gateway logs? This cannot be undone.',
+    confirmRestartDaemon: 'Restart the gateway service now?',
+    confirmDisableAutoApprove: 'Disable auto-approve? Tool actions will need confirmation again.',
+
+    // Inspector (keys only , inspector UI lives outside owned files)
+    inspectorTitle: 'Inspector',
+    inspectorEmpty: 'Select a session or run to inspect the details.',
+    inspectorDetails: 'Details',
+    inspectorClose: 'Close inspector',
   },
 
   ar: {
@@ -345,7 +446,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     starting: 'جارٍ البدء',
     approvalNeeded: 'موافقة مطلوبة',
     inspector: 'المفتش',
-    deskTag: 'مكتبي',
+    deskTag: 'DESK',
     newSession: 'جلسة جديدة',
     filterSessions: 'تصفية الجلسات...',
     search: 'بحث',
@@ -358,7 +459,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     agentStatusWaiting: 'إجراء يتطلب الموافقة',
     agentStatusConnecting: 'جارٍ الاتصال بالخدمة',
     agentStatusOffline: 'الخدمة غير متصلة',
-    agentStatusError: 'خطأ في الوكيل',
+    agentStatusError: 'خطأ في المساعد',
     agentStatusOnlineDesc: 'جاهز لمعالجة الأوامر واستدعاء الأدوات والمهام الخلفية',
     agentStatusThinkingDesc: 'صياغة التفكير المنطقي خطوة بخطوة وتحديد خطة العمل',
     agentStatusExecutingDesc: 'تشغيل أوامر الأدوات ودفق المخرجات المستلمة',
@@ -390,18 +491,18 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     edit: 'تعديل',
     delete: 'حذف',
     apiKey: 'مفتاح API',
-    baseUrl: 'رابط الخادم (Base URL)',
+    baseUrl: 'رابط الخادم (⁨Base URL⁩)',
     defaultModel: 'النموذج الافتراضي',
     testKey: 'اختبار المفتاح',
     testingKey: 'جارٍ الاختبار...',
     keyValid: 'المفتاح صالح ويعمل بنجاح',
     keyInvalid: 'فشل التحقق من المفتاح',
     modelCatalog: 'نوع المزود',
-    helpToday: 'كيف يمكن أن يساعدك Hermes اليوم؟',
+    helpToday: 'كيف يمكن أن يساعدك ⁨Hermes⁩ اليوم؟',
     formulating: 'جارٍ صياغة الرد...',
     noModel: 'لا يوجد نموذج',
-    selectProvider: 'اختر مزودا...',
-    providerRequired: 'اختر المزود اولا.',
+    selectProvider: 'اختر مزودًا...',
+    providerRequired: 'اختر المزود أولًا.',
     noModelsMatch: 'لا توجد نماذج تطابق بحثك.',
     noModelsProvider: 'لا توجد نماذج لهذا المزود.',
     approvalTitle: 'مطلوب موافقة أمنية',
@@ -438,7 +539,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     askHermes: 'أرسل رسالة إلى هيرمس أو الصق التعليمات...',
     send: 'إرسال',
     stop: 'إيقاف التنفيذ',
-    thinkingProcess: 'سلسلة التفكير المنطقي',
+    thinkingProcess: 'عملية التفكير',
     toolCalls: 'تنفيذ الأدوات والطرفية',
     emptyChatTitle: 'مساعد هيرمس المستقل',
     emptyChatDesc: 'تفكير ذاتي، تنفيذ أدوات الطرفية، وتنسيق المهام البرمجية محلياً.',
@@ -446,18 +547,18 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     searchModels: 'تصفية النماذج أو المسارات المخصصة...',
     clearChat: 'مسح السجل',
     copy: 'نسخ',
-    fork: 'تفريغ الجلسة',
+    fork: 'استنساخ الجلسة',
     exportChat: 'تصدير كملف Markdown',
     approve: 'موافقة وتنفيذ',
     reject: 'رفض',
 
     // Jobs Screen
-    scheduledJobsTitle: 'المهام المجدولة (Cron)',
-    scheduledJobsDesc: 'استيقاظ تلقائي للوكيل في أوقات مجدولة بشكل دوري',
+    scheduledJobsTitle: 'مهام Cron المجدولة',
+    scheduledJobsDesc: 'تنبيه تلقائي للمساعد وفق جدول Cron دوري',
     newJob: '+ مهمة مجدولة جديدة',
     jobName: 'اسم المهمة',
     cronSchedule: 'توقيت Cron (مثال: 0 9 * * *)',
-    instructions: 'تعليمات الوكيل البرمجية',
+    instructions: 'تعليمات المساعد',
     enabled: 'مفعل',
     actions: 'الإجراءات',
     runNow: 'تشغيل الآن',
@@ -465,7 +566,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     lastRun: 'آخر تشغيل',
 
     // Settings: providers
-    providersDesc: 'قم بتوصيل عدة مزودات نماذج لغوية في نفس الوقت (DeepSeek وOpenAI وAnthropic وGemini وOllama وغيرها) والتبديل بينها مباشرة.',
+    providersDesc: 'قم بتوصيل عدة مزودات نماذج لغوية في نفس الوقت (⁨DeepSeek⁩ و⁨OpenAI⁩ و⁨Anthropic⁩ و⁨Gemini⁩ و⁨Ollama⁩ وغيرها) والتبديل بينها مباشرة.',
     noProviders: 'لا توجد مزودات مضافة. أضف واحداً لبدء المحادثة.',
     defaultModelShort: 'النموذج الافتراضي',
     customProxy: 'وكيل مخصص',
@@ -499,7 +600,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     auditing: 'جارٍ الفحص…',
     runDiagnostics: 'تشغيل التشخيصات',
     snapshotTitle: 'نسخة محلية',
-    snapshotDesc: 'حفظ جلسات مساحة العمل وجداول cron والإعدادات.',
+    snapshotDesc: 'حفظ جلسات مساحة العمل وجداول Cron والإعدادات.',
     backingUp: 'جارٍ النسخ…',
     createSnapshot: 'إنشاء نسخة',
     debugTitle: 'حزمة التصحيح',
@@ -534,29 +635,29 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     saveShort: 'حفظ',
 
     // Settings: library
-    skillsCatalog: 'كتالوج مهارات الوكيل',
+    skillsCatalog: 'كتالوج مهارات المساعد',
     skillsCatalogDesc: 'إضافات أدوات نمطية متاحة ضمن سياق الطلب',
     refresh: 'تحديث',
     memoryTitle: 'الذاكرة الدلالية الدائمة',
     memoryEmpty: 'متجهات دلالية طويلة الأمد نشطة عبر الجلسات.',
     providerLabel: 'المزود',
-    entriesLabel: 'المدخلات',
+    entriesLabel: 'السجلات',
     localVector: 'local-vector',
-    blueprintsTitle: 'سير عمل الأتمتة (Blueprints)',
+    blueprintsTitle: 'سير عمل Blueprint للأتمتة',
     launch: 'تشغيل',
     launchRoutine: 'تشغيل الروتين',
     editModelProvider: 'تعديل مزود النموذج',
     addModelProvider: 'إضافة مزود نموذج',
-    profileLabel: 'تسمية الملف',
-    profilePlaceholder: 'مثال: مفتاح Anthropic الخاص / عمل DeepSeek',
+    profileLabel: 'اسم الملف الشخصي',
+    profilePlaceholder: 'مثال: مفتاح ⁨Anthropic⁩ الخاص / عمل ⁨DeepSeek⁩',
     optionalLocal: '(اختياري للمزودات المحلية)',
     optionalSuffix: '(اختياري)',
     modelLabel: 'النموذج',
     autostartWizardDesc: 'عند تفعيل هذا الخيار، تُهيَّأ البوابة تلقائياً عند فتح التطبيق.',
-    keyRequired: 'مفتاح API مطلوب لهذا المزود (يعمل LM Studio وOllama Cloud بدونه).',
-    unknownProviderUrl: 'معرف المزود غير معروف: يلزم إدخال رابط Base URL.',
+    keyRequired: 'مفتاح API مطلوب لهذا المزود (يعمل ⁨LM Studio⁩ و⁨Ollama Cloud⁩ بدونه).',
+    unknownProviderUrl: 'معرف المزود غير معروف: يلزم إدخال رابط ⁨Base URL⁩.',
     customProviderRequired: 'أدخل معرف مزود مخصص.',
-    customUrlRequired: 'المزودات المخصصة تحتاج رابط Base URL.',
+    customUrlRequired: 'المزودات المخصصة تحتاج رابط ⁨Base URL⁩.',
     saveEnable: 'حفظ وتفعيل',
 
     // Onboarding wizard
@@ -567,9 +668,9 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     stepCredentials: 'بيانات API',
     stepStart: 'تشغيل الخدمة',
     welcomeTitle: 'مرحباً بك في هيرمس موبايل',
-    welcomeDesc: 'يمنحك هيرمس موبايل تجربة بوابة أصلية على الجهاز مع تنفيذ الأدوات بالبث المباشر وترتيبات الاستدلال ومهام cron المجدولة ذاتية التشغيل والوصول متعدد النماذج.',
+    welcomeDesc: 'تحدث مع هيرمس على جهازك: تشغيل مباشر للأدوات، وعرض منطقي للتفكير، ومهام مجدولة، ونماذج متعددة.',
     zeroTelemetry: 'خصوصية تامة بلا سحابة',
-    zeroTelemetryDesc: 'مفاتيحك وسجلات محادثاتك ومحفزات cron تبقى على جهازك فقط.',
+    zeroTelemetryDesc: 'مفاتيحك وسجلات محادثاتك ومحفزات Cron تبقى على جهازك فقط.',
     continue: 'متابعة',
     preparingEnv: 'تجهيز بيئة البوابة',
     installingMsg: 'جارٍ فك طبقات التشغيل وضبط مقابس الخدمة…',
@@ -609,6 +710,92 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     timeHourAgo: 'قبل {n} ساعة',
     timeDayAgo: 'قبل {n} يوم',
     timeNever: 'أبداً',
+
+    // صيغ الجمع (يختارها formatHomeAgo عبر Intl.PluralRules)
+    timeMinAgoZero: 'قبل {n} دقيقة',
+    timeMinAgoOne: 'قبل دقيقة',
+    timeMinAgoTwo: 'قبل دقيقتين',
+    timeMinAgoFew: 'قبل {n} دقائق',
+    timeMinAgoMany: 'قبل {n} دقيقة',
+    timeMinAgoOther: 'قبل {n} دقيقة',
+    timeHourAgoZero: 'قبل {n} ساعة',
+    timeHourAgoOne: 'قبل ساعة',
+    timeHourAgoTwo: 'قبل ساعتين',
+    timeHourAgoFew: 'قبل {n} ساعات',
+    timeHourAgoMany: 'قبل {n} ساعة',
+    timeHourAgoOther: 'قبل {n} ساعة',
+    timeDayAgoZero: 'قبل {n} يوم',
+    timeDayAgoOne: 'قبل يوم',
+    timeDayAgoTwo: 'قبل يومين',
+    timeDayAgoFew: 'قبل {n} أيام',
+    timeDayAgoMany: 'قبل {n} يومًا',
+    timeDayAgoOther: 'قبل {n} يوم',
+
+    // بطاقة الموافقة
+    apprRisk: 'الخطورة',
+    apprTool: 'الأداة',
+    apprCommand: 'الأمر',
+    apprPath: 'المسار',
+    apprCwd: 'دليل العمل',
+    apprReason: 'السبب',
+    apprRun: 'التشغيل',
+    apprSession: 'الجلسة',
+
+    // بوابة الموافقة التلقائية
+    gateTitle: 'الموافقة التلقائية على الأدوات',
+    gateOffDesc: 'متوقفة افتراضيًا. التفعيل يتجاوز تأكيدات الطرفية والملفات للنطاقات التي تختارها.',
+    gateOnFor: 'الموافقة التلقائية مفعّلة لـ:',
+    gateOnNone: 'لا شيء',
+    gateAdvice: 'إجراءات الطرفية والملفات ضمن هذه النطاقات تعمل دون تأكيد. عطّلها عند الانتهاء.',
+    gateDisable: 'تعطيل الموافقة التلقائية',
+    gateWarning: 'تحذير: الأوامر المعتمدة تلقائيًا تعمل دون مراجعة وقد تعدّل الملفات أو تسرّب البيانات أو تثبّت برامج. اختر أضيق النطاقات.',
+    gateAck: 'أدرك أن الإجراءات المعتمدة تلقائيًا تعمل دون تأكيد.',
+    gateTypeToConfirm: 'اكتب {phrase} للتأكيد.',
+    gateConfirmAria: 'حقل عبارة التأكيد. اكتب ENABLE لتفعيل الموافقة التلقائية.',
+    gateEnableFor: 'تفعيل للنطاقات المحددة',
+    gateErrAck: 'أكّد أنك تدرك الخطورة أولًا.',
+    gateErrScope: 'اختر نطاقًا واحدًا على الأقل. لا يُسمح بالتفعيل دون نطاقات.',
+    gateErrPhrase: 'اكتب {phrase} للتأكيد.',
+    scopeRead: 'قراءة',
+    scopeDescRead: 'إجراءات القراءة فقط: قراءة الملفات وسردها.',
+    scopeWrite: 'كتابة',
+    scopeDescWrite: 'كتابة الملفات وتعديلها.',
+    scopeExec: 'تنفيذ الأوامر',
+    scopeDescExec: 'تنفيذ أوامر الطرفية.',
+    scopeNetwork: 'الشبكة',
+    scopeDescNetwork: 'طلبات الشبكة الصادرة والجلب.',
+    scopeInstall: 'التثبيت',
+    scopeDescInstall: 'تثبيت الحزم وتغييرات النظام.',
+
+    // بوابة القفل (جملة واحدة , لا تقسيم)
+    // ملاحظة: enterPin وdigitPinAccess مبقى عليهما للتوافق مع AppLockGate فقط.
+    lockEnterPin: 'أدخل رمز PIN المكوّن من {n} أرقام للوصول إلى هيرمس موبايل',
+
+    // مركز الأخطاء: السبب + الإجراء، دون عناوين أو مسارات خام
+    errUnavailable: 'تعذّر الوصول إلى البوابة. تأكد أنها تعمل، ثم حاول مجددًا.',
+    errAuth: 'رفضت البوابة المفتاح. تحقق من مفتاح خادم البوابة، ثم حاول مجددًا.',
+    errProvider: 'رفض مزود النموذج الطلب (فوترة أو حصة أو مفتاح). تحقق من مفتاح المزود، ثم حاول مجددًا.',
+    errModel: 'النموذج المحدد غير معروف أو غير متاح. اختر نموذجًا آخر، ثم حاول مجددًا.',
+    errTooLarge: 'الطلب كبير جدًا على البوابة. قصّر المحادثة أو المرفقات، ثم حاول مجددًا.',
+    errApproval: 'يحتاج هذا الإجراء إلى موافقتك قبل تنفيذه. راجعه ضمن الموافقات.',
+    errRateLimited: 'البوابة تحدّ من معدل الطلبات. انتظر قليلًا، ثم حاول مجددًا.',
+    errBusy: 'البوابة مشغولة. انتظر قليلًا، ثم حاول مجددًا.',
+    errValidation: 'رفضت البوابة الطلب لأنه غير صالح. صحّح الحقول المحددة، ثم حاول مجددًا.',
+    errNotFound: 'العنصر المطلوب غير موجود. ربما حُذف. حدّث، ثم حاول مجددًا.',
+    errUnknown: 'حدث خطأ ما. حاول مجددًا، وشغّل التشخيصات إذا استمر.',
+    errCancelled: 'تم إلغاء الطلب.',
+
+    // حوارات التأكيد (المفاتيح فقط , SettingsTab يملك الحوارات)
+    confirmDeleteProvider: 'حذف هذا المزود؟ لا يمكن التراجع.',
+    confirmClearLogs: 'مسح جميع سجلات البوابة؟ لا يمكن التراجع.',
+    confirmRestartDaemon: 'إعادة تشغيل خدمة البوابة الآن؟',
+    confirmDisableAutoApprove: 'تعطيل الموافقة التلقائية؟ ستعود إجراءات الأدوات لتطلب التأكيد.',
+
+    // المفتش (المفاتيح فقط)
+    inspectorTitle: 'المفتش',
+    inspectorEmpty: 'اختر جلسة أو تشغيلًا لعرض التفاصيل.',
+    inspectorDetails: 'التفاصيل',
+    inspectorClose: 'إغلاق المفتش',
   },
 
   zh: {
@@ -1358,14 +1545,40 @@ export const formatDateTime = (value: number | string | Date, lang: string = 'en
 
 // Localized relative time for homeAgo-style labels. {n} is substituted
 // with the computed amount so keys stay interpolation-free for t().
+// Plural form is picked with Intl.PluralRules: "<base><Category>" first
+// (e.g. timeMinAgoFew), falling back to the plain base key so locales
+// without plural tables (zh/ja/ru/...) keep working untouched.
+const PLURAL_CATEGORIES = ['zero', 'one', 'two', 'few', 'many', 'other'] as const;
+
+const pluralCategory = (n: number, lang: string): string => {
+  try {
+    const cat = new Intl.PluralRules(localeForLanguage(lang)).select(n);
+    return PLURAL_CATEGORIES.includes(cat as (typeof PLURAL_CATEGORIES)[number])
+      ? cat
+      : 'other';
+  } catch {
+    return n === 1 ? 'one' : 'other';
+  }
+};
+
+const cap = (s: string): string => (s ? s[0].toUpperCase() + s.slice(1) : s);
+
 export const formatHomeAgo = (epochMs: number | null | undefined, lang: string = 'en'): string => {
   const tr = (key: string): string => getTranslation(key, lang);
+  const trUnit = (base: string, n: number): string => {
+    const key = `${base}${cap(pluralCategory(n, lang))}`;
+    const raw = (lang || 'en').toLowerCase();
+    const norm = raw === 'zh-hant' || raw === 'zh_hant' ? 'zh' : raw;
+    const template =
+      TRANSLATIONS[norm]?.[key] ?? TRANSLATIONS['en']?.[key] ?? tr(base);
+    return template.replace('{n}', String(n));
+  };
   if (!epochMs) return tr('timeNever');
   const s = Math.max(0, Math.floor((Date.now() - epochMs) / 1000));
   if (s < 60) return tr('timeJustNow');
   const m = Math.floor(s / 60);
-  if (m < 60) return tr('timeMinAgo').replace('{n}', String(m));
+  if (m < 60) return trUnit('timeMinAgo', m);
   const h = Math.floor(m / 60);
-  if (h < 24) return tr('timeHourAgo').replace('{n}', String(h));
-  return tr('timeDayAgo').replace('{n}', String(Math.floor(h / 24)));
+  if (h < 24) return trUnit('timeHourAgo', h);
+  return trUnit('timeDayAgo', Math.floor(h / 24));
 };

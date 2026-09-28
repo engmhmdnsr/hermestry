@@ -36,18 +36,25 @@ export const isSensitiveKey = (key: string): boolean => {
 
 // Content-aware patterns applied to every free-text string.
 const PATTERNS: RegExp[] = [
-  // Bearer tokens: "Bearer abc123..."
-  /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g,
+  // Bearer tokens: "Bearer abc123..." Short values included (4+ chars).
+  /\bBearer\s+[A-Za-z0-9._~+/=-]{4,}/g,
   // Basic auth header value.
   /\bBasic\s+[A-Za-z0-9+/=]{12,}/g,
-  // JWT: three base64url segments.
-  /\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g,
+  // JWT: three base64url segments, short-tolerant (4+ chars each).
+  /\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}/g,
   // Telegram bot token: 123456789:AAH...
   /\b\d{8,10}:[A-Za-z0-9_-]{30,}/g,
+  // AWS access key id: AKIA + 16 uppercase alphanumerics.
+  /\bAKIA[0-9A-Z]{16}\b/g,
   // Well-known provider prefixes: sk-, sk-ant-, xoxb/xoxp/xoxa, ghp_/gho_/github_pat_, discord M..., stripe sk_live.
   /\b(?:sk-ant-|sk-|xox[bpas]-|ghp_|gho_|github_pat_|sk_live_|sk_test_|rk_live_|whsec_)[A-Za-z0-9._~+/=-]{8,}/g,
   // PEM private key blocks (multiline).
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
+  // Truncated PEM: BEGIN marker with no END plus one trailing base64 token.
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:\s*[A-Za-z0-9+/=]{4,})?/g,
+  // PIN in free text: "pin 4821", "pin: 4821", "pin is 4821",
+  // "app lock pin is 4821", "passcode=987654". Label kept, digits redacted.
+  /\b(?:app[\s_-]?lock[\s_-]?pin|passcode|pin)(?:\s+is)?\s*[:=]?\s*#?\s*\d{4,8}\b/gi,
   // URL userinfo: https://user:password@host -> https://user:REDACTED@host
   /(https?:\/\/)([^/\s:@]+):([^/\s@]+)@/g,
   // Query-string secrets: ?api_key=...&token=...
@@ -57,11 +64,11 @@ const PATTERNS: RegExp[] = [
 // Assignment style: apiKey=..., "secret": "...", Authorization: Bearer ...
 // Keep the key/prefix, redact only the value.
 const ASSIGNMENT_PATTERN =
-  /((?:api[_-]?key|server[_-]?key|secret|password|passwd|access[_-]?token|refresh[_-]?token|client[_-]?secret|authorization|auth[_-]?token|bot[_-]?token|discord[_-]?token|tg[_-]?token|bearer)\s*[:=]\s*)(["']?)([^\s"',;}\]]{4,})/gi;
+  /((?:api[_-]?key|server[_-]?key|secret|password|passwd|access[_-]?token|refresh[_-]?token|client[_-]?secret|authorization|auth[_-]?token|bot[_-]?token|discord[_-]?token|tg[_-]?token|app[_-]?lock[_-]?pin|passcode|pin|bearer)\s*[:=]\s*)(["']?)([^\s"',;}\]]{4,})/gi;
 
 // .env style lines: SOME_API_KEY=plaintext (whole value redacted).
 const ENV_LINE_PATTERN =
-  /^([^#\n]*?(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|AUTH)[^=\n]*=)([^\n]+)$/gim;
+  /^([^#\n]*?(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|AUTH|PIN)[^=\n]*=)([^\n]+)$/gim;
 
 const scrubKnownValues = (text: string, known: string[]): string => {
   let out = text;
@@ -87,6 +94,11 @@ export const redactText = (input: string, knownSecrets: string[] = []): string =
       if (qMatch && /^(?:[?&])/u.test(m)) return `${qMatch[1]}${REDACTED}`;
       if (/^Bearer\s+/i.test(m)) return `Bearer ${REDACTED}`;
       if (/^Basic\s+/i.test(m)) return `Basic ${REDACTED}`;
+      if (/^-----BEGIN /i.test(m)) return REDACTED;
+      // PIN in free text: keep the label, redact only the digits.
+      if (/^(?:app[\s_-]?lock[\s_-]?pin|passcode|pin)\b/i.test(m)) {
+        return m.replace(/\d{4,8}\b/, REDACTED);
+      }
       return REDACTED;
     });
   }
@@ -182,6 +194,36 @@ export const REDACTION_SELF_TESTS: RedactionSelfTest[] = [
     name: 'object key names',
     input: JSON.stringify({ apiKey: 'supersecretvalue123', nested: { password: 'pw hunter2hunter' } }),
     mustNotContain: ['supersecretvalue123', 'hunter2hunter'],
+  },
+  {
+    name: 'pin free text',
+    input: 'my app lock pin is 4821, do not share it',
+    mustNotContain: ['4821'],
+  },
+  {
+    name: 'pin assignment',
+    input: 'config pin=93741 please rotate',
+    mustNotContain: ['93741'],
+  },
+  {
+    name: 'aws akia key',
+    input: 'deploy key AKIAQWERTYUIOPASDFGH leaked in log',
+    mustNotContain: ['AKIAQWERTYUIOPASDFGH'],
+  },
+  {
+    name: 'truncated pem',
+    input: 'truncated -----BEGIN PRIVATE KEY----- MIIBTSTB0DY9X8Q7W6E5',
+    mustNotContain: ['BEGIN PRIVATE KEY', 'MIIBTSTB0DY9X8Q7W6E5'],
+  },
+  {
+    name: 'short bearer',
+    input: 'Authorization: Bearer ab12',
+    mustNotContain: ['ab12'],
+  },
+  {
+    name: 'short jwt',
+    input: 'jwt eyJhYmNk.eFgHiJkL.mNoPqRsT end',
+    mustNotContain: ['eyJhYmNk.eFgHiJkL.mNoPqRsT'],
   },
 ];
 

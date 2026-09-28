@@ -11,7 +11,9 @@ import { useHermes } from '../../context/HermesContext';
 
 interface HeaderProps {
   onOpenDrawer: () => void;
-  onGoSettings: () => void;
+  // Approvals are actioned in the Chat tab (ApprovalCard queue), so the
+  // header approvals badge routes there, not to Settings.
+  onGoApprovals: () => void;
   isDesktop?: boolean;
   inspectorOpen?: boolean;
   onToggleInspector?: () => void;
@@ -27,7 +29,7 @@ export function fmtTok(n: number): string {
 
 export const Header: React.FC<HeaderProps> = ({
   onOpenDrawer,
-  onGoSettings,
+  onGoApprovals,
   isDesktop = false,
   inspectorOpen = false,
   onToggleInspector,
@@ -128,10 +130,11 @@ export const Header: React.FC<HeaderProps> = ({
           </span>
         </div>
 
-        {/* Action-needed approvals badge button */}
+        {/* Action-needed approvals badge button: jumps to the Chat tab
+            where the ApprovalCard queue lives. */}
         {approvals.length > 0 && (
           <button
-            onClick={onGoSettings}
+            onClick={onGoApprovals}
             className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs font-medium hover:bg-rose-500/25 transition-colors cursor-pointer"
           >
             <AlertCircle className="w-3.5 h-3.5 text-rose-400" />
@@ -139,8 +142,9 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         )}
 
-        {/* Desktop Inspector Panel Toggle Button */}
-        {isDesktop && onToggleInspector && (
+        {/* Inspector Panel Toggle Button: available on desktop and phone.
+            On phone App.tsx renders the Inspector as a slide-over overlay. */}
+        {onToggleInspector && (
           <button
             onClick={onToggleInspector}
             className={`flex items-center gap-1.5 px-2.5 py-1 min-h-[44px] rounded-lg text-xs font-medium transition cursor-pointer border ${

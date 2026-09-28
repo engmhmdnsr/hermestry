@@ -1,13 +1,27 @@
 import React from 'react';
 import { AlertTriangle } from 'lucide-react';
 import type { PendingApproval } from '../../types/hermes';
+import { getTranslation } from '../../constants/languages';
 
 interface ApprovalCardProps {
   approval: PendingApproval;
   resolving?: boolean;
   onDeny: (approval: PendingApproval) => void;
   onAllow: (approval: PendingApproval, scope: 'once' | 'session') => void;
+  // Optional i18n resolver (ChatTab's t). Falls back to document language
+  // so the card never renders hardcoded copy when used standalone.
+  t?: (key: string) => string;
 }
+
+const documentLang = (): string => {
+  try {
+    const l = typeof document !== 'undefined' ? document.documentElement.lang : '';
+    if (l) return l.toLowerCase().split('-')[0];
+  } catch {
+    // ignore , default below
+  }
+  return 'en';
+};
 
 function riskStyle(risk: string | undefined): string {
   const r = (risk || '').toLowerCase();
@@ -30,7 +44,10 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
   resolving = false,
   onDeny,
   onAllow,
+  t,
 }) => {
+  const tr: (key: string) => string =
+    t ?? ((key: string) => getTranslation(key, documentLang()));
   const argsText = approval.args && approval.args.length > 0 ? approval.args.join(' ') : null;
   const fullCommand = [approval.command, argsText].filter(Boolean).join(' ');
   const disabled = resolving;
@@ -47,17 +64,17 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
             <span
               className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold border ${riskStyle(approval.risk)}`}
             >
-              Risk: {approval.risk}
+              {tr('apprRisk')}: {approval.risk}
             </span>
           )}
           <div className="grid gap-2">
-            {approval.tool && <Field label="Tool" value={approval.tool} mono />}
-            {fullCommand && <Field label="Command" value={fullCommand} mono />}
-            {approval.path && <Field label="Path" value={approval.path} mono />}
-            {approval.cwd && <Field label="Working directory" value={approval.cwd} mono />}
-            {approval.reason && <Field label="Reason" value={approval.reason} />}
-            <Field label="Run" value={approval.runId} mono />
-            {approval.sessionId && <Field label="Session" value={approval.sessionId} mono />}
+            {approval.tool && <Field label={tr('apprTool')} value={approval.tool} mono />}
+            {fullCommand && <Field label={tr('apprCommand')} value={fullCommand} mono />}
+            {approval.path && <Field label={tr('apprPath')} value={approval.path} mono />}
+            {approval.cwd && <Field label={tr('apprCwd')} value={approval.cwd} mono />}
+            {approval.reason && <Field label={tr('apprReason')} value={approval.reason} />}
+            <Field label={tr('apprRun')} value={approval.runId} mono />
+            {approval.sessionId && <Field label={tr('apprSession')} value={approval.sessionId} mono />}
           </div>
         </div>
       </div>
@@ -67,21 +84,21 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
           disabled={disabled}
           className="flex-1 min-h-[44px] py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] text-slate-300 text-xs font-medium border border-white/[0.08] transition cursor-pointer disabled:opacity-50"
         >
-          Deny
+          {tr('deny')}
         </button>
         <button
           onClick={() => onAllow(approval, 'once')}
           disabled={disabled}
           className="flex-1 min-h-[44px] py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer disabled:opacity-50"
         >
-          Allow Once
+          {tr('allowOnce')}
         </button>
         <button
           onClick={() => onAllow(approval, 'session')}
           disabled={disabled}
           className="flex-1 min-h-[44px] py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer disabled:opacity-50"
         >
-          Allow Session
+          {tr('allowSession')}
         </button>
       </div>
     </div>

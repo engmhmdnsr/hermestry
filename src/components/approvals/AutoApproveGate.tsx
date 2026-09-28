@@ -2,19 +2,56 @@ import React, { useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import {
   AUTO_APPROVE_SCOPES,
-  SCOPE_DESCRIPTIONS,
   type AutoApprovePolicy,
   type AutoApproveScope,
 } from './approvalScopes';
+import { getTranslation } from '../../constants/languages';
 
 interface AutoApproveGateProps {
   policy: AutoApprovePolicy;
   onChange: (next: AutoApprovePolicy) => void;
+  // Optional i18n resolver (SettingsTab's t). Falls back to document
+  // language so the gate never renders hardcoded copy when used standalone.
+  t?: (key: string) => string;
 }
 
+// Typed confirmation phrase. Always Latin "ENABLE" in every locale so the
+// comparison stays exact; the surrounding prompt text is localized.
 const CONFIRM_PHRASE = 'ENABLE';
 
-export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChange }) => {
+const SCOPE_LABEL_KEYS: Record<AutoApproveScope, string> = {
+  read: 'scopeRead',
+  write: 'scopeWrite',
+  exec: 'scopeExec',
+  network: 'scopeNetwork',
+  install: 'scopeInstall',
+};
+
+const SCOPE_DESC_KEYS: Record<AutoApproveScope, string> = {
+  read: 'scopeDescRead',
+  write: 'scopeDescWrite',
+  exec: 'scopeDescExec',
+  network: 'scopeDescNetwork',
+  install: 'scopeDescInstall',
+};
+
+const documentLang = (): string => {
+  try {
+    const l = typeof document !== 'undefined' ? document.documentElement.lang : '';
+    if (l) return l.toLowerCase().split('-')[0];
+  } catch {
+    // ignore , default below
+  }
+  return 'en';
+};
+
+export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChange, t }) => {
+  const tr: (key: string) => string =
+    t ?? ((key: string) => getTranslation(key, documentLang()));
+  // {phrase} is replaced after lookup so the typed Latin token is never
+  // translated; wrap it in bidi isolates for RTL rendering.
+  const withPhrase = (key: string): string =>
+    tr(key).replace('{phrase}', `⁨${CONFIRM_PHRASE}⁩`);
   const [expanded, setExpanded] = useState(false);
   const [draftScopes, setDraftScopes] = useState<AutoApproveScope[]>(policy.scopes);
   const [ackRisk, setAckRisk] = useState(false);
@@ -32,15 +69,15 @@ export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChan
 
   const handleEnable = () => {
     if (!ackRisk) {
-      setError('Confirm you understand the risk first.');
+      setError(tr('gateErrAck'));
       return;
     }
     if (draftScopes.length === 0) {
-      setError('Select at least one scope. Enabling with no scopes is not allowed.');
+      setError(tr('gateErrScope'));
       return;
     }
     if (confirmText.trim().toUpperCase() !== CONFIRM_PHRASE) {
-      setError(`Type ${CONFIRM_PHRASE} to confirm.`);
+      setError(withPhrase('gateErrPhrase'));
       return;
     }
     setError(null);
@@ -64,17 +101,17 @@ export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChan
         <div className="flex items-center gap-2">
           <AlertTriangle className="w-4 h-4 text-red-300 shrink-0" />
           <p className="text-xs font-semibold text-red-200">
-            Auto-approve is ON for: {policy.scopes.join(', ') || 'none'}
+            {tr('gateOnFor')} {policy.scopes.join(', ') || tr('gateOnNone')}
           </p>
         </div>
         <p className="text-[11px] text-slate-400">
-          Shell and file actions in these scopes run without confirmation. Disable when done.
+          {tr('gateAdvice')}
         </p>
         <button
           onClick={handleDisable}
           className="w-full min-h-[44px] py-2 rounded-xl bg-white/[0.05] text-slate-200 text-xs font-semibold border border-white/[0.08] cursor-pointer"
         >
-          Disable auto-approve
+          {tr('gateDisable')}
         </button>
       </div>
     );
@@ -84,16 +121,16 @@ export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChan
     <div className="p-3 rounded-2xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] space-y-2">
       <div className="flex items-center justify-between gap-2">
         <div>
-          <p className="text-xs font-medium text-white">Auto-Approve Tool Actions</p>
+          <p className="text-xs font-medium text-white">{tr('gateTitle')}</p>
           <p className="text-[11px] text-slate-400">
-            OFF by default. Enabling skips shell and file confirmations for the scopes you pick.
+            {tr('gateOffDesc')}
           </p>
         </div>
         <button
           onClick={() => setExpanded((v) => !v)}
           className="px-3 py-1.5 rounded-lg text-xs font-medium bg-white/[0.04] text-slate-300 border border-white/[0.08] cursor-pointer shrink-0"
         >
-          {expanded ? 'Cancel' : 'Enable'}
+          {expanded ? tr('cancel') : tr('enable')}
         </button>
       </div>
 
@@ -102,8 +139,7 @@ export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChan
           <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-start gap-2">
             <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
             <p className="text-[11px] text-amber-200 leading-relaxed">
-              Warning: auto-approved commands run without review and can modify files,
-              exfiltrate data, or install software. Pick the narrowest scopes you need.
+              {tr('gateWarning')}
             </p>
           </div>
 
@@ -120,8 +156,8 @@ export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChan
                   className="mt-0.5 accent-emerald-500"
                 />
                 <span>
-                  <span className="block text-xs font-medium text-slate-200">{scope}</span>
-                  <span className="block text-[11px] text-slate-400">{SCOPE_DESCRIPTIONS[scope]}</span>
+                  <span className="block text-xs font-medium text-slate-200">{tr(SCOPE_LABEL_KEYS[scope])}</span>
+                  <span className="block text-[11px] text-slate-400">{tr(SCOPE_DESC_KEYS[scope])}</span>
                 </span>
               </label>
             ))}
@@ -134,18 +170,19 @@ export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChan
               onChange={(e) => setAckRisk(e.target.checked)}
               className="mt-0.5 accent-amber-500"
             />
-            I understand auto-approved actions run without confirmation.
+            {tr('gateAck')}
           </label>
 
           <div>
             <p className="text-[11px] text-slate-400 mb-1">
-              Type {CONFIRM_PHRASE} to confirm enabling.
+              {withPhrase('gateTypeToConfirm')}
             </p>
             <input
               value={confirmText}
               onChange={(e) => setConfirmText(e.target.value)}
               placeholder={CONFIRM_PHRASE}
               autoComplete="off"
+              aria-label={tr('gateConfirmAria')}
               className="w-full px-3 py-2 rounded-xl bg-black/30 border border-white/[0.08] text-xs text-white placeholder:text-slate-500 outline-none"
             />
           </div>
@@ -161,7 +198,7 @@ export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChan
                 : 'bg-white/[0.04] text-slate-500 cursor-not-allowed'
             }`}
           >
-            Enable for selected scopes
+            {tr('gateEnableFor')}
           </button>
         </div>
       )}

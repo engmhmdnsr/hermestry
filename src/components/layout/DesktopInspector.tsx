@@ -17,6 +17,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
+import { redactSecrets } from '../../services/redaction';
 
 interface DesktopInspectorProps {
   isOpen: boolean;
@@ -140,7 +141,7 @@ export const DesktopInspector: React.FC<DesktopInspectorProps> = ({ isOpen, onCl
                     <div className="mt-2 pt-2 border-t border-white/[0.05] space-y-1 font-mono text-[11px] text-slate-400 max-h-36 overflow-y-auto">
                       {msg.toolOutputs.map((out, idx) => (
                         <div key={idx} className="bg-black/30 p-2 rounded leading-relaxed break-all whitespace-pre-wrap">
-                          <span className="text-teal-400 font-bold">{out.toolName}</span>: {out.output}
+                          <span className="text-teal-400 font-bold">{out.toolName}</span>: {redactSecrets(out.output)}
                         </div>
                       ))}
                     </div>
@@ -168,7 +169,7 @@ export const DesktopInspector: React.FC<DesktopInspectorProps> = ({ isOpen, onCl
               ) : (
                 gatewayLogs.map((log, i) => (
                   <div key={i} className="leading-relaxed break-words whitespace-pre-wrap">
-                    {log}
+                    {redactSecrets(log)}
                   </div>
                 ))
               )}

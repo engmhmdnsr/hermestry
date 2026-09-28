@@ -164,6 +164,9 @@ class MobileGatewayService : Service() {
       .build()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
       // specialUse needs API 34+; older releases fall back to dataSync.
+      // The manifest declares both types (dataSync|specialUse) plus both
+      // FOREGROUND_SERVICE_* permissions, so the runtime type always matches
+      // a declared type on SDK 29-36.
       val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
         ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
       else ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC

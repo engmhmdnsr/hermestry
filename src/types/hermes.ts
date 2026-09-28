@@ -166,6 +166,9 @@ export type AgentStatus = 'ONLINE' | 'THINKING' | 'EXECUTING' | 'WAITING' | 'OFF
 export interface TurnMeta {
   model: string;
   durationMs: number;
+  stopped?: boolean;
+  estimated?: boolean;
+  error?: string;
 }
 
 export interface QueuedMessage {

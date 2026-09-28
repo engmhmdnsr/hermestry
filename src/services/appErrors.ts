@@ -3,6 +3,16 @@
 // Every gateway failure is represented as an AppError, never as a bare
 // false / [] / null that callers could mistake for real data. Use
 // toAppError() at catch boundaries and mapHttpStatus() for HTTP failures.
+//
+// i18n: `message` stays a plain-English cause+action string (backward
+// compatible for logs and existing call sites). User-facing UI should
+// prefer localizedMessage(err, lang), which resolves err.messageKey via
+// the err* keys in constants/languages (en+ar). messageKey is derived
+// from code automatically, so callers never set it by hand.
+// Terminology follows the freeze table in constants/languages.ts:
+// Gateway (user copy), Provider, Cron Job, Session, Assistant.
+
+import { getTranslation } from '../constants/languages';
 
 export type AppErrorCode =
   | 'unavailable'
@@ -24,6 +34,46 @@ export interface AppError {
   offline: boolean;
   status?: number;
   cause?: unknown;
+  /** i18n key for the localized cause+action string (err* in languages.ts). */
+  messageKey?: string;
+}
+
+// One key per concept: the UI renders cause + action, never raw
+// addresses, IPs, or log paths.
+export const APP_ERROR_I18N_KEYS: Record<AppErrorCode, string> = {
+  unavailable: 'errUnavailable',
+  auth: 'errAuth',
+  provider: 'errProvider',
+  model: 'errModel',
+  'too-large': 'errTooLarge',
+  approval: 'errApproval',
+  'rate-limited': 'errRateLimited',
+  busy: 'errBusy',
+  validation: 'errValidation',
+  'not-found': 'errNotFound',
+  unknown: 'errUnknown',
+};
+
+export function errorKey(code: AppErrorCode): string {
+  return APP_ERROR_I18N_KEYS[code] ?? 'errUnknown';
+}
+
+// Localized cause+action string for UI rendering. Falls back to English
+// via getTranslation for locales without err* tables.
+export function localizedMessage(err: AppError, lang = 'en'): string {
+  return getTranslation(err.messageKey ?? errorKey(err.code), lang);
+}
+
+// Strip network addresses and filesystem paths from free-text details so
+// user-facing strings never leak raw IPs or log locations.
+export function sanitizeDetail(detail: string): string {
+  return detail
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, '[host]')
+    .replace(/\[[0-9a-fA-F:]{2,}\](?::\d+)?/g, '[host]')
+    .replace(/[A-Za-z]:\\[^\s"']*/g, '[path]')
+    .replace(/\/(?:[^\s"']*\/)+[^\s"']*/g, '[path]')
+    .replace(/\b[A-Za-z0-9_-]*?(?:api[_-]?key|token|secret|password)[=:]\s*\S+/gi, '[redacted]')
+    .trim();
 }
 
 export function createAppError(
@@ -38,6 +88,7 @@ export function createAppError(
     offline: opts?.offline ?? false,
     ...(opts?.status !== undefined ? { status: opts.status } : {}),
     ...(opts?.cause !== undefined ? { cause: opts.cause } : {}),
+    messageKey: errorKey(code),
   };
 }
 
@@ -62,8 +113,11 @@ function isOfflineNow(): boolean {
 }
 
 // Map an HTTP status to the standard error model (ERR-02).
+// Messages are cause + action; free-text detail is sanitized so no raw
+// host or path ever reaches the UI.
 export function mapHttpStatus(status: number, detail = ''): AppError {
-  const suffix = detail ? `: ${detail}` : '';
+  const clean = sanitizeDetail(detail);
+  const suffix = clean ? `: ${clean}` : '';
   switch (status) {
     case 401:
     case 403:
@@ -214,10 +268,12 @@ function statusFromMessage(message: string): number | undefined {
 export function toAppError(err: unknown): AppError {
   if (isAppError(err)) return err;
   if (isAbortError(err)) {
-    return createAppError('unknown', 'Request cancelled.', { retryable: false, cause: err });
+    const cancelled = createAppError('unknown', 'Request cancelled.', { retryable: false, cause: err });
+    cancelled.messageKey = 'errCancelled';
+    return cancelled;
   }
   if (err instanceof TypeError) {
-    return createAppError('unavailable', `Gateway unreachable: ${err.message}`, {
+    return createAppError('unavailable', `Gateway unreachable: ${sanitizeDetail(err.message)}`, {
       retryable: true,
       offline: isOfflineNow(),
       cause: err,
@@ -231,19 +287,20 @@ export function toAppError(err: unknown): AppError {
       return mapped;
     }
     const code = mapMessageToCode(err.message);
-    return createAppError(code, err.message || 'Gateway request failed.', {
+    return createAppError(code, sanitizeDetail(err.message) || 'Gateway request failed.', {
       retryable: code === 'unavailable' || code === 'busy' || code === 'rate-limited',
       offline: code === 'unavailable' && isOfflineNow(),
       cause: err,
     });
   }
-  return createAppError('unknown', typeof err === 'string' && err ? err : 'Gateway request failed.', {
+  return createAppError('unknown', typeof err === 'string' && err ? sanitizeDetail(err) : 'Gateway request failed.', {
     cause: err,
   });
 }
 
 // The message field is already user facing; this helper keeps call sites
-// explicit about rendering errors instead of raw values.
+// explicit about rendering errors instead of raw values. Prefer
+// localizedMessage(err, lang) for translated UI.
 export function userMessage(err: AppError): string {
   return err.message;
 }

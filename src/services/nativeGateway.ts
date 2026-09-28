@@ -7,17 +7,52 @@ export interface NativeGatewayStatus {
   state: string;
 }
 
+export interface NativeStopVerification {
+  verified: boolean;
+  processExited: boolean;
+  portClosed: boolean;
+  healthFalse: boolean;
+}
+
+export interface NativeStartupInfo {
+  phase: string;
+  elapsedMs: number;
+  lastError: string;
+  logPath: string;
+  retryable: boolean;
+}
+
+export interface NativePreflight {
+  freeBytes: number;
+  neededBytes: number;
+  enough: boolean;
+  appVersion: string;
+  gatewayVersion: string;
+  protocolVersion: number;
+  imageVersion: string;
+  compatible: boolean;
+  compatError: string;
+}
+
+export interface NativeServerKeyAck {
+  ok: boolean;
+  error?: string;
+}
+
 interface HermesGatewayPlugin {
   install(): Promise<void>;
   start(): Promise<void>;
-  stop(): Promise<void>;
+  stop(): Promise<Partial<NativeStopVerification> & { ok?: boolean }>;
   status(): Promise<NativeGatewayStatus>;
   health(): Promise<NativeGatewayStatus>;
+  startupInfo(): Promise<Partial<NativeStartupInfo>>;
+  preflight(): Promise<Partial<NativePreflight>>;
   serverKey(): Promise<{ serverKey: string }>;
+  setServerKey?(options: { serverKey: string }): Promise<unknown>;
   setProvider(options: { provider: string; apiKey: string; baseUrl: string; model: string }): Promise<void>;
   setAutostart(options: { enabled: boolean }): Promise<void>;
   addListener(
-    event: 'installLog' | 'installProgress' | 'installDone',
+    event: 'installLog' | 'installProgress' | 'installPhase' | 'installDone',
     cb: (info: Record<string, unknown>) => void
   ): Promise<{ remove: () => void }>;
 }
@@ -40,7 +75,8 @@ export function isNativeGateway(): boolean {
 
 export async function nativeInstall(
   onLog: (line: string) => void,
-  onProgress: (downloaded: number, total: number) => void
+  onProgress: (downloaded: number, total: number) => void,
+  onPhase?: (phase: string) => void
 ): Promise<{ ok: boolean; error?: string }> {
   const plugin = getPlugin();
   if (!plugin) return { ok: false, error: 'native bridge unavailable' };
@@ -51,6 +87,10 @@ export async function nativeInstall(
     }),
     plugin.addListener('installProgress', (info) => {
       onProgress(Number(info.downloaded ?? 0), Number(info.total ?? 100));
+    }),
+    plugin.addListener('installPhase', (info) => {
+      const phase = String(info.phase ?? '');
+      if (phase && onPhase) onPhase(phase);
     }),
   ]);
   try {
@@ -140,4 +180,77 @@ export async function nativeServerKey(): Promise<string> {
   } catch {
     return '';
   }
+}
+
+// Verified stop (GATEWAY-05): resolves the native stop() verdict payload.
+// verified is true only when process exit + port closed + health false hold.
+// nativeStop() keeps its void signature; use this when the UI must gate on it.
+export async function nativeStopVerified(): Promise<NativeStopVerification> {
+  const plugin = getPlugin();
+  if (!plugin) throw new Error('native bridge unavailable');
+  const res = await plugin.stop();
+  const verified = res?.verified === true;
+  return {
+    verified,
+    processExited: res?.processExited === true,
+    portClosed: res?.portClosed === true,
+    healthFalse: res?.healthFalse === true,
+  };
+}
+
+// Startup phase detail (GATEWAY-04) without a full status round-trip.
+export async function nativeStartupInfo(): Promise<NativeStartupInfo> {
+  const plugin = getPlugin();
+  if (!plugin || typeof plugin.startupInfo !== 'function') {
+    throw new Error('native bridge unavailable');
+  }
+  const res = await plugin.startupInfo();
+  return {
+    phase: typeof res.phase === 'string' ? res.phase : 'IDLE',
+    elapsedMs: Number(res.elapsedMs ?? 0) || 0,
+    lastError: typeof res.lastError === 'string' ? res.lastError : '',
+    logPath: typeof res.logPath === 'string' ? res.logPath : '',
+    retryable: res.retryable === true,
+  };
+}
+
+// Install preflight (INSTALL-01/04): storage headroom + compat metadata.
+export async function nativePreflight(): Promise<NativePreflight> {
+  const plugin = getPlugin();
+  if (!plugin || typeof plugin.preflight !== 'function') {
+    throw new Error('native bridge unavailable');
+  }
+  const res = await plugin.preflight();
+  return {
+    freeBytes: Number(res.freeBytes ?? -1),
+    neededBytes: Number(res.neededBytes ?? 0),
+    enough: res.enough !== false,
+    appVersion: typeof res.appVersion === 'string' ? res.appVersion : '',
+    gatewayVersion: typeof res.gatewayVersion === 'string' ? res.gatewayVersion : '',
+    protocolVersion: Number(res.protocolVersion ?? 0) || 0,
+    imageVersion: typeof res.imageVersion === 'string' ? res.imageVersion : '',
+    compatible: res.compatible !== false,
+    compatError: typeof res.compatError === 'string' ? res.compatError : '',
+  };
+}
+
+// Push the minted local-API key into native prefs. Fails gracefully when
+// the plugin build predates setServerKey: returns ok=false, never throws.
+export async function nativeSetServerKey(serverKey: string): Promise<NativeServerKeyAck> {
+  const plugin = getPlugin();
+  if (!plugin || typeof plugin.setServerKey !== 'function') {
+    return { ok: false, error: 'setServerKey unavailable' };
+  }
+  try {
+    await plugin.setServerKey({ serverKey });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+// Stop then start the on-device gateway.
+export async function nativeRestart(): Promise<void> {
+  await nativeStop();
+  await nativeStart();
 }

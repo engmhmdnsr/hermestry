@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState, useRef, useMemo } from 'react';
-import {
+import type {
   AiModelInfo,
+  Blueprint,
   ChatMessage,
   ConfiguredProvider,
   CronJob,
@@ -8,29 +9,67 @@ import {
   DoctorReport,
   GatewayStatus,
   InstallState,
+  MemoryInfo,
   MobileSession,
   PendingApproval,
   QueuedMessage,
+  SkillInfo,
   TurnMeta,
 } from '../types/hermes';
+import type { ListUiState, SyncMeta, ListSyncResult } from '../services/syncState';
 import { GatewayService } from '../services/gateway';
 import {
   isNativeGateway,
   nativeInstall,
   nativeStart,
   nativeStop,
+  nativeStatus,
   nativeHealth,
-  nativeSetAutostart,
   nativeServerKey,
+  nativeSetAutostart,
   nativeSetProvider,
 } from '../services/nativeGateway';
+import {
+  mapNativeStatusToGatewayState,
+  isTransitional,
+  toLegacyInstallState,
+  type GatewayState,
+} from '../services/gatewayState';
+import { resolveListUiState } from '../services/pagination';
 import {
   lockVault,
   unlockVault,
   vaultLocked,
-  vaultEncryptSecrets,
   vaultDecryptSecrets,
+  sanitizeForPersist,
+  sanitizeVaultPayload,
 } from '../services/secureStore';
+import {
+  transactionalVaultSave,
+  purgeAllSecretHolders,
+  blankSecretHolder,
+} from '../services/vaultTransaction';
+import { loadMigratedSettings } from '../services/storageMigrations';
+import {
+  loadCachedPending,
+  cachePending,
+  reconcilePending,
+} from '../components/approvals/pendingApprovals';
+import {
+  normalizePolicy,
+  isScopeAllowed,
+  fromLegacyGlobal,
+  type AutoApproveScope,
+} from '../components/approvals/approvalScopes';
+import {
+  createProvider,
+  updateProvider as storeUpdateProvider,
+  removeProvider as storeRemoveProvider,
+  activateProvider as storeActivateProvider,
+  type ProviderProfile,
+} from '../services/providerStore';
+import { SseParser, isTerminalSseEvent } from '../services/sseParser';
+import { secretRefForProfile } from '../services/secretRefs';
 import { normProvider, DEFAULT_MODELS, PROVIDER_OPTIONS } from '../constants/providers';
 import { ThemeMode, THEME_PALETTES, applyThemeToDom, watchSystemThemePreference } from '../constants/themes';
 import { LANGUAGES, getTranslation } from '../constants/languages';
@@ -78,6 +117,24 @@ interface HermesSettings {
   language: string;
 }
 
+export interface ListSyncMeta {
+  live: boolean;
+  stale: boolean;
+  error: string;
+  lastSyncedAt: number | null;
+  uiState: ListUiState;
+}
+
+export type ListSyncMetaMap = Record<string, ListSyncMeta>;
+
+export const emptyListSyncMeta = (): ListSyncMeta => ({
+  live: false,
+  stale: false,
+  error: '',
+  lastSyncedAt: null,
+  uiState: 'loading',
+});
+
 interface HermesContextType {
   settings: HermesSettings;
   updateSettings: (newSettings: Partial<HermesSettings>) => void;
@@ -106,15 +163,18 @@ interface HermesContextType {
   installError: string | null;
   gatewayLogs: string[];
   connected: boolean;
+  gatewayState: GatewayState;
   gatewayStatus: GatewayStatus;
   gatewayFailed: boolean;
   gatewayFailureReason: string | null;
   
   // Gateway control
   startGateway: () => Promise<void>;
-  stopGateway: () => void;
+  stopGateway: () => Promise<void>;
   installGateway: () => Promise<void>;
   refreshNow: () => Promise<void>;
+  // Sync envelopes for list screens (stale/live/error kept in state).
+  listsMeta: ListSyncMetaMap;
   
   // Sessions & Chat
   sessions: MobileSession[];
@@ -129,6 +189,9 @@ interface HermesContextType {
   approvals: PendingApproval[];
   queuedMessages: QueuedMessage[];
   models: AiModelInfo[];
+  skills: SkillInfo[];
+  blueprints: Blueprint[];
+  memory: MemoryInfo | null;
   pinnedIds: string[];
   togglePin: (id: string) => void;
   
@@ -142,7 +205,7 @@ interface HermesContextType {
   sendNow: (text: string, imageDataUrls?: string[]) => boolean | 'queued';
   queueMessage: (text: string, imageDataUrls?: string[]) => boolean;
   cancelQueued: () => void;
-  stopStream: () => void;
+  stopStream: () => Promise<void>;
   resolveApproval: (approval: PendingApproval, allow: boolean, mode?: string) => Promise<void>;
   
   // Vault (encrypted secrets live decrypted only in memory refs)
@@ -151,6 +214,12 @@ interface HermesContextType {
   lockSecrets: () => void;
   lockNow: () => void;
   retryLast: () => boolean;
+  // Separate stream failure surface. Transport/backend failures set this
+  // and turnMeta.error; they are never appended into chat as bubbles.
+  streamError: string | null;
+  // Last settings/vault persist failure. Set loudly on failure, cleared on
+  // success. The UI must never show Saved while this is set.
+  settingsSaveError: string | null;
 
   // Drafts
   getDraft: (sessionId: string | null) => string;
@@ -205,62 +274,19 @@ const todayKey = (): string => {
 };
 
 export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Load settings from localStorage
+  // Load settings from localStorage through the versioned migration chain.
+  // Shape folding lives in storageMigrations (migrateV1toV2/V2toV3); init
+  // here only merges defaults, validates, and writes back the migrated copy.
   const [settings, setSettings] = useState<HermesSettings>(() => {
     try {
-      const raw = localStorage.getItem('hermes_settings');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (!parsed.providers || parsed.providers.length === 0) {
-          // Legacy installs stored a flat provider/key pair; fold it into the
-          // list only when something was actually configured. No seed entries:
-          // empty state stays empty until the user adds a provider.
-          if (parsed.provider || parsed.apiKey) {
-            parsed.providers = [
-              {
-                id: 'prov_' + (parsed.provider || 'custom'),
-                provider: parsed.provider || 'custom',
-                name: parsed.provider ? parsed.provider.toUpperCase() : 'Custom',
-                apiKey: parsed.apiKey || '',
-                baseUrl: parsed.baseUrl || '',
-                defaultModel: parsed.modelId || '',
-                enabled: true,
-                validated: true,
-              },
-            ];
-          } else {
-            parsed.providers = [];
-          }
-        }
-        // One-time cleanup of the old hardcoded DeepSeek seed (no key, never
-        // user data). Real user-configured DeepSeek entries are untouched.
-        if (Array.isArray(parsed.providers)) {
-          parsed.providers = parsed.providers.filter(
-            (p: ConfiguredProvider) => !(p.id === 'prov_deepseek_default' && !p.apiKey)
-          );
-        }
+      const migrated = loadMigratedSettings(localStorage, (raw) => {
+        try {
+          localStorage.setItem('hermes_settings', raw);
+        } catch {}
+      });
+      if (migrated) {
+        const parsed = { ...(migrated.data as Partial<HermesSettings>) };
         const merged = { ...DEFAULT_SETTINGS, ...parsed };
-        // If the stored active provider has no keyed entry (e.g. the removed
-        // DeepSeek seed), drop the selection instead of showing a dead default.
-        if (merged.provider) {
-          const hasKeyed = (merged.providers || []).some(
-            (p: ConfiguredProvider) => p.provider === merged.provider && !!p.apiKey
-          );
-          if (!hasKeyed) {
-            merged.provider = '';
-            merged.modelId = '';
-          }
-        }
-        // Retire the placeholder model ids the old opencode-go catalog wrote
-        // (they never resolved to a real model). Map to the verified id.
-        if (merged.provider === 'opencode-go' && String(merged.modelId || '').startsWith('opencode-go/')) {
-          merged.modelId = 'deepseek-v4.1-flash';
-          (merged.providers || []).forEach((p: ConfiguredProvider) => {
-            if (p.provider === 'opencode-go' && String(p.defaultModel || '').startsWith('opencode-go/')) {
-              p.defaultModel = 'deepseek-v4.1-flash';
-            }
-          });
-        }
         if (!VALID_APPROVAL_SCOPES.includes(merged.approvalScope)) {
           merged.approvalScope = 'once';
         }
@@ -308,6 +334,20 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  // In-memory vault-map mirror (secretRef -> key) backing the providerStore
+  // single credential write path. Seeded lazily from legacy plaintext
+  // entries once; never persisted except through transactionalVaultSave.
+  const providerSecretsRef = useRef<Record<string, string> | null>(null);
+  const getProviderSecrets = (): Record<string, string> => {
+    if (providerSecretsRef.current) return providerSecretsRef.current;
+    const seeded: Record<string, string> = {};
+    for (const p of settingsRef.current.providers || []) {
+      const key = (p as ConfiguredProvider).apiKey;
+      if (key) seeded[secretRefForProfile(p.id)] = key;
+    }
+    providerSecretsRef.current = seeded;
+    return seeded;
+  };
   // Decrypted secrets live here when AppLock is enabled. localStorage
   // holds only ciphertext in that case.
   const secretsRef = useRef({
@@ -351,6 +391,12 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   });
   const [gatewayFailed, setGatewayFailed] = useState<boolean>(false);
   const [gatewayFailureReason, setGatewayFailureReason] = useState<string | null>(null);
+  // Single gateway lifecycle machine (GATEWAY-03). On native this mirrors
+  // HermesGatewayPlugin.status() via the poll loop below; every UI flag
+  // (connected/install) derives from it. Web builds stay on CHECKING.
+  const [gatewayState, setGatewayState] = useState<GatewayState>('CHECKING');
+  const gatewayStateRef = useRef<GatewayState>('CHECKING');
+  gatewayStateRef.current = gatewayState;
 
   // Sessions and Chat
   const [sessions, setSessions] = useState<MobileSession[]>([]);
@@ -383,6 +429,15 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const [models, setModels] = useState<AiModelInfo[]>([]);
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [blueprints, setBlueprints] = useState<Blueprint[]>([]);
+  const [memory, setMemory] = useState<MemoryInfo | null>(null);
+  // Per-list sync envelopes: stale/live/error kept in state and mapped to
+  // list UI states via resolveListUiState. Never render a bare empty list
+  // as success while one of these carries an error.
+  const [listsMeta, setListsMeta] = useState<ListSyncMetaMap>({});
+  const [streamError, setStreamError] = useState<string | null>(null);
+  const [settingsSaveError, setSettingsSaveError] = useState<string | null>(null);
   const [pinnedIds, setPinnedIds] = useState<string[]>(() => {
     try {
       const raw = localStorage.getItem('hermes_pinned_sessions');
@@ -447,6 +502,12 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // Per-turn usage tracking for the estimation fallback.
   const turnUsageSeenRef = useRef<boolean>(false);
   const turnOutCharsRef = useRef<number>(0);
+  // Agent bubble id of the in-flight turn, so stopStream can mark its
+  // turnMeta.stopped even though state lags a render.
+  const lastAgentMsgIdRef = useRef<string | null>(null);
+  // Guards the approvals cache write-back until the startup hydration below
+  // has run once (otherwise the initial [] would clobber the stored cache).
+  const approvalsHydratedRef = useRef<boolean>(false);
 
   // Persist chat outside of state updaters (StrictMode purity).
   useEffect(() => {
@@ -455,6 +516,14 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       gatewayService.saveLocalMessages(currentSessionId, chat);
     } catch {}
   }, [chat, currentSessionId, gatewayService]);
+
+  // Write approvals back to the local cache whenever they change, so a
+  // reload or offline boot can restore them. Skipped until the startup
+  // hydration below has run once.
+  useEffect(() => {
+    if (!approvalsHydratedRef.current) return;
+    cachePending(approvals);
+  }, [approvals]);
 
   const addLog = (msg: string) => {
     const timestamp = new Date().toLocaleTimeString();
@@ -477,7 +546,70 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setGatewayLogs((prev) => [...prev, `[${timestamp}] ${safe}`].slice(-400));
   };
 
-  const persistSettings = (next: HermesSettings) => {
+  // Record a list sync envelope in state and map it to its UI state via
+  // resolveListUiState. Callers pass the envelope straight from the
+  // *WithState fetchers so stale/live/error survive in state for list
+  // screens instead of collapsing to a bare array.
+  const setListMeta = (
+    key: string,
+    meta: Pick<SyncMeta, 'live' | 'stale' | 'error' | 'lastSyncedAt'>,
+    itemCount: number,
+    flags?: { loading?: boolean; refreshing?: boolean; offline?: boolean }
+  ) => {
+    const uiState = resolveListUiState(meta, itemCount, flags);
+    setListsMeta((prev) => ({
+      ...prev,
+      [key]: {
+        live: meta.live,
+        stale: meta.stale,
+        error: meta.error || '',
+        lastSyncedAt: meta.lastSyncedAt,
+        uiState,
+      },
+    }));
+  };
+
+  // Vault payload for a settings snapshot. Provider keys travel under
+  // provider.<id>.apiKey refs, globals under global.* keys; the flat legacy
+  // apiKey folds into the active provider so sanitizeVaultPayload never
+  // drops it (unmapped keys are denied, not persisted).
+  const buildVaultPayload = (next: HermesSettings): Record<string, string> => {
+    const raw: Record<string, unknown> = {
+      'global.serverKey': next.serverKey || '',
+      'global.tgToken': next.tgToken || '',
+      'global.discordToken': next.discordToken || '',
+      'global.appLockPin': next.appLockPin || '',
+    };
+    const secrets = getProviderSecrets();
+    for (const p of next.providers || []) {
+      const ref =
+        p.secretRef && p.secretRef.startsWith('provider.') ? p.secretRef : secretRefForProfile(p.id);
+      const key = secrets[ref] ?? p.apiKey ?? '';
+      if (key) raw[ref] = key;
+    }
+    const flatKey = (next.apiKey || '').trim();
+    if (flatKey) {
+      const list = next.providers || [];
+      const active =
+        list.find((p) => p.id === next.activeProviderId) ||
+        list.find((p) => p.provider === next.provider);
+      const ref =
+        active && active.secretRef && active.secretRef.startsWith('provider.')
+          ? active.secretRef
+          : secretRefForProfile(active ? active.id : 'legacy');
+      raw[ref] = flatKey;
+      const live = getProviderSecrets();
+      live[ref] = flatKey;
+    }
+    return sanitizeVaultPayload(raw);
+  };
+
+  // Transactional persist. AppLock on: sanitized settings to localStorage +
+  // cipher committed via transactionalVaultSave (rejects with VaultWriteError
+  // on any failure, previous vault kept). AppLock off: legacy plaintext
+  // write. Failures set settingsSaveError loudly and rethrow; callers must
+  // never report Saved when this rejects.
+  const persistSettings = async (next: HermesSettings): Promise<void> => {
     secretsRef.current = {
       apiKey: next.apiKey,
       serverKey: next.serverKey,
@@ -486,39 +618,45 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       appLockPin: next.appLockPin,
     };
     if (next.appLockEnabled && !vaultLocked()) {
-      const pub = { ...next, apiKey: '', serverKey: '', tgToken: '', discordToken: '', appLockPin: '' };
+      const pub = sanitizeForPersist({ ...next } as unknown as Record<string, unknown>) as unknown as HermesSettings;
       try {
         localStorage.setItem('hermes_settings', JSON.stringify(pub));
-      } catch {}
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setSettingsSaveError(`Settings write failed: ${msg}`);
+        addLog(`Settings save failed: ${msg}`);
+        throw e;
+      }
       try {
         if (next.appLockPin) localStorage.setItem('hermes_pinlen', String(next.appLockPin.length));
       } catch {}
-      vaultEncryptSecrets({
-        apiKey: next.apiKey || '',
-        serverKey: next.serverKey || '',
-        tgToken: next.tgToken || '',
-        discordToken: next.discordToken || '',
-        appLockPin: next.appLockPin || '',
-      })
-        .then((cipher) => {
-          try {
-            localStorage.setItem('hermes_vault', cipher);
-          } catch {}
-        })
-        .catch(() => {});
+      await transactionalVaultSave(buildVaultPayload(next));
+      setSettingsSaveError(null);
     } else if (!next.appLockEnabled) {
       try {
         localStorage.setItem('hermes_settings', JSON.stringify(next));
-      } catch {}
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setSettingsSaveError(`Settings write failed: ${msg}`);
+        addLog(`Settings save failed: ${msg}`);
+        throw e;
+      }
       try {
         localStorage.removeItem('hermes_vault');
         localStorage.removeItem('hermes_pinlen');
       } catch {}
+      setSettingsSaveError(null);
     } else {
-      const pub = { ...next, apiKey: '', serverKey: '', tgToken: '', discordToken: '', appLockPin: '' };
+      // Vault locked: persist the sanitized public copy only, never secrets.
+      const pub = sanitizeForPersist({ ...next } as unknown as Record<string, unknown>) as unknown as HermesSettings;
       try {
         localStorage.setItem('hermes_settings', JSON.stringify(pub));
-      } catch {}
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setSettingsSaveError(`Settings write failed: ${msg}`);
+        addLog(`Settings save failed: ${msg}`);
+        throw e;
+      }
     }
   };
 
@@ -553,23 +691,58 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       lockVault(next.appLockPin)
         .then(() => {
           setVaultUnlocked(true);
-          persistSettings(next);
+          return persistSettings(next);
         })
-        .catch(() => {
-          persistSettings(next);
+        .catch((e: unknown) => {
+          // persistSettings already surfaced settingsSaveError + log loudly.
+          addLog(`Vault persist after lock needs attention: ${e instanceof Error ? e.message : String(e)}`);
         });
+    } else if (
+      next.appLockEnabled &&
+      prev.appLockEnabled &&
+      next.appLockPin &&
+      next.appLockPin !== prev.appLockPin
+    ) {
+      // PIN rotation (U6): the session key must be re-derived under the new
+      // PIN *before* re-encrypting. Persisting first would seal the vault
+      // under the old key and the old PIN would keep unlocking it.
+      if (vaultLocked()) {
+        // Locked means every secret copy is blanked from memory, so there is
+        // nothing safe to re-encrypt. Refuse honestly and keep the old PIN
+        // instead of writing a vault the user can no longer open.
+        next.appLockPin = prev.appLockPin;
+        setSettingsSaveError('PIN change blocked while locked: unlock the app first, then change the PIN.');
+        addLog('PIN change blocked while vault locked; keeping the existing PIN.');
+        void persistSettings(next).catch(() => {});
+      } else {
+        try {
+          localStorage.setItem('hermes_pinlen', String(next.appLockPin.length));
+        } catch {}
+        lockVault(next.appLockPin)
+          .then(() => {
+            setVaultUnlocked(true);
+            return persistSettings(next);
+          })
+          .catch((e: unknown) => {
+            addLog(`Vault persist after PIN rotation needs attention: ${e instanceof Error ? e.message : String(e)}`);
+          });
+      }
     } else {
       if (!next.appLockEnabled) setVaultUnlocked(true);
-      persistSettings(next);
+      // persistSettings surfaces failures via settingsSaveError + log.
+      void persistSettings(next).catch(() => {});
     }
     // On-device APK: mirror the autostart switch into the native prefs
     // that BootReceiver reads, so boot start follows the same toggle.
     if (next.autostart !== prev.autostart && isNativeGateway()) {
-      nativeSetAutostart(next.autostart).catch(() => {});
+      nativeSetAutostart(next.autostart).catch((e: unknown) => {
+        addLog(`Native autostart sync failed: ${e instanceof Error ? e.message : String(e)}`);
+      });
     }
     // On-device APK: mirror the active provider/key/model into the native
     // prefs renderConfig reads on every gateway (re)start. Otherwise the
-    // gateway keeps the old provider and chat fails auth.
+    // gateway keeps the old provider and chat fails auth. Sync failures are
+    // logged truthfully instead of swallowed.
     if (
       isNativeGateway() &&
       (next.provider !== prev.provider ||
@@ -582,7 +755,9 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         apiKey: next.apiKey || '',
         baseUrl: next.baseUrl || '',
         model: next.modelId || '',
-      }).catch(() => {});
+      }).catch((e: unknown) => {
+        addLog(`Native provider sync failed: ${e instanceof Error ? e.message : String(e)}`);
+      });
     }
     setSettings(next);
   };
@@ -590,18 +765,59 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const unlockSecrets = async (pin: string): Promise<boolean> => {
     const ok = await unlockVault(pin);
     if (!ok) return false;
-    setVaultUnlocked(true);
     try {
       const cipher = localStorage.getItem('hermes_vault');
       if (cipher) {
-        const s = await vaultDecryptSecrets(cipher);
+        let s: Record<string, string>;
+        try {
+          s = await vaultDecryptSecrets(cipher);
+        } catch (e) {
+          // Decrypt failure (stale key, tampered envelope): report failure
+          // instead of a half-unlocked vault.
+          addLog(`Vault unlock failed: ${e instanceof Error ? e.message : String(e)}`);
+          return false;
+        }
+        const liveSecrets: Record<string, string> = {};
+        const providerKeyById: Record<string, string> = {};
+        for (const [k, v] of Object.entries(s)) {
+          if (k.startsWith('provider.') && k.endsWith('.apiKey')) {
+            liveSecrets[k] = v;
+            providerKeyById[k.slice('provider.'.length, -'.apiKey'.length)] = v;
+          }
+        }
+        providerSecretsRef.current = liveSecrets;
+        const cur = settingsRef.current;
+        const providers = (cur.providers || []).map((p) => {
+          const ref =
+            p.secretRef && p.secretRef.startsWith('provider.') ? p.secretRef : secretRefForProfile(p.id);
+          const key = providerKeyById[p.id] ?? liveSecrets[ref] ?? '';
+          return { ...p, secretRef: ref, apiKey: key };
+        });
+        // Legacy flat-shape ciphers predate secretRefs; fold the flat key
+        // into the active provider so it is rehydrated, not lost.
+        const flatKey = (s.apiKey || '').trim();
+        if (flatKey) {
+          const active =
+            providers.find((p) => p.id === cur.activeProviderId) ||
+            providers.find((p) => p.provider === cur.provider);
+          if (active && !providerKeyById[active.id]) {
+            const ref =
+              active.secretRef && active.secretRef.startsWith('provider.')
+                ? active.secretRef
+                : secretRefForProfile(active.id);
+            providerSecretsRef.current = { ...(providerSecretsRef.current || {}), [ref]: flatKey };
+            active.secretRef = ref;
+            active.apiKey = flatKey;
+          }
+        }
         const next = {
-          ...settingsRef.current,
-          apiKey: s.apiKey || '',
-          serverKey: s.serverKey || '',
-          tgToken: s.tgToken || '',
-          discordToken: s.discordToken || '',
-          appLockPin: s.appLockPin || settingsRef.current.appLockPin,
+          ...cur,
+          apiKey: flatKey,
+          serverKey: s['global.serverKey'] ?? s.serverKey ?? '',
+          tgToken: s['global.tgToken'] ?? s.tgToken ?? '',
+          discordToken: s['global.discordToken'] ?? s.discordToken ?? '',
+          appLockPin: s['global.appLockPin'] ?? s.appLockPin ?? cur.appLockPin,
+          providers,
         };
         secretsRef.current = {
           apiKey: next.apiKey,
@@ -612,14 +828,31 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         };
         setSettings(next);
       }
-    } catch {}
+    } catch {
+      return false;
+    }
+    setVaultUnlocked(true);
     return true;
   };
 
+  // Lock-time purge (SEC-03): drop every secret reference (top-level state,
+  // per-provider keys, registered holders) and never write secrets while
+  // locked. NOTE: secureStore exposes no session-key invalidation, so the
+  // WebCrypto key outlives the lock; every reachable copy is blanked here.
   const lockSecrets = () => {
-    secretsRef.current = { apiKey: '', serverKey: '', tgToken: '', discordToken: '', appLockPin: '' };
+    secretsRef.current = blankSecretHolder();
+    providerSecretsRef.current = {};
+    purgeAllSecretHolders();
     setVaultUnlocked(false);
-    setSettings((prev) => ({ ...prev, apiKey: '', serverKey: '', tgToken: '', discordToken: '', appLockPin: '' }));
+    setSettings((prev) => ({
+      ...prev,
+      apiKey: '',
+      serverKey: '',
+      tgToken: '',
+      discordToken: '',
+      appLockPin: '',
+      providers: (prev.providers || []).map((p) => ({ ...p, apiKey: '' })),
+    }));
   };
 
   const vaultUnlockedRef = useRef(vaultUnlocked);
@@ -643,6 +876,40 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return () => document.removeEventListener('visibilitychange', onVisibility);
   }, []);
 
+  // providerStore bridge: ConfiguredProvider (settings shape, keeps a
+  // transient apiKey mirror for the active profile) <-> ProviderProfile
+  // (persistable shape, secretRef only). Every key write funnels through
+  // writeProviderCredential via createProvider/updateProvider; this file
+  // never writes providerSecretsRef directly.
+  const toProfile = (p: ConfiguredProvider): ProviderProfile => ({
+    id: p.id,
+    provider: p.provider,
+    name: p.name,
+    ...(p.secretRef ? { secretRef: p.secretRef } : {}),
+    ...(p.baseUrl ? { baseUrl: p.baseUrl } : {}),
+    defaultModel: p.defaultModel,
+    enabled: p.enabled,
+    ...(p.validated !== undefined ? { validated: p.validated } : {}),
+  });
+  const toConfigured = (p: ProviderProfile, secrets: Record<string, string>): ConfiguredProvider => ({
+    id: p.id,
+    provider: p.provider,
+    name: p.name,
+    apiKey: p.secretRef ? secrets[p.secretRef] || '' : '',
+    ...(p.secretRef ? { secretRef: p.secretRef } : {}),
+    baseUrl: p.baseUrl,
+    defaultModel: p.defaultModel,
+    enabled: p.enabled,
+    validated: p.validated,
+  });
+  const applyStoreResult = (
+    list: ProviderProfile[],
+    secrets: Record<string, string>
+  ): ConfiguredProvider[] => {
+    providerSecretsRef.current = secrets;
+    return list.map((p) => toConfigured(p, secrets));
+  };
+
   const saveKeys = (
     provider: string,
     key: string,
@@ -658,43 +925,37 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const activeKey = clean(key);
     const activeModel = clean(model) || DEFAULT_MODELS[normed]?.[0] || '';
 
-    // Also sync into configured providers list
-    const currentList = settings.providers || [];
-    let updatedList: ConfiguredProvider[] = [];
-    const existingIndex = currentList.findIndex((p) => p.provider === normed);
+    // Single-write-path sync into the configured list: key material goes
+    // through providerStore (writeProviderCredential), never a direct
+    // apiKey assignment here.
+    const currentProfiles = (settings.providers || []).map(toProfile);
+    const secrets = getProviderSecrets();
+    let updatedList: ConfiguredProvider[];
     let activeId = '';
-
-    if (existingIndex >= 0) {
-      updatedList = currentList.map((p, idx) =>
-        idx === existingIndex
-          ? {
-              ...p,
-              apiKey: activeKey,
-              baseUrl: clean(baseUrl),
-              defaultModel: activeModel,
-              enabled: true,
-              validated: true,
-            }
-          : p
-      );
-      activeId = updatedList[existingIndex].id;
+    const existing = currentProfiles.find((p) => p.provider === normed);
+    if (existing) {
+      const res = storeUpdateProvider(currentProfiles, existing.id, {
+        apiKey: activeKey,
+        baseUrl: clean(baseUrl),
+        defaultModel: activeModel,
+        enabled: true,
+        validated: true,
+      }, secrets);
+      updatedList = applyStoreResult(res.list, res.secrets);
+      activeId = existing.id;
     } else {
       const pName = PROVIDER_OPTIONS.find(([id]) => id === normed)?.[1] || normed.toUpperCase();
-      const createdId = newId('prov_' + normed);
-      activeId = createdId;
-      updatedList = [
-        ...currentList,
-        {
-          id: createdId,
-          provider: normed,
-          name: pName,
-          apiKey: activeKey,
-          baseUrl: clean(baseUrl),
-          defaultModel: activeModel,
-          enabled: true,
-          validated: true,
-        },
-      ];
+      const res = createProvider(currentProfiles, {
+        provider: normed,
+        name: pName,
+        apiKey: activeKey,
+        baseUrl: clean(baseUrl),
+        defaultModel: activeModel,
+        enabled: true,
+        validated: true,
+      }, secrets);
+      updatedList = applyStoreResult(res.list, res.secrets);
+      activeId = res.id;
     }
 
     updateSettings({
@@ -712,21 +973,41 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     addLog(`Active provider set to ${normed} with ${updatedList.length} provider(s) stored.`);
   };
 
-  // Multi-Provider CRUD methods
+  // Multi-Provider CRUD methods (all key writes via providerStore).
   const addConfiguredProvider = (prov: Omit<ConfiguredProvider, 'id'>): string => {
-    const id = newId('prov_' + prov.provider);
-    const newProv: ConfiguredProvider = {
-      ...prov,
-      id,
-    };
-    const nextList = [...(settings.providers || []), newProv];
+    const res = createProvider(
+      (settings.providers || []).map(toProfile),
+      {
+        provider: prov.provider,
+        name: prov.name,
+        apiKey: prov.apiKey ?? '',
+        baseUrl: prov.baseUrl || '',
+        defaultModel: prov.defaultModel,
+        enabled: prov.enabled,
+        validated: prov.validated,
+      },
+      getProviderSecrets()
+    );
+    const nextList = applyStoreResult(res.list, res.secrets);
     updateSettings({ providers: nextList });
     addLog(`Added provider ${prov.name} (${prov.provider})`);
-    return id;
+    return res.id;
   };
 
   const updateConfiguredProvider = (id: string, updates: Partial<ConfiguredProvider>) => {
-    const nextList = (settings.providers || []).map((p) => (p.id === id ? { ...p, ...updates } : p));
+    const profiles = (settings.providers || []).map(toProfile);
+    const res = storeUpdateProvider(profiles, id, {
+      ...(updates.provider !== undefined ? { provider: updates.provider } : {}),
+      ...(updates.name !== undefined ? { name: updates.name } : {}),
+      // apiKey omitted (undefined) leaves the stored key untouched; ''
+      // erases it via writeProviderCredential. Never assigned directly.
+      ...(updates.apiKey !== undefined ? { apiKey: updates.apiKey } : {}),
+      ...(updates.baseUrl !== undefined ? { baseUrl: updates.baseUrl || '' } : {}),
+      ...(updates.defaultModel !== undefined ? { defaultModel: updates.defaultModel } : {}),
+      ...(updates.enabled !== undefined ? { enabled: updates.enabled } : {}),
+      ...(updates.validated !== undefined ? { validated: updates.validated } : {}),
+    }, getProviderSecrets());
+    const nextList = applyStoreResult(res.list, res.secrets);
     const target = nextList.find((p) => p.id === id);
     // Sync settings only when the edited profile is the active one,
     // matched by id so duplicate profiles of the same slug do not bleed.
@@ -734,9 +1015,10 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const isActiveById = activeId ? target?.id === activeId : target?.provider === settingsRef.current.provider;
     if (target && isActiveById) {
       const cur = settingsRef.current;
+      const liveKey = target.secretRef ? (providerSecretsRef.current || {})[target.secretRef] || '' : '';
       updateSettings({
         providers: nextList,
-        apiKey: updates.apiKey !== undefined ? updates.apiKey : cur.apiKey,
+        apiKey: updates.apiKey !== undefined ? liveKey : cur.apiKey,
         baseUrl: updates.baseUrl !== undefined ? (updates.baseUrl || '') : cur.baseUrl,
         modelId: updates.defaultModel !== undefined ? updates.defaultModel : cur.modelId,
       });
@@ -747,19 +1029,28 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const removeConfiguredProvider = (id: string) => {
     const target = (settings.providers || []).find((p) => p.id === id);
-    const nextList = (settings.providers || []).filter((p) => p.id !== id);
+    // removeProvider also erases the profile's vault entry.
+    const res = storeRemoveProvider(
+      (settings.providers || []).map(toProfile),
+      id,
+      getProviderSecrets()
+    );
+    const nextList = applyStoreResult(res.list, res.secrets);
 
     // If deleting the active provider, switch to another enabled one.
     // Active is matched by id so same-slug duplicates do not bleed.
     const activeId = settingsRef.current.activeProviderId;
     const isActive = activeId ? target?.id === activeId : target?.provider === settingsRef.current.provider;
     if (target && isActive && nextList.length > 0) {
-      const fallback = nextList[0];
+      const fallback = nextList.find((p) => p.enabled !== false) || nextList[0];
+      const fallbackKey = fallback.secretRef
+        ? (providerSecretsRef.current || {})[fallback.secretRef] || ''
+        : '';
       updateSettings({
         providers: nextList,
         activeProviderId: fallback.id,
         provider: fallback.provider,
-        apiKey: fallback.apiKey || '',
+        apiKey: fallbackKey,
         baseUrl: fallback.baseUrl || '',
         modelId: fallback.defaultModel,
       });
@@ -770,22 +1061,24 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const activateProvider = (id: string, keepModelId?: string) => {
-    const list = settingsRef.current.providers || [];
-    const normed = normProvider(id);
-    const target =
-      list.find((p) => p.id === id) ||
-      (normed ? list.find((p) => normProvider(p.provider) === normed) : undefined);
-    if (!target) return;
+    // Resolution only via the store: no list/secret writes here. The live
+    // key resolves from the in-memory secrets map ('' when locked/absent).
+    const resolved = storeActivateProvider(
+      (settingsRef.current.providers || []).map(toProfile),
+      id,
+      getProviderSecrets()
+    );
+    if (!resolved) return;
 
     const keep = (keepModelId || '').trim();
     updateSettings({
-      activeProviderId: target.id,
-      provider: target.provider,
-      apiKey: target.apiKey || '',
-      baseUrl: target.baseUrl || '',
-      modelId: keep || target.defaultModel,
+      activeProviderId: resolved.profile.id,
+      provider: resolved.profile.provider,
+      apiKey: resolved.apiKey,
+      baseUrl: resolved.profile.baseUrl || '',
+      modelId: keep || resolved.profile.defaultModel,
     });
-    addLog(`Switched active inference endpoint to ${target.name} (${target.provider})`);
+    addLog(`Switched active inference endpoint to ${resolved.profile.name} (${resolved.profile.provider})`);
   };
 
   // Toggle Pinned
@@ -856,9 +1149,29 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         apiKey: s.apiKey || '',
         baseUrl: s.baseUrl || '',
         model: s.modelId || '',
-      }).catch(() => {});
+      }).catch((e: unknown) => {
+        addLog(`Native provider sync failed: ${e instanceof Error ? e.message : String(e)}`);
+      });
     }
     refreshNow();
+    // Pending approvals startup: show the cached list instantly (offline
+    // boot included), then reconcile with the gateway's live list. Cached
+    // entries for runs the gateway no longer reports are dropped, so a
+    // reload never resurrects resolved approvals.
+    const cachedPending = loadCachedPending();
+    setApprovals(cachedPending);
+    approvalsHydratedRef.current = true;
+    cachePending(cachedPending);
+    gatewayService
+      .listPendingApprovals()
+      .then((fresh) => {
+        const merged = reconcilePending(cachedPending, fresh);
+        setApprovals(merged);
+        cachePending(merged);
+      })
+      .catch(() => {
+        // Offline gateway: the cached list stands; refreshNow logged health.
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -982,6 +1295,30 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const refreshNow = async () => {
     const token = ++refreshTokenRef.current;
     const alive = () => token === refreshTokenRef.current;
+    // Snapshot of what is currently cached, so the offline catch below can
+    // serve it honestly as stale (U12) instead of leaving lists unloadable.
+    const cachedCounts = {
+      sessions: sessionsRef.current.length,
+      jobs: jobs.length,
+      skills: skills.length,
+      blueprints: blueprints.length,
+      memory: memory ? 1 : 0,
+    };
+    // Loading flags up front: first load shows loading, refetch with cached
+    // items shows refreshing. lastSyncedAt is preserved until fresh data lands.
+    setListsMeta((prev) => {
+      const next: ListSyncMetaMap = { ...prev };
+      for (const [k, count] of Object.entries(cachedCounts)) {
+        next[k] = {
+          live: false,
+          stale: prev[k]?.stale ?? false,
+          error: '',
+          lastSyncedAt: prev[k]?.lastSyncedAt ?? null,
+          uiState: count > 0 ? 'refreshing' : 'loading',
+        };
+      }
+      return next;
+    });
     try {
       // On-device the WebView fetch can be blocked (mixed content), so ask
       // the native side, which probes 127.0.0.1:8080 directly.
@@ -991,8 +1328,17 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const status = await gatewayService.healthDetailed();
       if (!alive()) return;
       setGatewayStatus(status);
-      const sessList = await gatewayService.fetchSessions();
+      // Sessions through the sync envelope (DATA-01/03): the server page is
+      // authoritative and its stale/live/error ships to listsMeta. The
+      // local-only merge below keeps sessions created while offline that
+      // the gateway has not confirmed yet.
+      const sessPage = await gatewayService.fetchSessionsPage({ limit: 100, offset: 0 });
       if (!alive()) return;
+      const sessList = sessPage.items;
+      setListMeta('sessions', sessPage, sessList.length, {
+        loading: sessionsRef.current.length === 0,
+        refreshing: sessionsRef.current.length > 0,
+      });
       // Merge instead of wholesale clobber so locally created sessions survive.
       const localOnly = sessionsRef.current.filter(
         (ls) => !sessList.some((s) => s.id === ls.id)
@@ -1000,9 +1346,39 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const merged = [...localOnly, ...sessList];
       sessionsRef.current = merged;
       setSessions(merged);
-      const jobsList = await gatewayService.jobs();
+      const jobsRes: ListSyncResult<CronJob> = await gatewayService.jobsWithState();
       if (!alive()) return;
-      setJobs(jobsList);
+      setJobs(jobsRes.items);
+      setListMeta('jobs', jobsRes, jobsRes.items.length, {
+        loading: jobsRes.items.length === 0 && !jobsRes.live && !jobsRes.stale,
+      });
+      const skillsRes = await gatewayService.skillsWithState();
+      if (!alive()) return;
+      setSkills(skillsRes.items);
+      setListMeta('skills', skillsRes, skillsRes.items.length, {});
+      const blueprintsRes = await gatewayService.blueprintsWithState();
+      if (!alive()) return;
+      setBlueprints(blueprintsRes.items);
+      setListMeta('blueprints', blueprintsRes, blueprintsRes.items.length, {});
+      const memRes = await gatewayService.memoryGet();
+      if (!alive()) return;
+      setMemory({
+        enabled: memRes.enabled,
+        provider: memRes.provider,
+        summary: memRes.summary,
+        entries: memRes.entries,
+      });
+      setListMeta(
+        'memory',
+        {
+          live: memRes.live,
+          stale: memRes.stale,
+          error: memRes.live ? undefined : memRes.summary,
+          lastSyncedAt: null,
+        },
+        memRes.entries
+      );
+      if (!memRes.live) addLog(`Memory unavailable: ${memRes.summary}`);
       // Keep the current session; only auto-select when none is active.
       const cur = currentSessionIdRef.current;
       if (cur) {
@@ -1014,6 +1390,29 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     } catch {
       if (!alive()) return;
       setConnected(false);
+      // Offline with cache: emit stale envelopes (U12) so list screens show
+      // "offline, showing cached data" + lastSyncedAt instead of hanging on
+      // loading. No cache: emit error envelopes. Copy is cause + action with
+      // no addresses, ports, or log-file internals (U15).
+      const offlineError = (count: number) =>
+        count > 0
+          ? 'Gateway unreachable. Showing cached data , pull to retry.'
+          : 'Gateway unreachable. Check the gateway status and retry.';
+      setListsMeta((prev) => {
+        const next: ListSyncMetaMap = { ...prev };
+        for (const [k, count] of Object.entries(cachedCounts)) {
+          const stale = count > 0;
+          const meta = { live: false, stale, error: offlineError(count) };
+          next[k] = {
+            live: false,
+            stale,
+            error: meta.error,
+            lastSyncedAt: prev[k]?.lastSyncedAt ?? null,
+            uiState: resolveListUiState(meta, count),
+          };
+        }
+        return next;
+      });
     }
   };
 
@@ -1057,14 +1456,14 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setConnected(true);
         setInstall('INSTALLED');
         setInstallProgress('');
-        addLog('Gateway running on 127.0.0.1:8080');
+        addLog('Gateway running');
         refreshNow();
       } else {
         setConnected(false);
         setGatewayFailed(true);
         setInstall('FAILED');
         setInstallProgress('');
-        const reason = 'Gateway start failed: not reachable after 4 minutes, see gateway.log';
+        const reason = 'Gateway did not start within 4 minutes. Press Retry to try again.';
         setGatewayFailureReason(reason);
         setInstallError(reason);
         addLog(reason);
@@ -1079,27 +1478,133 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
     if (healthy) {
       setConnected(true);
-      addLog('Gateway running on 127.0.0.1:8080');
+      addLog('Gateway running');
       refreshNow();
     } else {
       setConnected(false);
       setGatewayFailed(true);
-      const reason = 'Gateway start failed: health check did not pass on 127.0.0.1:8080';
+      const reason = 'Gateway start failed: the health check did not pass. Press Retry to try again.';
       setGatewayFailureReason(reason);
       addLog(reason);
     }
   };
 
-  const stopGateway = () => {
-    stopStream();
-    // On-device APK: stop the real gateway process via the native runner.
+  const stopGateway = async () => {
+    await stopStream();
+    // On-device APK: stop the real gateway process via the native runner,
+    // then verify before reporting STOPPED. nativeGateway.ts exposes only
+    // stop()/status(), so the verified-stop lives here: stop, then poll
+    // nativeStatus() until the machine settles.
     if (isNativeGateway()) {
-      nativeStop().catch(() => {});
+      try {
+        await nativeStop();
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        addLog(`Gateway stop failed: ${reason}`);
+        return;
+      }
+      let verified: GatewayState | null = null;
+      for (let i = 0; i < 10; i++) {
+        try {
+          const rep = await nativeStatus();
+          const mapped = mapNativeStatusToGatewayState({
+            running: rep.running,
+            state: rep.state,
+          });
+          if (mapped === 'STOPPED' || (!rep.running && mapped === 'INSTALLED')) {
+            verified = 'STOPPED';
+            break;
+          }
+          if (mapped === 'RUNNING' || mapped === 'STARTING') {
+            // Still up; keep waiting for the process to exit.
+          } else {
+            verified = mapped;
+            break;
+          }
+        } catch {
+          // Status bridge unavailable mid-stop; treat a closed health
+          // probe as exited below.
+        }
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      if (verified === null) {
+        try {
+          if (!(await nativeHealth())) verified = 'STOPPED';
+        } catch {}
+      }
+      if (verified === 'STOPPED') {
+        setGatewayState('STOPPED');
+        setInstall('INSTALLED');
+        setConnected(false);
+        addLog('Gateway process terminated by user (stop verified)');
+      } else {
+        // Never report STOPPED on an unverified stop: the process may
+        // still be running and the UI would lie about it.
+        addLog(
+          `Gateway stop sent but not verified (state: ${verified || 'unknown'}). ` +
+            'The process may still be running.'
+        );
+      }
+      return;
     }
     setInstall('INSTALLED');
     setConnected(false);
     addLog('Gateway process terminated by user');
   };
+
+  // Native gateway supervision: poll nativeStatus() into the single machine
+  // and derive the UI flags from it. Transitional states poll fast (2s);
+  // stable states poll slow (15s). Web builds have no native bridge and
+  // skip polling entirely.
+  useEffect(() => {
+    if (!isNativeGateway()) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const applyState = (mapped: GatewayState) => {
+      setGatewayState(mapped);
+      gatewayStateRef.current = mapped;
+      if (mapped === 'RUNNING') {
+        setConnected(true);
+        // Leave install alone while running: the wizard shows Continue
+        // only for INSTALLED and start flows own the transition.
+      } else if (
+        mapped === 'STOPPED' ||
+        mapped === 'INSTALLED' ||
+        mapped === 'NOT_INSTALLED'
+      ) {
+        setConnected(false);
+        setInstall(toLegacyInstallState(mapped) as InstallState);
+      } else if (mapped === 'FAILED' || mapped === 'DEGRADED') {
+        setConnected(false);
+        setInstall(toLegacyInstallState(mapped) as InstallState);
+      }
+    };
+    const poll = async () => {
+      if (cancelled) return;
+      try {
+        const rep = await nativeStatus();
+        if (cancelled) return;
+        const mapped = mapNativeStatusToGatewayState({
+          running: rep.running,
+          state: rep.state,
+        });
+        applyState(mapped);
+        const fast = isTransitional(mapped);
+        timer = setTimeout(poll, fast ? 2000 : 15000);
+      } catch {
+        if (cancelled) return;
+        // Status bridge hiccup: retry fast once, the machine keeps its
+        // last known value instead of flapping to failure.
+        timer = setTimeout(poll, 2000);
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Autostart the gateway once on boot when the setting is enabled.
   // The ref guard keeps StrictMode double-effects and re-renders
@@ -1185,7 +1690,12 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       abortControllerRef.current = null;
     }
     if (activeRunId) {
-      gatewayService.stopRun(activeRunId);
+      const stopping = activeRunId;
+      // Fire-and-forget on session switch, but log an unconfirmed stop
+      // truthfully instead of swallowing it.
+      gatewayService.stopRun(stopping).then((confirmed) => {
+        if (!confirmed) addLog(`Stop for run ${stopping} did not confirm; it may have already finished.`);
+      });
       setActiveRunId(null);
     }
     streamingRef.current = false;
@@ -1210,16 +1720,30 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const newSession = async (): Promise<string> => {
-    const id = await gatewayService.createSession(settings.modelId);
-    const updated = await gatewayService.fetchSessions();
-    setSessions(updated);
-    selectSession(id);
-    addLog(`Created session ${id}`);
-    return id;
+    try {
+      const id = await gatewayService.createSession(settings.modelId);
+      const updated = await gatewayService.fetchSessions();
+      setSessions(updated);
+      selectSession(id);
+      addLog(`Created session ${id}`);
+      return id;
+    } catch (e) {
+      // createSession throws on failure: log loudly and rethrow so callers
+      // never navigate to a phantom session or log a false success.
+      const reason = e instanceof Error ? e.message : String(e);
+      addLog(`Create session failed: ${reason}`);
+      throw e;
+    }
   };
 
   const deleteSession = async (id: string) => {
-    await gatewayService.deleteSession(id);
+    const ok = await gatewayService.deleteSession(id);
+    if (!ok) {
+      // Throw so the drawer catch fires its error state; returning silently
+      // would close the dialog as if the delete had succeeded (U4).
+      addLog(`Delete session ${id} failed: the gateway did not confirm. Keeping the local copy.`);
+      throw new Error(`Delete session ${id} failed: the gateway did not confirm.`);
+    }
     const updated = await gatewayService.fetchSessions();
     setSessions(updated);
     if (currentSessionId === id) {
@@ -1233,7 +1757,12 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const renameSession = async (id: string, title: string) => {
-    await gatewayService.renameSession(id, title);
+    const ok = await gatewayService.renameSession(id, title);
+    if (!ok) {
+      // Throw so the drawer catch shows its rename error (U4).
+      addLog(`Rename session ${id} failed: the gateway did not confirm. Title unchanged.`);
+      throw new Error(`Rename session ${id} failed: the gateway did not confirm.`);
+    }
     const updated = await gatewayService.fetchSessions();
     setSessions(updated);
     addLog(`Renamed session to "${title}"`);
@@ -1241,12 +1770,16 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const forkSession = async (id: string) => {
     const newId = await gatewayService.forkSession(id);
-    if (newId) {
-      const updated = await gatewayService.fetchSessions();
-      setSessions(updated);
-      selectSession(newId);
-      addLog(`Forked branch to session ${newId}`);
+    if (!newId) {
+      // Throw (same contract as delete/rename) so the caller catch fires its
+      // branch-failed state instead of silently staying put.
+      addLog(`Fork session ${id} failed: the gateway did not confirm. Staying on the current session.`);
+      throw new Error(`Fork session ${id} failed: the gateway did not confirm.`);
     }
+    const updated = await gatewayService.fetchSessions();
+    setSessions(updated);
+    selectSession(newId);
+    addLog(`Forked branch to session ${newId}`);
   };
 
   const dropQueued = (reason: string): number => {
@@ -1259,21 +1792,248 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return n;
   };
 
-  const stopStream = () => {
+  // Map an approval request to a granular auto-approve scope. Returns null
+  // when nothing matches: unmapped capabilities default to manual approval
+  // (deny), never to auto-allow.
+  const approvalScopeOf = (req: PendingApproval): AutoApproveScope | null => {
+    const tool = (req.tool || '').toLowerCase();
+    const cmd = (req.command || '').toLowerCase();
+    const hay = `${tool} ${cmd} ${req.path || ''} ${req.summary}`.toLowerCase();
+    if (/(^|[^a-z])(install|apt|brew|npm install|pip install|cargo add)([^a-z]|$)/.test(hay)) return 'install';
+    if (/(^|[^a-z])(exec|execute|shell|bash|sh -|terminal|run command)([^a-z]|$)/.test(hay)) return 'exec';
+    if (/(^|[^a-z])(fetch|http|curl|wget|network|download|request)([^a-z]|$)/.test(hay)) return 'network';
+    if (/(^|[^a-z])(write|edit|create|delete|remove|mkdir|apply_patch)([^a-z]|$)/.test(hay)) return 'write';
+    if (/(^|[^a-z])(read|list|glob|grep|search|show|cat)([^a-z]|$)/.test(hay)) return 'read';
+    return null;
+  };
+
+  // Raw SSE turn runner. Drives SseParser directly: TextDecoder chunks feed
+  // the parser (split CRLF / multibyte safe), flush() drains the tail at
+  // stream end, and terminal events (done/run.completed vs run.failed/error)
+  // decide the turn outcome. Auth and URL match GatewayService
+  // (http://127.0.0.1:8080 + Bearer serverKey) since this file cannot reach
+  // its private transport.
+  const streamTurnViaSse = async (
+    sessionId: string,
+    model: string,
+    message: string,
+    reasoningEffort: string,
+    imageDataUrls: string[],
+    callbacks: Parameters<GatewayService['streamChat']>[5],
+    abortSignal?: AbortSignal
+  ): Promise<void> => {
+    const key = secretsRef.current.serverKey || settingsRef.current.serverKey;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (key) headers.Authorization = `Bearer ${key}`;
+    const body: Record<string, unknown> = { model };
+    if (imageDataUrls && imageDataUrls.length > 0) {
+      const parts: unknown[] = [];
+      if (message) parts.push({ type: 'text', text: message });
+      for (const url of imageDataUrls) parts.push({ type: 'image_url', image_url: { url } });
+      body.message = parts;
+    } else {
+      body.message = message;
+    }
+    if (reasoningEffort && reasoningEffort !== 'none') {
+      body.model_options = { reasoning_effort: reasoningEffort.toLowerCase() };
+    }
+    let res: Response;
+    try {
+      res = await fetch(
+        `http://127.0.0.1:8080/api/sessions/${encodeURIComponent(sessionId)}/chat/stream`,
+        { method: 'POST', headers, body: JSON.stringify(body), signal: abortSignal }
+      );
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        callbacks.onStopped?.();
+        return;
+      }
+      callbacks.onError?.(err instanceof Error ? err.message : 'Stream failed: gateway unreachable');
+      return;
+    }
+    if (!res.ok) {
+      if (res.status === 401 || res.status === 403) {
+        callbacks.onError?.(`Auth failed: HTTP ${res.status}`);
+      } else {
+        callbacks.onError?.(`Stream failed: HTTP ${res.status}`);
+      }
+      return;
+    }
+    if (!res.body) {
+      callbacks.onError?.('Stream failed: empty response body');
+      return;
+    }
+    const asRecord = (v: unknown): Record<string, unknown> =>
+      v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
+    const asString = (v: unknown): string => (typeof v === 'string' ? v : '');
+    const parser = new SseParser();
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let failedMessage: string | null = null;
+    let stoppedByServer = false;
+    const dispatch = (ev: { event: string; json: unknown }) => {
+      const data = asRecord(ev.json);
+      const runId = asString(data.run_id);
+      if (runId) callbacks.onRunId?.(runId);
+      const usage = asRecord(data.usage);
+      if (typeof usage.input_tokens === 'number' || typeof usage.output_tokens === 'number') {
+        callbacks.onUsage(Number(usage.input_tokens || 0), Number(usage.output_tokens || 0));
+      }
+      switch (ev.event) {
+        case 'assistant.delta': {
+          const delta = asString(data.delta);
+          if (delta) {
+            callbacks.onThinkingDone();
+            callbacks.onText(delta);
+          }
+          break;
+        }
+        case 'assistant.commentary': {
+          const text = asString(data.text);
+          if (text) {
+            callbacks.onThinkingDone();
+            callbacks.onText(text);
+          }
+          break;
+        }
+        case 'tool.progress': {
+          const name = asString(data.tool_name) || 'tool';
+          if (name === '_thinking' || name === 'thinking') {
+            callbacks.onThinking(asString(data.delta) || asString(data.preview));
+          } else {
+            callbacks.onTool(name);
+          }
+          break;
+        }
+        case 'tool.started':
+        case 'tool.completed': {
+          callbacks.onThinkingDone();
+          const name = asString(data.tool_name) || 'tool';
+          callbacks.onTool(name);
+          const output = asString(data.output);
+          if (output) callbacks.onToolOutput?.(name, output);
+          break;
+        }
+        case 'approval.request': {
+          if (runId) {
+            const args = Array.isArray(data.args)
+              ? (data.args as unknown[]).map((a) => String(a))
+              : undefined;
+            const toolName = asString(data.tool_name || data.tool);
+            callbacks.onApproval({
+              runId,
+              sessionId,
+              summary: asString(data.description || data.command) || 'Approval requested for action',
+              tool: toolName || undefined,
+              command: asString(data.command) || undefined,
+              path: asString(data.path) || undefined,
+              args,
+              risk: asString(data.risk) || undefined,
+              cwd: asString(data.cwd) || undefined,
+              reason: asString(data.reason) || undefined,
+              createdAt: Date.now(),
+            });
+          }
+          break;
+        }
+        case 'run.failed':
+        case 'error':
+        case 'stream.error': {
+          failedMessage =
+            asString(data.error || data.message || data.description) ||
+            'the gateway reported a run failure';
+          break;
+        }
+        case 'run.cancelled':
+        case 'run.stopped':
+        case 'cancelled':
+        case 'stop': {
+          stoppedByServer = true;
+          break;
+        }
+        default: {
+          if (isTerminalSseEvent(ev.event)) {
+            // Terminal completion (done/run.completed/complete): the turn
+            // simply ends; bookkeeping happens in the caller finally block.
+          } else if (ev.event === 'message') {
+            const text = asString(data.delta || data.text || data.content);
+            if (text) {
+              callbacks.onThinkingDone();
+              callbacks.onText(text);
+            }
+          }
+          break;
+        }
+      }
+    };
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        for (const ev of parser.feed(chunk)) dispatch(ev);
+      }
+      // Drain the tail: a final event without a trailing blank line still counts.
+      for (const ev of parser.flush()) dispatch(ev);
+      if (failedMessage) {
+        callbacks.onError?.(failedMessage);
+      } else if (stoppedByServer) {
+        callbacks.onStopped?.();
+      } else {
+        callbacks.onThinkingDone();
+      }
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        callbacks.onStopped?.();
+      } else {
+        callbacks.onError?.(err instanceof Error ? err.message : 'Stream failed: gateway unreachable');
+      }
+    } finally {
+      try {
+        await reader.cancel();
+      } catch {
+        // Stream already closed, nothing to cancel.
+      }
+      try {
+        reader.releaseLock();
+      } catch {
+        // Lock already released, ignore.
+      }
+    }
+  };
+
+  const stopStream = async () => {
     if (abortControllerRef.current) {
       try {
         abortControllerRef.current.abort();
       } catch {}
       abortControllerRef.current = null;
     }
-    if (activeRunId) {
-      gatewayService.stopRun(activeRunId);
-      setActiveRunId(null);
-    }
+    // Await the stop result so the log tells the truth: confirmed means the
+    // gateway acknowledged the stop, unconfirmed usually means the run had
+    // already finished. Flags clear first so stop-then-send works sync.
+    const runId = activeRunId;
     streamingRef.current = false;
     setStreaming(false);
+    if (runId) {
+      setActiveRunId(null);
+      const confirmed = await gatewayService.stopRun(runId);
+      addLog(
+        confirmed
+          ? `Stop confirmed by gateway for run ${runId}`
+          : `Stop sent for run ${runId} but the gateway did not confirm; the run may have already finished.`
+      );
+    }
     dropQueued('stream stopped');
-    // Mark pending assistant message as finished thinking
+    // Mark pending assistant message as finished thinking, and flag the
+    // in-flight turn as stopped so its meta reads stopped:true, not success.
+    const stoppedAgentId = lastAgentMsgIdRef.current;
+    if (stoppedAgentId) {
+      setTurnMeta((prev) =>
+        prev[stoppedAgentId] ? { ...prev, [stoppedAgentId]: { ...prev[stoppedAgentId], stopped: true } } : prev
+      );
+      lastAgentMsgIdRef.current = null;
+    }
     setChat((prev) =>
       prev.map((m) =>
         m.sender === 'hermes' && !m.thinkingDone ? { ...m, thinkingDone: true } : m
@@ -1361,12 +2121,20 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     streamingRef.current = true;
     setStreaming(true);
+    setStreamError(null);
+    lastAgentMsgIdRef.current = agentMsgId;
     turnUsageSeenRef.current = false;
     turnOutCharsRef.current = 0;
     const startTime = Date.now();
     const activeModel = settingsRef.current.modelId;
     const activeEffort = settingsRef.current.reasoningEffort;
-    const autoApprove = settingsRef.current.autoApproveGlobal;
+    // Scoped auto-approve: the legacy global maps to a disabled policy
+    // (fromLegacyGlobal), so only an explicit policy with matching scopes
+    // auto-allows; unmapped capabilities default to manual approval.
+    const autoPolicy = normalizePolicy(
+      (settingsRef.current as unknown as { autoApprovePolicy?: unknown }).autoApprovePolicy ??
+        fromLegacyGlobal(settingsRef.current.autoApproveGlobal)
+    );
     setTurnMeta((prev) => ({
       ...prev,
       [agentMsgId]: { model: activeModel, durationMs: 0 },
@@ -1374,7 +2142,53 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     abortControllerRef.current = new AbortController();
 
-    gatewayService.streamChat(
+    // U11: per-token batching. SSE deltas arrive per token and each one used
+    // to map the whole chat array (O(tokens x messages)). Deltas now
+    // accumulate here and flush in a single setChat per ~32ms frame; the row
+    // only re-renders the changed bubble by id, so one batched update per
+    // frame is all the UI needs. Control events (tool/approval/error/stop)
+    // flush synchronously first so ordering is preserved.
+    let pendingText = '';
+    let pendingThinking = '';
+    let thinkingDonePending = false;
+    let streamFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    const flushStreamBuffers = () => {
+      if (streamFlushTimer !== null) {
+        clearTimeout(streamFlushTimer);
+        streamFlushTimer = null;
+      }
+      if (!pendingText && !pendingThinking && !thinkingDonePending) return;
+      const text = pendingText;
+      const thinking = pendingThinking;
+      const done = thinkingDonePending;
+      pendingText = '';
+      pendingThinking = '';
+      thinkingDonePending = false;
+      setChat((prev) =>
+        prev.map((m) =>
+          m.id === agentMsgId
+            ? {
+                ...m,
+                content: text ? (m.content || '') + text : m.content,
+                thinking: thinking ? (m.thinking || '') + thinking : m.thinking,
+                ...(done ? { thinkingDone: true } : {}),
+              }
+            : m
+        )
+      );
+    };
+    const scheduleStreamFlush = () => {
+      if (streamFlushTimer !== null) return;
+      streamFlushTimer = setTimeout(() => {
+        streamFlushTimer = null;
+        flushStreamBuffers();
+      }, 32);
+    };
+
+    // Raw SSE path (SseParser): terminal run.failed/error events land in
+    // onError above (streamError + turnMeta.error, no bubble); clean
+    // completion flows through the finally block below.
+    streamTurnViaSse(
       sid,
       activeModel,
       trimmed,
@@ -1383,28 +2197,20 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       {
         onRunId: (rId) => setActiveRunId(rId),
         onThinking: (delta) => {
-          setChat((prev) =>
-            prev.map((m) =>
-              m.id === agentMsgId ? { ...m, thinking: (m.thinking || '') + delta } : m
-            )
-          );
+          pendingThinking += delta;
+          scheduleStreamFlush();
         },
         onThinkingDone: () => {
-          setChat((prev) =>
-            prev.map((m) =>
-              m.id === agentMsgId ? { ...m, thinkingDone: true } : m
-            )
-          );
+          thinkingDonePending = true;
+          scheduleStreamFlush();
         },
         onText: (delta) => {
           turnOutCharsRef.current += delta.length;
-          setChat((prev) =>
-            prev.map((m) =>
-              m.id === agentMsgId ? { ...m, content: (m.content || '') + delta } : m
-            )
-          );
+          pendingText += delta;
+          scheduleStreamFlush();
         },
         onTool: (toolName) => {
+          flushStreamBuffers();
           setChat((prev) =>
             prev.map((m) =>
               m.id === agentMsgId
@@ -1414,6 +2220,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           );
         },
         onToolOutput: (toolName, output) => {
+          flushStreamBuffers();
           setChat((prev) =>
             prev.map((m) =>
               m.id === agentMsgId
@@ -1434,24 +2241,34 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           setUsageOut((prev) => prev + outp);
         },
         onApproval: (req) => {
-          if (autoApprove) {
+          const scope = approvalScopeOf(req);
+          if (scope && isScopeAllowed(autoPolicy, scope)) {
             resolveApproval(req, true, settingsRef.current.approvalScope || 'once');
           } else {
             setApprovals((prev) => (prev.some((a) => a.runId === req.runId) ? prev : [...prev, req]));
           }
         },
         onError: (message: string) => {
-          const errBubble: ChatMessage = {
-            id: newId('msg'),
-            sender: 'hermes',
-            content: `Stream error: ${message || 'the gateway closed the stream unexpectedly'}`,
-            thinkingDone: true,
-            timestamp: Date.now(),
-          };
-          setChat((prev) => [...prev, errBubble]);
-          addLog(`Stream error: ${message || 'unknown gateway error'}`);
+          // Failures surface via streamError + turnMeta.error, never as a
+          // 'Stream error:' chat bubble (bubbles pollute history and get
+          // re-sent as context on retry). Flush buffered deltas first so the
+          // partial turn content is not lost.
+          flushStreamBuffers();
+          const msg = message || 'the gateway closed the stream unexpectedly';
+          setStreamError(msg);
+          setTurnMeta((prev) => ({
+            ...prev,
+            [agentMsgId]: {
+              model: activeModel,
+              durationMs: Date.now() - startTime,
+              error: msg,
+            } as TurnMeta,
+          }));
+          addLog(`Stream error: ${msg}`);
         },
         onStopped: () => {
+          thinkingDonePending = true;
+          flushStreamBuffers();
           setChat((prev) =>
             prev.map((m) =>
               m.id === agentMsgId ? { ...m, thinkingDone: true } : m
@@ -1474,7 +2291,10 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         streamingRef.current = false;
         setStreaming(false);
         setActiveRunId(null);
+        lastAgentMsgIdRef.current = null;
         abortControllerRef.current = null;
+        // Drain any deltas still buffered before turn bookkeeping runs.
+        flushStreamBuffers();
         const duration = Date.now() - startTime;
         // Fallback: when the stream produced no usage events, estimate
         // tokens from text length so totals do not silently stay at zero.
@@ -1562,7 +2382,9 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   // Resend the last user message after clearing any trailing failed or
-  // empty hermes bubbles. sendMessage strips those as well.
+  // empty hermes bubbles. sendMessage strips those as well. NOTE: this
+  // starts a NEW gateway run (there is no server-side resume token); the
+  // resent text plus the cleaned history is the resume mechanism.
   const retryLast = (): boolean => {
     const sid = currentSessionIdRef.current;
     if (!sid || streamingRef.current) return false;
@@ -1604,9 +2426,49 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   // Jobs Actions
   const refreshJobs = async () => {
-    const list = await gatewayService.jobs();
-    setJobs(list);
-    const ids = new Set(list.map((j) => j.id));
+    // Loading flag up front so the jobs list never hangs without a state.
+    setListsMeta((prev) => ({
+      ...prev,
+      jobs: {
+        live: false,
+        stale: prev.jobs?.stale ?? false,
+        error: '',
+        lastSyncedAt: prev.jobs?.lastSyncedAt ?? null,
+        uiState: jobs.length > 0 ? 'refreshing' : 'loading',
+      },
+    }));
+    let res: ListSyncResult<CronJob>;
+    try {
+      res = await gatewayService.jobsWithState();
+    } catch (e: unknown) {
+      // jobsWithState envelopes failures itself, but a transport-level throw
+      // must still land an honest error envelope (never a silent hang).
+      // Copy stays cause + action; raw transport text never reaches the UI.
+      setListsMeta((prev) => {
+        const count = jobs.length;
+        const meta = {
+          live: false,
+          stale: count > 0,
+          error: count > 0
+            ? 'Jobs unavailable. Showing cached jobs , pull to retry.'
+            : 'Jobs unavailable. Check the gateway status and retry.',
+        };
+        return {
+          ...prev,
+          jobs: {
+            live: false,
+            stale: meta.stale,
+            error: meta.error,
+            lastSyncedAt: prev.jobs?.lastSyncedAt ?? null,
+            uiState: resolveListUiState(meta, count),
+          },
+        };
+      });
+      throw e;
+    }
+    setJobs(res.items);
+    setListMeta('jobs', res, res.items.length, {});
+    const ids = new Set(res.items.map((j) => j.id));
     setCronRuns((prev) => {
       const next: Record<string, CronRun[]> = {};
       let changed = false;
@@ -1667,6 +2529,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         installError,
         gatewayLogs,
         connected,
+        gatewayState,
         gatewayStatus,
         gatewayFailed,
         gatewayFailureReason,
@@ -1674,6 +2537,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         stopGateway,
         installGateway,
         refreshNow,
+        listsMeta,
         sessions,
         currentSessionId,
         chat,
@@ -1686,6 +2550,9 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         approvals,
         queuedMessages,
         models,
+        skills,
+        blueprints,
+        memory,
         pinnedIds,
         togglePin,
         selectSession,
@@ -1704,6 +2571,8 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         lockSecrets,
         lockNow,
         retryLast,
+        streamError,
+        settingsSaveError,
         getDraft,
         setDraft,
         jobs,

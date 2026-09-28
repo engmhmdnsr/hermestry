@@ -243,14 +243,20 @@ object Bootstrap {
     val free = try {
       StatFs(app.filesDir.absolutePath).availableBytes
     } catch (_: Exception) { -1L }
-    return StoragePreflight(freeBytes = free, neededBytes = needed, enough = free < 0L || free >= needed)
+    // Fail CLOSED on unknown free space (StatFs -1): an unreadable stat must
+    // warn and refuse, never silently assume room for a ~1.2GB install.
+    return StoragePreflight(freeBytes = free, neededBytes = needed, enough = free >= needed)
   }
 
   fun requireStorage(app: Context, onStep: (String) -> Unit = {}) {
     val pre = storagePreflight(app)
-    onStep("storage: ${pre.freeMb}MB free, ${pre.neededMb}MB required")
+    val freeLabel = if (pre.freeBytes < 0L) "unknown" else "${pre.freeMb}MB"
+    onStep("storage: $freeLabel free, ${pre.neededMb}MB required")
     if (!pre.enough) throw RuntimeException(
-      "needs_space: ${pre.freeMb}MB free, ${pre.neededMb}MB required. Free space, then retry."
+      if (pre.freeBytes < 0L)
+        "needs_space: free space unknown (stat failed), refusing install. Free space, then retry."
+      else
+        "needs_space: ${pre.freeMb}MB free, ${pre.neededMb}MB required. Free space, then retry."
     )
   }
 
@@ -276,10 +282,13 @@ object Bootstrap {
     }
   }
 
-  // INSTALL-02: signed image manifest preference. The manifest lists the
-  // current image asset; when it carries entries, the SIGNED entry (non-blank
-  // signature) wins. A manifest sha that disagrees with the compiled pin
-  // fails closed (no download). Null = manifest unreachable, use pins.
+  // INSTALL-02: image manifest preference. The manifest lists the current
+  // image asset; when it carries entries, the entry carrying a non-blank
+  // "signature" label wins. That label is a publisher preference marker only,
+  // NOT cryptographic verification: no signature is checked here. Trust comes
+  // from the sha256 pin (compiled pin vs live .sha256 cross-check in
+  // installImage plus resolveImageAsset below). Null = manifest unreachable,
+  // use pins.
   const val IMAGE_MANIFEST_URL =
     "https://github.com/engmhmdnsr/HERMES-MOBILE/releases/download/v1.0.0-image/hermes-image.manifest.json"
 
@@ -297,13 +306,15 @@ object Bootstrap {
   }
 
   /**
-   * Picks the signed entry from a manifest blob. Pure function, no network.
+   * Picks the preferred entry from a manifest blob. Pure function, no network.
    * Shape: {"images":[{"url":...,"sha256":...,"signature":...}]}.
+   * A non-blank "signature" is a publisher preference label only (preferred
+   * entry wins); it is NOT cryptographically verified.
    */
   fun parseImageManifest(text: String): ImageManifest? {
     return try {
       val objs = Regex("\\{[^{}]*\"url\"[^{}]*\\}").findAll(text)
-      var unsigned: ImageManifest? = null
+      var unlabeled: ImageManifest? = null
       for (m in objs) {
         val b = m.value
         fun field(name: String): String =
@@ -311,15 +322,15 @@ object Bootstrap {
         val e = ImageManifest(field("url"), field("sha256"), field("signature"))
         if (e.url.isBlank() || e.sha256.isBlank()) continue
         if (e.signature.isNotBlank()) return e
-        if (unsigned == null) unsigned = e
+        if (unlabeled == null) unlabeled = e
       }
-      unsigned
+      unlabeled
     } catch (_: Exception) { null }
   }
 
   /**
-   * Resolves the image asset to download: signed manifest entry wins, but its
-   * sha must still agree with the compiled pin (fail closed on rotation).
+   * Resolves the image asset to download: the labeled manifest entry wins, but
+   * its sha must still agree with the compiled pin (fail closed on rotation).
    * Returns (url, sha); falls back to the pins when unreachable.
    */
   fun resolveImageAsset(): Pair<String, String> {
@@ -495,11 +506,11 @@ object Bootstrap {
       val tmp = File(root, "hermes-image.tar.gz")
       try {
         onStep("downloading prebuilt image (~305MB, one time)...")
-        // INSTALL-02: signed manifest wins; pin disagreement fails closed.
+        // INSTALL-02: labeled manifest entry wins; pin disagreement fails closed.
         // downloadTo still enforces the pin; the live .sha256 cross-check
         // below stays as the second gate (pinned vs live must agree).
         val (imageUrl, imageSha) = resolveImageAsset()
-        if (imageUrl != IMAGE_AARCH64_URL) onStep("image: using signed manifest asset")
+        if (imageUrl != IMAGE_AARCH64_URL) onStep("image: using manifest asset")
         downloadTo(imageUrl, tmp, imageSha,
           { pct -> onStep("downloading image... $pct%") },
           { msg -> onStep("image: $msg") },
@@ -530,7 +541,7 @@ object Bootstrap {
         File(fs, "root").mkdirs()
         File(fs, "tmp").mkdirs()
         File(fs, ".rootfs_ok").writeText("bookworm aarch64 one-shot")
-        File(fs, ".image_ok").writeText("v1.0.0-image")
+        File(fs, ".image_ok").writeText(IMAGE_VERSION)
       } finally {
         tmp.delete()
       }
@@ -914,7 +925,9 @@ object Bootstrap {
     } catch (e: Exception) { sb.appendLine("no log: ${e.message}") }
     sb.appendLine("--- gateway.log (service) ---")
     try {
-      sb.append(File(rootDir(app), "logs/gateway.log").readText().takeLast(8000))
+      // Reader matches the writer: the service drains proc output to
+      // rootDir/gateway.log (startGateway), not logs/gateway.log.
+      sb.append(File(rootDir(app), "gateway.log").readText().takeLast(8000))
     } catch (e: Exception) { sb.appendLine("no gateway.log yet: ${e.message}") }
     val text = sb.toString()
     val name = "hermes-install-log.txt"

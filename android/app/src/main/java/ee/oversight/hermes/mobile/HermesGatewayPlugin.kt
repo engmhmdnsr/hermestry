@@ -54,7 +54,8 @@ class HermesGatewayPlugin : Plugin() {
         // INSTALL-04: fail fast before the ~305MB download when storage is short.
         val pre = try { Bootstrap.storagePreflight(context) } catch (_: Exception) { null }
         if (pre != null && !pre.enough) {
-          val msg = "needs_space: ${pre.freeMb}MB free, ${pre.neededMb}MB required"
+          val freeLabel = if (pre.freeBytes < 0L) "unknown" else "${pre.freeMb}MB"
+          val msg = "needs_space: $freeLabel free, ${pre.neededMb}MB required"
           notifyListeners("installDone", JSObject()
             .put("ok", false)
             .put("error", msg), true)
@@ -131,6 +132,15 @@ class HermesGatewayPlugin : Plugin() {
     try {
       if (!Bootstrap.isInstalled(context)) {
         call.reject("not_installed: run install() first")
+        return
+      }
+      // Consult compat metadata at start and refuse an incompatible image:
+      // a stale/mixed rootfs fails later with obscure proot errors.
+      // aarch64-only: legacy arches never write .image_ok, so skip them.
+      val compat = try { Bootstrap.compatInfo() } catch (_: Exception) { null }
+      if (Bootstrap.arch() == "aarch64" && !Bootstrap.isImageCompatible(context)) {
+        call.reject("incompatible_image: on-disk image does not match " +
+          "${compat?.imageVersion ?: Bootstrap.IMAGE_VERSION}, reinstall")
         return
       }
       Bootstrap.renderConfig(context)
@@ -297,6 +307,10 @@ class HermesGatewayPlugin : Plugin() {
   fun setProvider(call: PluginCall) {
     // Mirror the web-side active provider into the prefs renderConfig reads.
     // The gateway picks them up on next (re)start, no reinstall needed.
+    // Optional extras (absent = leave the stored value alone, never wiped by
+    // older callers): tg_token/tgToken, discord_token/discordToken,
+    // server_key/serverKey. Blank token clears its slot; blank server key is
+    // rejected loudly. Old 4-arg calls behave exactly as before.
     try {
       val provider = call.getString("provider").orEmpty()
       val apiKey = call.getString("apiKey").orEmpty()
@@ -307,10 +321,52 @@ class HermesGatewayPlugin : Plugin() {
         .putString("provider_base_url", baseUrl)
         .putString("model_id", model)
         .apply()
+      SecurePrefs.clearError()
       SecurePrefs.putString(context, SecurePrefs.KEY_PROVIDER, apiKey)
-      call.resolve(JSObject().put("ok", true))
+      (call.getString("tg_token") ?: call.getString("tgToken"))?.let { t ->
+        if (t.isBlank()) SecurePrefs.remove(context, SecurePrefs.KEY_TG)
+        else SecurePrefs.putString(context, SecurePrefs.KEY_TG, t)
+      }
+      (call.getString("discord_token") ?: call.getString("discordToken"))?.let { t ->
+        if (t.isBlank()) SecurePrefs.remove(context, SecurePrefs.KEY_DISCORD)
+        else SecurePrefs.putString(context, SecurePrefs.KEY_DISCORD, t)
+      }
+      (call.getString("server_key") ?: call.getString("serverKey"))?.let { k ->
+        if (k.isBlank()) {
+          call.reject("server_key blank, refusing empty write")
+          return
+        }
+        SecurePrefs.putString(context, SecurePrefs.KEY_SERVER, k)
+      }
+      val err = SecurePrefs.lastError()
+      if (err != null) call.reject(err)
+      else call.resolve(JSObject().put("ok", true))
     } catch (e: Exception) {
       call.reject(e.message ?: "setProvider failed")
+    }
+  }
+
+  /**
+   * Writes the local-API server key into the encrypted store and acks.
+   * Fails loudly: blank input is rejected (an empty key would leave the
+   * local API unintentionally open) and a failed crypto write rejects with
+   * the SecurePrefs error instead of silently keeping the old value.
+   */
+  @PluginMethod
+  fun setServerKey(call: PluginCall) {
+    try {
+      val key = (call.getString("serverKey") ?: call.getString("server_key")).orEmpty()
+      if (key.isBlank()) {
+        call.reject("server_key blank, refusing empty write")
+        return
+      }
+      SecurePrefs.clearError()
+      SecurePrefs.putString(context, SecurePrefs.KEY_SERVER, key)
+      val err = SecurePrefs.lastError()
+      if (err != null) call.reject(err)
+      else call.resolve(JSObject().put("ok", true))
+    } catch (e: Exception) {
+      call.reject(e.message ?: "setServerKey failed")
     }
   }
 

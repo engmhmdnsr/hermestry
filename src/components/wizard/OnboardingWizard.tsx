@@ -5,9 +5,9 @@ import {
   PROVIDER_OPTIONS,
   KNOWN_PROVIDERS,
   normProvider,
-  keysValid,
   KEYLESS_PROVIDERS,
 } from '../../constants/providers';
+import { redactSecrets } from '../../services/redaction';
 
 interface OnboardingWizardProps {
   onDone: () => void;
@@ -22,6 +22,8 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
     installError,
     gatewayLogs,
     connected,
+    gatewayFailed,
+    gatewayFailureReason,
     startGateway,
     installGateway,
     updateSettings,
@@ -29,6 +31,13 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
   } = useHermes();
 
   const [step, setStep] = useState<number>(install === 'INSTALLED' ? 2 : 0);
+  // Launch/skip guards. startGateway() resolves void, so success is read
+  // from connected/gatewayFailed state , never assumed from resolution.
+  const [launching, setLaunching] = useState(false);
+  const [launchTried, setLaunchTried] = useState(false);
+  const [launchError, setLaunchError] = useState<string | null>(null);
+  const [skipArmed, setSkipArmed] = useState(false);
+  const [showTg, setShowTg] = useState(false);
 
   // Keep the newest log line visible: the box has a fixed height, so without
   // this the user sees the first lines forever and thinks logging stopped.
@@ -55,11 +64,21 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
     }
   }, [connected, step, onDone, updateSettings]);
 
+  // Launch failure surface: startGateway() returning is not success , the
+  // gateway machine reports via gatewayFailed/gatewayFailureReason.
+  useEffect(() => {
+    if (step === 3 && launchTried && !launching && !connected && gatewayFailed) {
+      setLaunchError(
+        gatewayFailureReason ||
+          'Gateway start failed: health check did not pass. See the log or press Skip to open the workspace offline.'
+      );
+    }
+  }, [step, launchTried, launching, connected, gatewayFailed, gatewayFailureReason]);
+
   const normed = normProvider(provider);
   const effectiveProvider = customProvider ? provider.trim() || normed : normed;
   const isKnown = KNOWN_PROVIDERS.has(normProvider(effectiveProvider));
   const isKeyless = KEYLESS_PROVIDERS.has(normProvider(effectiveProvider));
-  const isKeyValid = keysValid(effectiveProvider, apiKey, baseUrl);
 
   const saveBlockReason: string | null = (() => {
     if (!customProvider && !provider) return t('providerRequired');
@@ -68,6 +87,37 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
     if (!isKnown && !baseUrl.trim()) return t('customUrlRequired');
     return null;
   })();
+  // Single gate: the button enables exactly when there is no block reason.
+  // (keysValid() defaults an empty provider to deepseek, so gating on it
+  // alone would let provider:'' through , saveBlockReason is the source.)
+  const canSave = !saveBlockReason;
+  // Captured before JSX narrowing so guarded buttons can reuse it inside
+  // narrowed blocks (e.g. install === 'FAILED').
+  const isInstalling = install === 'INSTALLING';
+
+  const handleLaunch = async () => {
+    if (launching) return;
+    setLaunching(true);
+    setLaunchTried(true);
+    setLaunchError(null);
+    try {
+      await startGateway();
+    } finally {
+      setLaunching(false);
+    }
+    // No unconditional onboard here: the connected-effect above completes
+    // onboarding on real health; the failure-effect surfaces the reason.
+  };
+
+  const handleSkip = () => {
+    // Offline skip is a deliberate two-tap confirm, never silent.
+    if (typeof navigator !== 'undefined' && !navigator.onLine && !skipArmed) {
+      setSkipArmed(true);
+      return;
+    }
+    updateSettings({ onboarded: true });
+    onDone();
+  };
 
   return (
     <div className="min-h-screen bg-[var(--app-bg,#090B0E)] text-slate-200 p-6 max-w-lg mx-auto flex flex-col justify-start">
@@ -124,10 +174,13 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
             <div className="pt-8">
               <button
                 onClick={() => {
+                  if (install === 'INSTALLING') return;
                   setStep(1);
                   installGateway();
                 }}
-                className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 active:scale-[0.99] text-white font-semibold text-sm transition shadow-sm cursor-pointer flex items-center justify-center gap-2"
+                disabled={install === 'INSTALLING'}
+                aria-disabled={install === 'INSTALLING'}
+                className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 active:scale-[0.99] text-white font-semibold text-sm transition shadow-sm cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-wait"
               >
                 <span>{t('continue')}</span>
                 <ArrowRight className="w-4 h-4 rtl-flip" />
@@ -150,19 +203,29 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
             </div>
 
             {install === 'INSTALLING' && (
-              <div className="w-full bg-white/[0.06] h-1.5 rounded-full overflow-hidden">
-                <div className="bg-indigo-500 h-full w-2/3 animate-pulse rounded-full" />
-              </div>
+              <>
+                <style>{`@keyframes wizard-indeterminate { 0% { transform: translateX(-100%);} 100% { transform: translateX(300%);} }`}</style>
+                <div
+                  className="w-full bg-white/[0.06] h-1.5 rounded-full overflow-hidden"
+                  role="progressbar"
+                  aria-label={t('installingMsg')}
+                >
+                  <div
+                    className="bg-indigo-500 h-full w-1/3 rounded-full"
+                    style={{ animation: 'wizard-indeterminate 1.4s ease-in-out infinite' }}
+                  />
+                </div>
+              </>
             )}
 
             {installProgress && (
-              <p className="text-xs font-mono text-teal-400">{installProgress}</p>
+              <p role="status" className="text-xs font-mono text-teal-400">{redactSecrets(installProgress)}</p>
             )}
 
             <div className="rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-3.5 h-52 overflow-y-auto overflow-x-hidden font-mono text-xs text-slate-400 space-y-1" ref={logBoxRef}>
               {gatewayLogs.slice(-200).map((log, i) => (
                 <div key={`${gatewayLogs.length - 200 + i}`} className="leading-relaxed break-words whitespace-pre-wrap">
-                  {log}
+                  {redactSecrets(log)}
                 </div>
               ))}
             </div>
@@ -180,12 +243,16 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                 <div className="space-y-3">
                   {installError && (
                     <div className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-300 leading-relaxed">
-                      {installError}
+                      {redactSecrets(installError)}
                     </div>
                   )}
                   <button
-                    onClick={() => installGateway()}
-                    className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm transition cursor-pointer"
+                    onClick={() => {
+                      if (isInstalling) return;
+                      installGateway();
+                    }}
+                    disabled={isInstalling}
+                    className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm transition cursor-pointer disabled:opacity-60 disabled:cursor-wait"
                   >
                     {t('retrySetup')}
                   </button>
@@ -220,7 +287,12 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                   </label>
                   <button
                     type="button"
-                    onClick={() => setCustomProvider(!customProvider)}
+                    onClick={() => {
+                      // Never carry a stale id across modes: a selected slug
+                      // is not a valid custom id and vice versa.
+                      setCustomProvider(!customProvider);
+                      setProvider('');
+                    }}
                     aria-pressed={customProvider}
                     className={`px-3 min-h-[44px] py-1 rounded-lg text-[11px] font-medium transition cursor-pointer ${
                       customProvider
@@ -238,6 +310,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                     value={provider}
                     onChange={(e) => setProvider(e.target.value)}
                     placeholder="e.g. my-proxy"
+                    dir="ltr"
                     className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                   />
                 ) : (
@@ -268,6 +341,8 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                     value={apiKey}
                     onChange={(e) => setApiKey(e.target.value)}
                     placeholder="sk-..."
+                    dir="ltr"
+                    autoComplete="off"
                     className="w-full px-3.5 py-2.5 pe-10 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                   />
                   <button
@@ -292,6 +367,8 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                   value={baseUrl}
                   onChange={(e) => setBaseUrl(e.target.value)}
                   placeholder="https://api.openai.com/v1"
+                  dir="ltr"
+                  autoComplete="off"
                   className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                 />
               </div>
@@ -306,6 +383,8 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                   value={modelId}
                   onChange={(e) => setModelId(e.target.value)}
                   placeholder="e.g. deepseek-chat, gpt-4o, claude-3-5-sonnet"
+                  dir="ltr"
+                  autoComplete="off"
                   className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                 />
               </div>
@@ -314,29 +393,44 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                 <label htmlFor="ob-tgtoken" className="block text-xs font-medium text-slate-400 mb-1">
                   {t('telegramBridge')} {t('optionalSuffix')}
                 </label>
-                <input
-                  id="ob-tgtoken"
-                  type="password"
-                  value={tgToken}
-                  onChange={(e) => setTgToken(e.target.value)}
-                  placeholder="bot123456:ABC-DEF..."
-                  className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
-                />
+                <div className="relative">
+                  <input
+                    id="ob-tgtoken"
+                    type={showTg ? 'text' : 'password'}
+                    value={tgToken}
+                    onChange={(e) => setTgToken(e.target.value)}
+                    placeholder="bot123456:ABC-DEF..."
+                    dir="ltr"
+                    autoComplete="off"
+                    className="w-full px-3.5 py-2.5 pe-10 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowTg(!showTg)}
+                    aria-label={showTg ? 'Hide Telegram token' : 'Show Telegram token'}
+                    aria-pressed={showTg}
+                    className="absolute end-2 top-1/2 -translate-y-1/2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-500 hover:text-white"
+                  >
+                    {showTg ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
               </div>
             </div>
 
             <div className="pt-4 space-y-2">
               {saveBlockReason && (
-                <p className="text-[11px] text-amber-400">{saveBlockReason}</p>
+                <p role="status" className="text-[11px] text-amber-400">{saveBlockReason}</p>
               )}
               <button
-                disabled={!isKeyValid}
+                disabled={!canSave}
+                aria-disabled={!canSave}
                 onClick={() => {
+                  if (!canSave) return;
                   saveKeys(effectiveProvider, apiKey, modelId, baseUrl, tgToken, settings.discordToken, settings.serverKey, bootRestart);
                   setStep(3);
                 }}
                 className={`w-full py-3.5 rounded-2xl font-semibold text-sm transition cursor-pointer ${
-                  isKeyValid
+                  canSave
                     ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-xs'
                     : 'bg-white/[0.04] text-slate-600 cursor-not-allowed'
                 }`}
@@ -396,23 +490,28 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
             </div>
 
             <div className="pt-6 space-y-3">
+              {launchError && (
+                <div role="alert" className="p-3.5 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-xs text-rose-300 leading-relaxed">
+                  {redactSecrets(launchError)}
+                </div>
+              )}
               <button
-                onClick={async () => {
-                  await startGateway();
-                  updateSettings({ onboarded: true });
-                  onDone();
-                }}
-                className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm transition cursor-pointer flex items-center justify-center gap-2 shadow-xs"
+                onClick={handleLaunch}
+                disabled={launching}
+                aria-disabled={launching}
+                className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm transition cursor-pointer flex items-center justify-center gap-2 shadow-xs disabled:opacity-60 disabled:cursor-wait"
               >
                 <Check className="w-4 h-4" />
-                <span>{t('launchHermes')}</span>
+                <span>{launching ? t('installingMsg') : t('launchHermes')}</span>
               </button>
 
+              {skipArmed && (
+                <div role="alert" className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 leading-relaxed">
+                  You appear to be offline and the gateway is not running. Press Skip again to open the workspace anyway , chats will not work until the gateway starts.
+                </div>
+              )}
               <button
-                onClick={() => {
-                  updateSettings({ onboarded: true });
-                  onDone();
-                }}
+                onClick={handleSkip}
                 className="w-full min-h-[44px] inline-flex items-center justify-center text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
               >
                 {t('skipWorkspace')}

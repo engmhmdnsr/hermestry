@@ -26,9 +26,25 @@ const TabFallback: React.FC = () => (
   </div>
 );
 
+// Tab ids are stable: 0 Home, 1 Chat, 2 Jobs, 3 Settings.
+const TAB_HASHES = ['#/home', '#/chat', '#/jobs', '#/settings'] as const;
+const TAB_STORAGE_KEY = 'hermes_current_tab';
+
+function readInitialTab(): number {
+  if (typeof window !== 'undefined') {
+    const fromHash = (TAB_HASHES as readonly string[]).indexOf(window.location.hash);
+    if (fromHash >= 0) return fromHash;
+    try {
+      const saved = parseInt(localStorage.getItem(TAB_STORAGE_KEY) || '', 10);
+      if (saved >= 0 && saved < TAB_HASHES.length) return saved;
+    } catch {}
+  }
+  return 1; // Default to chat like Hermes Desktop
+}
+
 export const App: React.FC = () => {
   const { settings, updateSettings, selectSession, newSession, vaultUnlocked } = useHermes();
-  const [currentTab, setCurrentTab] = useState<number>(1); // Default to chat like Hermes Desktop
+  const [currentTab, setCurrentTab] = useState<number>(readInitialTab);
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
   const [isUnlocked, setIsUnlocked] = useState<boolean>(false);
 
@@ -68,6 +84,27 @@ export const App: React.FC = () => {
       desktopQuery.removeEventListener('change', handleDesktopChange);
       wideQuery.removeEventListener('change', handleWideChange);
     };
+  }, []);
+
+  // Persist the active tab across reloads and expose hash deep links
+  // (#/home, #/chat, #/jobs, #/settings) with back/forward support.
+  useEffect(() => {
+    try {
+      localStorage.setItem(TAB_STORAGE_KEY, String(currentTab));
+    } catch {}
+    const hash = TAB_HASHES[currentTab];
+    if (typeof window !== 'undefined' && window.location.hash !== hash) {
+      window.history.replaceState(null, '', hash);
+    }
+  }, [currentTab]);
+
+  useEffect(() => {
+    const handleHashChange = () => {
+      const idx = (TAB_HASHES as readonly string[]).indexOf(window.location.hash);
+      if (idx >= 0) setCurrentTab(idx);
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
   // 1. First run wizard
@@ -115,7 +152,7 @@ export const App: React.FC = () => {
         {/* Global App Header */}
         <Header
           onOpenDrawer={() => setIsDrawerOpen(true)}
-          onGoSettings={() => setCurrentTab(1)}
+          onGoApprovals={() => setCurrentTab(1)}
           isDesktop={isDesktop}
           inspectorOpen={inspectorOpen}
           onToggleInspector={() => setInspectorOpen(!inspectorOpen)}
@@ -133,7 +170,9 @@ export const App: React.FC = () => {
           {currentTab === 0 && (
             <HomeTab
               onGoChat={() => setCurrentTab(1)}
-              onRunCommand={() => setCurrentTab(1)}
+              // Labeled "Verify Gateway Diagnostics" in HomeTab; the
+              // Diagnostics section lives in Settings, not Chat.
+              onRunCommand={() => setCurrentTab(3)}
               onGoActivity={() => setCurrentTab(2)}
               onGoSettings={() => setCurrentTab(3)}
             />
@@ -171,6 +210,31 @@ export const App: React.FC = () => {
           isOpen={inspectorOpen}
           onClose={() => setInspectorOpen(false)}
         />
+      )}
+
+      {/* Phone Inspector: same panel as a slide-over overlay so the
+          header Inspector toggle has a route on small screens too. */}
+      {!isDesktop && inspectorOpen && (
+        <div
+          className="fixed inset-0 z-50 flex justify-end"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Inspector"
+        >
+          <button
+            aria-label="Close Inspector"
+            onClick={() => setInspectorOpen(false)}
+            className="absolute inset-0 bg-black/60 cursor-pointer"
+          />
+          <div className="relative h-full max-w-[20rem] w-full flex">
+            <div className="flex-1 flex min-w-0 [&>aside]:w-full [&>aside]:h-full">
+              <DesktopInspector
+                isOpen={inspectorOpen}
+                onClose={() => setInspectorOpen(false)}
+              />
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Slide-over Sessions Drawer (for mobile view) */}
