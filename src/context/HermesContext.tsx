@@ -1031,7 +1031,13 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         addLog(`Install failed: ${res.error || 'unknown error'}`);
         return;
       }
-      setInstallProgress('Verifying gateway health...');
+      // Install done only means the image is on disk; the gateway is not
+      // running yet, so a health probe here would fail spuriously. Hand off
+      // to startGateway, which boots the real process then probes honestly.
+      setInstallProgress('Image ready, starting gateway...');
+      addLog('Installed Hermes rootfs OK, starting gateway');
+      await startGateway();
+      return;
     } else {
       setInstallProgress('Downloading hermes-image (~305MB)...');
       addLog('Download started from repository manifest');
