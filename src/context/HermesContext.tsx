@@ -14,8 +14,15 @@ import {
   TurnMeta,
 } from '../types/hermes';
 import { GatewayService } from '../services/gateway';
+import {
+  lockVault,
+  unlockVault,
+  vaultLocked,
+  vaultEncryptSecrets,
+  vaultDecryptSecrets,
+} from '../services/secureStore';
 import { normProvider, DEFAULT_MODELS, PROVIDER_OPTIONS } from '../constants/providers';
-import { ThemeMode, applyThemeToDom } from '../constants/themes';
+import { ThemeMode, applyThemeToDom, watchSystemThemePreference } from '../constants/themes';
 import { LANGUAGES, getTranslation } from '../constants/languages';
 
 interface HermesSettings {
@@ -106,6 +113,12 @@ interface HermesContextType {
   stopStream: () => void;
   resolveApproval: (approval: PendingApproval, allow: boolean, mode?: string) => Promise<void>;
   
+  // Vault (encrypted secrets live decrypted only in memory refs)
+  vaultUnlocked: boolean;
+  unlockSecrets: (pin: string) => Promise<boolean>;
+  lockSecrets: () => void;
+  retryLast: () => boolean;
+
   // Drafts
   getDraft: (sessionId: string | null) => string;
   setDraft: (sessionId: string | null, text: string) => void;
@@ -160,6 +173,13 @@ const DEFAULT_SETTINGS: HermesSettings = {
   language: 'en',
 };
 
+const todayKey = (): string => {
+  const d = new Date();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${day}`;
+};
+
 export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // Load settings from localStorage
   const [settings, setSettings] = useState<HermesSettings>(() => {
@@ -181,15 +201,29 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             },
           ];
         }
-        return { ...DEFAULT_SETTINGS, ...parsed };
+        const merged = { ...DEFAULT_SETTINGS, ...parsed };
+        try {
+          if (merged.appLockEnabled && localStorage.getItem('hermes_vault')) {
+            merged.apiKey = '';
+            merged.serverKey = '';
+            merged.tgToken = '';
+            merged.discordToken = '';
+            merged.appLockPin = '';
+          }
+        } catch {}
+        return merged;
       }
     } catch {}
     return DEFAULT_SETTINGS;
   });
 
-  // Apply theme palette and mode to DOM
+  // Apply theme palette and mode to DOM; follow OS changes in system mode
   useEffect(() => {
     applyThemeToDom(settings.themePalette || 'midnight', (settings.themeMode || 'dark') as ThemeMode);
+    if ((settings.themeMode || 'dark') === 'system') {
+      return watchSystemThemePreference(settings.themePalette || 'midnight');
+    }
+    return undefined;
   }, [settings.themePalette, settings.themeMode]);
 
   // Apply language locale and direction to DOM
@@ -204,12 +238,31 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return getTranslation(key, settings.language || 'en');
   };
 
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  // Decrypted secrets live here when AppLock is enabled. localStorage
+  // holds only ciphertext in that case.
+  const secretsRef = useRef({
+    apiKey: settings.apiKey,
+    serverKey: settings.serverKey,
+    tgToken: settings.tgToken,
+    discordToken: settings.discordToken,
+    appLockPin: settings.appLockPin,
+  });
+  secretsRef.current = {
+    apiKey: settings.apiKey,
+    serverKey: settings.serverKey,
+    tgToken: settings.tgToken,
+    discordToken: settings.discordToken,
+    appLockPin: settings.appLockPin,
+  };
+
   const gatewayService = useMemo(() => {
     return new GatewayService(
       'http://127.0.0.1:8080',
-      () => settings.serverKey
+      () => secretsRef.current.serverKey || settingsRef.current.serverKey
     );
-  }, [settings.serverKey]);
+  }, []);
 
   // Install & Gateway Supervision state
   const [install, setInstall] = useState<InstallState>(() => {
@@ -239,8 +292,26 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [streamElapsed, setStreamElapsed] = useState<number>(0);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [turnMeta, setTurnMeta] = useState<Record<string, TurnMeta>>({});
-  const [usageIn, setUsageIn] = useState<number>(0);
-  const [usageOut, setUsageOut] = useState<number>(0);
+  const [usageIn, setUsageIn] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem('hermes_usage');
+      if (raw) {
+        const p = JSON.parse(raw);
+        if (p.date === todayKey()) return Number(p.in) || 0;
+      }
+    } catch {}
+    return 0;
+  });
+  const [usageOut, setUsageOut] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem('hermes_usage');
+      if (raw) {
+        const p = JSON.parse(raw);
+        if (p.date === todayKey()) return Number(p.out) || 0;
+      }
+    } catch {}
+    return 0;
+  });
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const [models, setModels] = useState<AiModelInfo[]>([]);
@@ -260,18 +331,54 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [cronRuns, setCronRuns] = useState<Record<string, CronRun[]>>({});
 
+  // True when secrets are available in memory. False at boot while
+  // AppLock is enabled and the vault has not been unlocked yet.
+  const [vaultUnlocked, setVaultUnlocked] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem('hermes_settings');
+      if (raw) {
+        const p = JSON.parse(raw);
+        if (p && p.appLockEnabled) return false;
+      }
+    } catch {}
+    return true;
+  });
+
+  // Persist usage counters so a reload keeps totals. Counters reset daily.
+  useEffect(() => {
+    try {
+      localStorage.setItem('hermes_usage', JSON.stringify({ date: todayKey(), in: usageIn, out: usageOut }));
+    } catch {}
+  }, [usageIn, usageOut]);
+
+  // Bound turnMeta to messages present in the current chat.
+  useEffect(() => {
+    if (chat.length === 0) return;
+    setTurnMeta((prev) => {
+      const ids = new Set(chat.map((m) => m.id));
+      let dropped = false;
+      const next: Record<string, TurnMeta> = {};
+      for (const [k, v] of Object.entries(prev)) {
+        if (ids.has(k)) next[k] = v;
+        else dropped = true;
+      }
+      return dropped ? next : prev;
+    });
+  }, [chat]);
+
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Synchronous mirrors so stop-then-send in the same tick works (state lags a render).
   const streamingRef = useRef<boolean>(false);
-  const settingsRef = useRef(settings);
-  settingsRef.current = settings;
   const currentSessionIdRef = useRef<string | null>(currentSessionId);
   currentSessionIdRef.current = currentSessionId;
   const queuedRef = useRef<QueuedMessage[]>([]);
   const refreshTokenRef = useRef<number>(0);
   const sessionsRef = useRef<MobileSession[]>(sessions);
   sessionsRef.current = sessions;
+  // Per-turn usage tracking for the estimation fallback.
+  const turnUsageSeenRef = useRef<boolean>(false);
+  const turnOutCharsRef = useRef<number>(0);
 
   // Persist chat outside of state updaters (StrictMode purity).
   useEffect(() => {
@@ -286,12 +393,106 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setGatewayLogs((prev) => [...prev, `[${timestamp}] ${msg}`].slice(-400));
   };
 
+  const persistSettings = (next: HermesSettings) => {
+    secretsRef.current = {
+      apiKey: next.apiKey,
+      serverKey: next.serverKey,
+      tgToken: next.tgToken,
+      discordToken: next.discordToken,
+      appLockPin: next.appLockPin,
+    };
+    if (next.appLockEnabled && !vaultLocked()) {
+      const pub = { ...next, apiKey: '', serverKey: '', tgToken: '', discordToken: '', appLockPin: '' };
+      try {
+        localStorage.setItem('hermes_settings', JSON.stringify(pub));
+      } catch {}
+      try {
+        if (next.appLockPin) localStorage.setItem('hermes_pinlen', String(next.appLockPin.length));
+      } catch {}
+      vaultEncryptSecrets({
+        apiKey: next.apiKey || '',
+        serverKey: next.serverKey || '',
+        tgToken: next.tgToken || '',
+        discordToken: next.discordToken || '',
+        appLockPin: next.appLockPin || '',
+      })
+        .then((cipher) => {
+          try {
+            localStorage.setItem('hermes_vault', cipher);
+          } catch {}
+        })
+        .catch(() => {});
+    } else if (!next.appLockEnabled) {
+      try {
+        localStorage.setItem('hermes_settings', JSON.stringify(next));
+      } catch {}
+      try {
+        localStorage.removeItem('hermes_vault');
+        localStorage.removeItem('hermes_pinlen');
+      } catch {}
+    } else {
+      const pub = { ...next, apiKey: '', serverKey: '', tgToken: '', discordToken: '', appLockPin: '' };
+      try {
+        localStorage.setItem('hermes_settings', JSON.stringify(pub));
+      } catch {}
+    }
+  };
+
   const updateSettings = (newSettings: Partial<HermesSettings>) => {
-    const next = { ...settingsRef.current, ...newSettings };
-    try {
-      localStorage.setItem('hermes_settings', JSON.stringify(next));
-    } catch {}
+    const prev = settingsRef.current;
+    const next = { ...prev, ...newSettings };
+    if (newSettings.appLockEnabled && !prev.appLockEnabled && next.appLockPin) {
+      try {
+        localStorage.setItem('hermes_pinlen', String(next.appLockPin.length));
+      } catch {}
+      lockVault(next.appLockPin)
+        .then(() => {
+          setVaultUnlocked(true);
+          persistSettings(next);
+        })
+        .catch(() => {
+          persistSettings(next);
+        });
+    } else {
+      if (!next.appLockEnabled) setVaultUnlocked(true);
+      persistSettings(next);
+    }
     setSettings(next);
+  };
+
+  const unlockSecrets = async (pin: string): Promise<boolean> => {
+    const ok = await unlockVault(pin);
+    if (!ok) return false;
+    setVaultUnlocked(true);
+    try {
+      const cipher = localStorage.getItem('hermes_vault');
+      if (cipher) {
+        const s = await vaultDecryptSecrets(cipher);
+        const next = {
+          ...settingsRef.current,
+          apiKey: s.apiKey || '',
+          serverKey: s.serverKey || '',
+          tgToken: s.tgToken || '',
+          discordToken: s.discordToken || '',
+          appLockPin: s.appLockPin || settingsRef.current.appLockPin,
+        };
+        secretsRef.current = {
+          apiKey: next.apiKey,
+          serverKey: next.serverKey,
+          tgToken: next.tgToken,
+          discordToken: next.discordToken,
+          appLockPin: next.appLockPin,
+        };
+        setSettings(next);
+      }
+    } catch {}
+    return true;
+  };
+
+  const lockSecrets = () => {
+    secretsRef.current = { apiKey: '', serverKey: '', tgToken: '', discordToken: '', appLockPin: '' };
+    setVaultUnlocked(false);
+    setSettings((prev) => ({ ...prev, apiKey: '', serverKey: '', tgToken: '', discordToken: '', appLockPin: '' }));
   };
 
   const saveKeys = (
@@ -452,7 +653,19 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (text) localStorage.setItem(`hermes_draft_${key}`, text);
       else localStorage.removeItem(`hermes_draft_${key}`);
     } catch {}
-    setDrafts((prev) => ({ ...prev, [key]: text }));
+    setDrafts((prev) => {
+      const next = { ...prev, [key]: text };
+      const keys = Object.keys(next);
+      if (keys.length > 50) {
+        for (const old of keys.slice(0, keys.length - 50)) {
+          delete next[old];
+          try {
+            localStorage.removeItem(`hermes_draft_${old}`);
+          } catch {}
+        }
+      }
+      return next;
+    });
   };
 
   // Initial data load & models aggregation
@@ -604,10 +817,23 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setInstall('RUNNING');
     setGatewayFailed(false);
     setGatewayFailureReason(null);
-    await new Promise((r) => setTimeout(r, 600));
-    setConnected(true);
-    addLog('Gateway running on 127.0.0.1:8080');
-    refreshNow();
+    let healthy = false;
+    try {
+      healthy = await gatewayService.health();
+    } catch {
+      healthy = false;
+    }
+    if (healthy) {
+      setConnected(true);
+      addLog('Gateway running on 127.0.0.1:8080');
+      refreshNow();
+    } else {
+      setConnected(false);
+      setGatewayFailed(true);
+      const reason = 'Gateway start failed: health check did not pass on 127.0.0.1:8080';
+      setGatewayFailureReason(reason);
+      addLog(reason);
+    }
   };
 
   const stopGateway = () => {
@@ -723,6 +949,16 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
+  const dropQueued = (reason: string): number => {
+    const n = queuedRef.current.length;
+    if (n > 0) {
+      queuedRef.current = [];
+      setQueuedMessages([]);
+      addLog(`Dropped ${n} queued message(s) (${reason})`);
+    }
+    return n;
+  };
+
   const stopStream = () => {
     if (abortControllerRef.current) {
       try {
@@ -736,6 +972,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
     streamingRef.current = false;
     setStreaming(false);
+    dropQueued('stream stopped');
     // Mark pending assistant message as finished thinking
     setChat((prev) =>
       prev.map((m) =>
@@ -801,12 +1038,31 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       timestamp: Date.now(),
     };
 
-    const initialChat = [...gatewayService.loadLocalMessages(sid), userMessage, agentMessage];
+    const initialHistory = gatewayService.loadLocalMessages(sid);
+    // Strip trailing failed or empty hermes bubbles so a retry resend
+    // does not accumulate duplicates.
+    let cut = initialHistory.length;
+    while (cut > 0) {
+      const m = initialHistory[cut - 1];
+      if (m.sender !== 'hermes') break;
+      const empty =
+        !(m.content || '').trim() &&
+        !(m.thinking || '').trim() &&
+        (m.tools || []).length === 0 &&
+        (m.toolOutputs || []).length === 0;
+      const failed = (m.content || '').startsWith('Stream error:');
+      if (!empty && !failed) break;
+      cut -= 1;
+    }
+    const cleanHistory = cut === initialHistory.length ? initialHistory : initialHistory.slice(0, cut);
+    const initialChat = [...cleanHistory, userMessage, agentMessage];
     gatewayService.saveLocalMessages(sid, initialChat);
     setChat(initialChat);
 
     streamingRef.current = true;
     setStreaming(true);
+    turnUsageSeenRef.current = false;
+    turnOutCharsRef.current = 0;
     const startTime = Date.now();
     const activeModel = settingsRef.current.modelId;
     const activeEffort = settingsRef.current.reasoningEffort;
@@ -841,6 +1097,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           );
         },
         onText: (delta) => {
+          turnOutCharsRef.current += delta.length;
           setChat((prev) =>
             prev.map((m) =>
               m.id === agentMsgId ? { ...m, content: (m.content || '') + delta } : m
@@ -872,6 +1129,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           );
         },
         onUsage: (inp, outp) => {
+          turnUsageSeenRef.current = true;
           setUsageIn((prev) => prev + inp);
           setUsageOut((prev) => prev + outp);
         },
@@ -918,9 +1176,23 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setActiveRunId(null);
         abortControllerRef.current = null;
         const duration = Date.now() - startTime;
+        // Fallback: when the stream produced no usage events, estimate
+        // tokens from text length so totals do not silently stay at zero.
+        const estimated = !turnUsageSeenRef.current;
+        if (estimated) {
+          const estIn = Math.max(1, Math.ceil(trimmed.length / 4));
+          const estOut = Math.max(1, Math.ceil(turnOutCharsRef.current / 4));
+          setUsageIn((prev) => prev + estIn);
+          setUsageOut((prev) => prev + estOut);
+          addLog(`Usage estimated for turn (no usage events): +${estIn} in / +${estOut} out tokens`);
+        }
         setTurnMeta((prev) => ({
           ...prev,
-          [agentMsgId]: { model: activeModel, durationMs: duration },
+          [agentMsgId]: {
+            model: activeModel,
+            durationMs: duration,
+            ...(estimated ? { estimated: true } : {}),
+          } as TurnMeta,
         }));
 
         // Pure updater; persistence happens in the chat persist effect.
@@ -989,6 +1261,21 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setQueuedMessages([]);
   };
 
+  // Resend the last user message after clearing any trailing failed or
+  // empty hermes bubbles. sendMessage strips those as well.
+  const retryLast = (): boolean => {
+    const sid = currentSessionIdRef.current;
+    if (!sid || streamingRef.current) return false;
+    const history = gatewayService.loadLocalMessages(sid);
+    for (let i = history.length - 1; i >= 0; i--) {
+      const m = history[i];
+      if (m.sender === 'you' && (m.content || '').trim()) {
+        return sendMessage(m.content);
+      }
+    }
+    return false;
+  };
+
   const resolveApproval = async (approval: PendingApproval, allow: boolean, mode: string = 'once') => {
     let ok = false;
     try {
@@ -1019,6 +1306,16 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const refreshJobs = async () => {
     const list = await gatewayService.jobs();
     setJobs(list);
+    const ids = new Set(list.map((j) => j.id));
+    setCronRuns((prev) => {
+      const next: Record<string, CronRun[]> = {};
+      let changed = false;
+      for (const [k, v] of Object.entries(prev)) {
+        if (ids.has(k)) next[k] = v;
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
   };
 
   const createJob = async (name: string, schedule: string, prompt: string): Promise<boolean> => {
@@ -1029,7 +1326,17 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const jobAction = async (id: string, action: string): Promise<boolean> => {
     const ok = await gatewayService.jobAction(id, action);
-    if (ok) refreshJobs();
+    if (ok) {
+      if (action === 'delete') {
+        setCronRuns((prev) => {
+          if (!(id in prev)) return prev;
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+      }
+      refreshJobs();
+    }
     return ok;
   };
 
@@ -1092,6 +1399,10 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         cancelQueued,
         stopStream,
         resolveApproval,
+        vaultUnlocked,
+        unlockSecrets,
+        lockSecrets,
+        retryLast,
         getDraft,
         setDraft,
         jobs,

@@ -4,27 +4,16 @@ import {
   EyeOff,
   Play,
   Square,
-  RefreshCw,
   CheckCircle2,
   XCircle,
-  AlertTriangle,
   Lock,
   Unlock,
-  Shield,
-  Activity,
-  Sliders,
-  Cpu,
-  Layers,
-  Database,
-  ArrowRight,
   Check,
   X,
-  Sparkles,
   Sun,
   Moon,
   Monitor,
   Search,
-  Globe,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import {
@@ -70,7 +59,6 @@ export const SettingsTab: React.FC = () => {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
   const [newProvType, setNewProvType] = useState('deepseek');
-  const [newProvCustom, setNewProvCustom] = useState(false);
   const [newProvName, setNewProvName] = useState('');
   const [newProvKey, setNewProvKey] = useState('');
   const [newProvBaseUrl, setNewProvBaseUrl] = useState('');
@@ -106,9 +94,9 @@ export const SettingsTab: React.FC = () => {
   const [pinError, setPinError] = useState<string | null>(null);
 
   const validatePin = (pin: string): string | null => {
-    if (!/^\d{4,8}$/.test(pin)) return 'PIN must be 4 to 8 digits.';
-    if (pin === '1234' || pin === '0000') return 'That PIN is too common. Choose a different one.';
-    if (/^(\d)\1+$/.test(pin)) return 'Repeated-digit PINs are not allowed. Choose a different one.';
+    if (!/^\d{4,8}$/.test(pin)) return t('pinLength');
+    if (pin === '1234' || pin === '0000') return t('pinCommon');
+    if (/^(\d)\1+$/.test(pin)) return t('pinRepeated');
     return null;
   };
 
@@ -137,6 +125,17 @@ export const SettingsTab: React.FC = () => {
   const [themeSearch, setThemeSearch] = useState('');
   const [langSearch, setLangSearch] = useState('');
 
+  // Expose chat font scale as a CSS var so chrome text scales via index.css
+  useEffect(() => {
+    document.documentElement.style.setProperty('--font-scale', String(settings.fontScale || 1));
+  }, [settings.fontScale]);
+
+  const EFFORT_LEVELS = [
+    { id: 'none', label: t('effortNone') },
+    { id: 'low', label: t('effortLow') },
+    { id: 'medium', label: t('effortMedium') },
+    { id: 'high', label: t('effortHigh') },
+  ] as const;
   const currentTheme = settings.themePalette || 'midnight';
   const currentMode = settings.themeMode || 'dark';
 
@@ -172,13 +171,13 @@ export const SettingsTab: React.FC = () => {
     setTestingKey(false);
     if (valid === true) {
       setKeyOk(true);
-      setKeyResult('Key validated successfully');
+      setKeyResult(t('keyValid'));
     } else if (valid === false) {
       setKeyOk(false);
-      setKeyResult('Key format rejected by provider');
+      setKeyResult(t('keyInvalid'));
     } else {
       setKeyOk(null);
-      setKeyResult('Key pattern verified');
+      setKeyResult(t('keyPattern'));
     }
   };
 
@@ -207,14 +206,14 @@ export const SettingsTab: React.FC = () => {
     await service.skillToggle(id, !current);
     const updated = await service.skillsList();
     setSkills(updated);
-    showToast(`Skill ${!current ? 'enabled' : 'disabled'}`);
+    showToast(!current ? t('skillEnabled') : t('skillDisabled'));
   };
 
   const handleInstantiateBlueprint = async (id: string) => {
     await service.instantiateBlueprint(id, blueprintSlots);
     setSelectedBlueprint(null);
     setBlueprintSlots({});
-    showToast('Workflow routine launched into active session');
+    showToast(t('blueprintLaunched'));
   };
 
   return (
@@ -261,14 +260,13 @@ export const SettingsTab: React.FC = () => {
                   {t('configuredProviders')}
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Connect multiple LLM providers simultaneously (DeepSeek, OpenAI, Anthropic, Gemini, Ollama, etc.) and switch between them on the fly.
+                  {t('providersDesc')}
                 </p>
               </div>
               <button
                 onClick={() => {
                   setEditingProviderId(null);
                   setNewProvType('deepseek');
-                  setNewProvCustom(false);
                   setNewProvName('DeepSeek');
                   setNewProvKey('');
                   setNewProvBaseUrl('');
@@ -287,7 +285,7 @@ export const SettingsTab: React.FC = () => {
             <div className="space-y-2 pt-1">
               {configuredProviders.length === 0 && (
                 <p className="text-xs text-slate-500 p-3 rounded-2xl bg-[#141920] border border-white/[0.06]">
-                  No providers configured. Add one to start chatting.
+                  {t('noProviders')}
                 </p>
               )}
               {configuredProviders.map((prov) => {
@@ -323,7 +321,7 @@ export const SettingsTab: React.FC = () => {
                           )}
                         </div>
                         <p className="text-[11px] text-slate-400 font-mono truncate mt-0.5">
-                          {prov.defaultModel || 'Default Model'} · {prov.baseUrl ? 'Custom Proxy' : 'Official Endpoint'}
+                          {prov.defaultModel || t('defaultModelShort')} · {prov.baseUrl ? t('customProxy') : t('officialEndpoint')}
                         </p>
                       </div>
                     </div>
@@ -333,7 +331,7 @@ export const SettingsTab: React.FC = () => {
                         <button
                           onClick={() => {
                             activateProvider(prov.id);
-                            showToast(`Active provider switched to ${prov.name}`);
+                            showToast(`${t('switchedTo')} ${prov.name}`);
                           }}
                           className="px-3 py-1.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-slate-200 transition cursor-pointer"
                         >
@@ -370,7 +368,7 @@ export const SettingsTab: React.FC = () => {
                           if (isSole) {
                             updateSettings({ provider: '', apiKey: '', baseUrl: '', modelId: '' });
                           }
-                          showToast(`Removed ${prov.name}`);
+                          showToast(`${t('removedItem')} ${prov.name}`);
                         }}
                         className="p-1.5 rounded-xl text-slate-500 hover:text-rose-400 hover:bg-white/[0.06] transition cursor-pointer"
                         title={t('delete')}
@@ -395,17 +393,17 @@ export const SettingsTab: React.FC = () => {
             <div className="flex items-start justify-between">
               <div>
                 <h3 className="text-sm font-semibold text-white tracking-tight">
-                  Gateway Daemon Supervisor
+                  {t('gatewaySupervisor')}
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  127.0.0.1:8080 · State: {install}
+                  127.0.0.1:8080 · {t('stateLabel')}: {install}
                 </p>
               </div>
 
               <span className={`px-2.5 py-1 rounded-lg text-xs font-medium ${
                 connected ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-300 border border-rose-500/20'
               }`}>
-                {connected ? 'Running' : 'Stopped'}
+                {connected ? t('running') : t('stopped')}
               </span>
             </div>
 
@@ -413,35 +411,35 @@ export const SettingsTab: React.FC = () => {
               <button
                 onClick={async () => {
                   await startGateway();
-                  showToast('Gateway service started');
+                  showToast(t('gatewayStarted'));
                 }}
                 className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
               >
                 <Play className="w-3.5 h-3.5 fill-white" />
-                <span>Start Daemon</span>
+                <span>{t('startDaemon')}</span>
               </button>
               <button
                 onClick={() => {
                   stopGateway();
-                  showToast('Gateway service stopped');
+                  showToast(t('gatewayStopped'));
                 }}
                 className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] text-slate-300 text-xs font-medium transition cursor-pointer"
               >
                 <Square className="w-3.5 h-3.5 fill-slate-300" />
-                <span>Stop</span>
+                <span>{t('stopShort')}</span>
               </button>
             </div>
 
             <div className="flex items-center justify-between pt-3 border-t border-white/[0.06]">
               <div>
-                <p className="text-xs font-medium text-white">Auto-launch on startup</p>
-                <p className="text-[11px] text-slate-400">Initialize local gateway automatically upon opening app</p>
+                <p className="text-xs font-medium text-white">{t('autostartTitle')}</p>
+                <p className="text-[11px] text-slate-400">{t('autostartDesc')}</p>
               </div>
               <button
                 onClick={() => {
                   const next = !settings.autostart;
                   updateSettings({ autostart: next });
-                  showToast(next ? 'Auto-start enabled' : 'Auto-start disabled');
+                  showToast(next ? t('autostartEnabled') : t('autostartDisabled'));
                 }}
                 className={`w-11 h-6 flex items-center rounded-full p-1 cursor-pointer transition-colors ${
                   settings.autostart ? 'bg-indigo-600' : 'bg-white/[0.1]'
@@ -460,15 +458,15 @@ export const SettingsTab: React.FC = () => {
           <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-5 space-y-3">
             <div className="flex items-center justify-between">
               <div>
-                <h4 className="text-sm font-semibold text-white">System Diagnostics</h4>
-                <p className="text-xs text-slate-400 mt-0.5">Comprehensive audit of local execution components</p>
+                <h4 className="text-sm font-semibold text-white">{t('diagnosticsTitle')}</h4>
+                <p className="text-xs text-slate-400 mt-0.5">{t('diagnosticsDesc')}</p>
               </div>
               <button
                 onClick={handleRunDoctor}
                 disabled={runningDoctor}
                 className="px-3.5 py-1.5 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] text-xs font-medium text-slate-300 hover:text-white transition cursor-pointer"
               >
-                {runningDoctor ? 'Auditing…' : 'Run Diagnostics'}
+                {runningDoctor ? t('auditing') : t('runDiagnostics')}
               </button>
             </div>
 
@@ -498,14 +496,14 @@ export const SettingsTab: React.FC = () => {
           {/* Backup & Debug Export */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-4 space-y-2">
-              <h4 className="text-xs font-semibold text-white">Local Snapshot</h4>
-              <p className="text-[11px] text-slate-400">Save workspace sessions, cron schedules, and settings.</p>
+              <h4 className="text-xs font-semibold text-white">{t('snapshotTitle')}</h4>
+              <p className="text-[11px] text-slate-400">{t('snapshotDesc')}</p>
               <button
                 onClick={handleRunBackup}
                 disabled={runningBackup}
                 className="w-full py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] text-xs font-medium text-slate-300 hover:text-white transition cursor-pointer mt-2"
               >
-                {runningBackup ? 'Backing up…' : 'Create Snapshot'}
+                {runningBackup ? t('backingUp') : t('createSnapshot')}
               </button>
               {backupResult && (
                 <p className="text-[11px] text-emerald-400 pt-1">{backupResult.message}</p>
@@ -513,14 +511,14 @@ export const SettingsTab: React.FC = () => {
             </div>
 
             <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-4 space-y-2">
-              <h4 className="text-xs font-semibold text-white">Debug Bundle</h4>
-              <p className="text-[11px] text-slate-400">Extract sanitized socket connection logs and daemon traces.</p>
+              <h4 className="text-xs font-semibold text-white">{t('debugTitle')}</h4>
+              <p className="text-[11px] text-slate-400">{t('debugDesc')}</p>
               <button
                 onClick={handleShareDebug}
                 disabled={sharingDebug}
                 className="w-full py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] text-xs font-medium text-slate-300 hover:text-white transition cursor-pointer mt-2"
               >
-                {sharingDebug ? 'Exporting…' : 'Generate Bundle'}
+                {sharingDebug ? t('exporting') : t('generateBundle')}
               </button>
               {debugResult && (
                 <p className="text-[11px] text-indigo-400 pt-1 truncate">{debugResult.summary}</p>
@@ -594,7 +592,7 @@ export const SettingsTab: React.FC = () => {
                     key={th.id}
                     onClick={() => {
                       updateSettings({ themePalette: th.id });
-                      showToast(`Applied ${th.name} theme`);
+                      showToast(`${t('appliedPrefix')} ${th.name} ${t('themeWord')}`);
                     }}
                     className={`p-3 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between group ${
                       isSelected
@@ -660,7 +658,7 @@ export const SettingsTab: React.FC = () => {
                   {t('languageTitle')}
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Select your interface language. Hermes will adapt text, labels, and text direction.
+                  {t('languageSubtitle')}
                 </p>
               </div>
               <span className="px-2.5 py-1 rounded-lg bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 text-xs font-mono font-medium uppercase">
@@ -717,10 +715,10 @@ export const SettingsTab: React.FC = () => {
           <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-5 space-y-5 shadow-xs">
             <div>
               <h3 className="text-sm font-semibold text-white tracking-tight">
-                Interface & Security Controls
+                {t('interfaceSecurityTitle')}
               </h3>
               <p className="text-xs text-slate-400 mt-0.5">
-                Customize chat scale, automated security grants, and local lockouts.
+                {t('interfaceSecurityDesc')}
               </p>
             </div>
 
@@ -737,8 +735,10 @@ export const SettingsTab: React.FC = () => {
                 step="0.05"
                 value={settings.fontScale}
                 onChange={(e) => updateSettings({ fontScale: parseFloat(e.target.value) })}
+                aria-label={t('fontScale')}
                 className="w-full accent-indigo-500"
               />
+              <p className="text-[11px] text-slate-500">{t('fontScaleDesc')}</p>
             </div>
 
             {/* Reasoning Effort Level */}
@@ -747,7 +747,7 @@ export const SettingsTab: React.FC = () => {
                 {t('reasoningEffort')}
               </label>
               <div className="grid grid-cols-4 gap-2">
-                {['none', 'low', 'medium', 'high'].map((lvl) => (
+                {EFFORT_LEVELS.map(({ id: lvl, label }) => (
                   <button
                     key={lvl}
                     onClick={() => updateSettings({ reasoningEffort: lvl })}
@@ -757,7 +757,7 @@ export const SettingsTab: React.FC = () => {
                         : 'bg-white/[0.03] border-white/[0.06] text-slate-400 hover:text-white'
                     }`}
                   >
-                    {lvl}
+                    {label}
                   </button>
                 ))}
               </div>
@@ -768,13 +768,13 @@ export const SettingsTab: React.FC = () => {
               <div className="flex items-center justify-between p-3 rounded-2xl bg-[#141920] border border-white/[0.06]">
                 <div>
                   <p className="text-xs font-medium text-white">{t('autoApprove')}</p>
-                  <p className="text-[11px] text-slate-400">Skip manual security confirmation popups</p>
+                  <p className="text-[11px] text-slate-400">{t('autoApproveDesc')}</p>
                 </div>
                 <button
                   onClick={() => {
                     const next = !settings.autoApproveGlobal;
                     updateSettings({ autoApproveGlobal: next });
-                    showToast(next ? `${t('autoApprove')}: Active` : `${t('autoApprove')}: Disabled`);
+                    showToast(next ? `${t('autoApprove')}: ${t('active')}` : `${t('autoApprove')}: ${t('disabled')}`);
                   }}
                   className={`px-3 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
                     settings.autoApproveGlobal
@@ -782,7 +782,7 @@ export const SettingsTab: React.FC = () => {
                       : 'bg-white/[0.04] text-slate-400'
                   }`}
                 >
-                  {settings.autoApproveGlobal ? 'Active' : 'Disabled'}
+                  {settings.autoApproveGlobal ? t('active') : t('disabled')}
                 </button>
               </div>
 
@@ -791,14 +791,14 @@ export const SettingsTab: React.FC = () => {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-xs font-medium text-white">{t('appLock')}</p>
-                    <p className="text-[11px] text-slate-400">Require PIN code upon opening workspace</p>
+                    <p className="text-[11px] text-slate-400">{t('appLockDesc')}</p>
                   </div>
                   <button
                     onClick={() => {
                       if (settings.appLockEnabled) {
                         updateSettings({ appLockEnabled: false });
                         setShowPinForm(false);
-                        showToast(`${t('appLock')}: Disabled`);
+                        showToast(`${t('appLock')}: ${t('disabled')}`);
                       } else {
                         setPinError(null);
                         setNewPin('');
@@ -813,7 +813,7 @@ export const SettingsTab: React.FC = () => {
                     }`}
                   >
                     {settings.appLockEnabled ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
-                    <span>{settings.appLockEnabled ? 'Locked' : 'Disabled'}</span>
+                    <span>{settings.appLockEnabled ? t('locked') : t('disabled')}</span>
                   </button>
                 </div>
 
@@ -827,7 +827,7 @@ export const SettingsTab: React.FC = () => {
                     }}
                     className="text-xs text-indigo-400 hover:text-indigo-300 cursor-pointer"
                   >
-                    Change PIN
+                    {t('changePin')}
                   </button>
                 )}
 
@@ -842,7 +842,7 @@ export const SettingsTab: React.FC = () => {
                           setNewPin(e.target.value.replace(/\D/g, '').slice(0, 8));
                           setPinError(null);
                         }}
-                        placeholder="New PIN (4-8 digits)"
+                        placeholder={t('newPinPlaceholder')}
                         className="flex-1 px-3 py-2 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                       />
                       <input
@@ -853,7 +853,7 @@ export const SettingsTab: React.FC = () => {
                           setConfirmPin(e.target.value.replace(/\D/g, '').slice(0, 8));
                           setPinError(null);
                         }}
-                        placeholder="Confirm PIN"
+                        placeholder={t('confirmPinPlaceholder')}
                         className="flex-1 px-3 py-2 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                       />
                     </div>
@@ -867,7 +867,7 @@ export const SettingsTab: React.FC = () => {
                             return;
                           }
                           if (newPin !== confirmPin) {
-                            setPinError('PINs do not match.');
+                            setPinError(t('pinMismatch'));
                             return;
                           }
                           updateSettings({ appLockPin: newPin, appLockEnabled: true });
@@ -875,11 +875,11 @@ export const SettingsTab: React.FC = () => {
                           setNewPin('');
                           setConfirmPin('');
                           setPinError(null);
-                          showToast(`${t('appLock')}: Enabled`);
+                          showToast(`${t('appLock')}: ${t('enabled')}`);
                         }}
                         className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition cursor-pointer"
                       >
-                        {settings.appLockEnabled ? 'Save New PIN' : 'Set PIN & Enable Lock'}
+                        {settings.appLockEnabled ? t('saveNewPin') : t('setPinEnable')}
                       </button>
                       <button
                         onClick={() => {
@@ -902,7 +902,7 @@ export const SettingsTab: React.FC = () => {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-xs font-medium text-white">{t('telegramBridge')}</p>
-                    <p className="text-[11px] text-slate-400">Optional bridge to chat with Hermes via Telegram</p>
+                    <p className="text-[11px] text-slate-400">{t('telegramBridgeDesc')}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -916,11 +916,11 @@ export const SettingsTab: React.FC = () => {
                   <button
                     onClick={() => {
                       updateSettings({ tgToken: tgToken.trim() });
-                      showToast('Telegram bot token saved');
+                      showToast(t('tgSaved'));
                     }}
                     className="px-3.5 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white transition cursor-pointer"
                   >
-                    Save
+                    {t('saveShort')}
                   </button>
                 </div>
               </div>
@@ -929,8 +929,8 @@ export const SettingsTab: React.FC = () => {
               <div className="p-3 rounded-2xl bg-[#141920] border border-white/[0.06] space-y-2">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-xs font-medium text-white">Discord Bot Bridge</p>
-                    <p className="text-[11px] text-slate-400">Optional bridge to chat with Hermes via Discord</p>
+                    <p className="text-xs font-medium text-white">{t('discordBridge')}</p>
+                    <p className="text-[11px] text-slate-400">{t('discordBridgeDesc')}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -938,17 +938,17 @@ export const SettingsTab: React.FC = () => {
                     type="password"
                     value={discordToken}
                     onChange={(e) => setDiscordToken(e.target.value)}
-                    placeholder="Bot token..."
+                    placeholder={t('botTokenPlaceholder')}
                     className="flex-1 px-3 py-2 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                   />
                   <button
                     onClick={() => {
                       updateSettings({ discordToken: discordToken.trim() });
-                      showToast('Discord bot token saved');
+                      showToast(t('discordSaved'));
                     }}
                     className="px-3.5 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white transition cursor-pointer"
                   >
-                    Save
+                    {t('saveShort')}
                   </button>
                 </div>
               </div>
@@ -957,8 +957,8 @@ export const SettingsTab: React.FC = () => {
               <div className="p-3 rounded-2xl bg-[#141920] border border-white/[0.06] space-y-2">
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-xs font-medium text-white">Gateway Server Key</p>
-                    <p className="text-[11px] text-slate-400">Auth key the app uses to talk to the local gateway daemon</p>
+                    <p className="text-xs font-medium text-white">{t('serverKeyTitle')}</p>
+                    <p className="text-[11px] text-slate-400">{t('serverKeyDesc')}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -966,17 +966,17 @@ export const SettingsTab: React.FC = () => {
                     type="password"
                     value={serverKey}
                     onChange={(e) => setServerKey(e.target.value)}
-                    placeholder="Server key..."
+                    placeholder={t('serverKeyPlaceholder')}
                     className="flex-1 px-3 py-2 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                   />
                   <button
                     onClick={() => {
                       updateSettings({ serverKey: serverKey.trim() });
-                      showToast('Gateway server key saved');
+                      showToast(t('serverKeySaved'));
                     }}
                     className="px-3.5 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white transition cursor-pointer"
                   >
-                    Save
+                    {t('saveShort')}
                   </button>
                 </div>
               </div>
@@ -994,14 +994,14 @@ export const SettingsTab: React.FC = () => {
           <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-5 space-y-3 shadow-xs">
             <div className="flex items-center justify-between">
               <div>
-                <h4 className="text-sm font-semibold text-white">Agent Skills Catalog</h4>
-                <p className="text-xs text-slate-400 mt-0.5">Modular tool plugins available to the prompt context</p>
+                <h4 className="text-sm font-semibold text-white">{t('skillsCatalog')}</h4>
+                <p className="text-xs text-slate-400 mt-0.5">{t('skillsCatalogDesc')}</p>
               </div>
               <button
                 onClick={() => service.skillsList().then(setSkills)}
                 className="text-xs text-indigo-400 hover:underline"
               >
-                Refresh
+                {t('refresh')}
               </button>
             </div>
 
@@ -1034,18 +1034,18 @@ export const SettingsTab: React.FC = () => {
 
           {/* Long Term Memory */}
           <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-5 space-y-2 shadow-xs">
-            <h4 className="text-sm font-semibold text-white">Persistent Semantic Memory</h4>
+            <h4 className="text-sm font-semibold text-white">{t('memoryTitle')}</h4>
             <p className="text-xs text-slate-400">
-              Provider: {memory?.provider || 'local-vector'} · Entries: {memory?.entries || 0}
+              {t('providerLabel')}: {memory?.provider || t('localVector')} · {t('entriesLabel')}: {memory?.entries || 0}
             </p>
             <div className="text-xs text-slate-300 bg-[#141920] p-3 rounded-xl border border-white/[0.06] font-mono leading-relaxed mt-2">
-              {memory?.summary || 'Long term semantic vectors active across sessions.'}
+              {memory?.summary || t('memoryEmpty')}
             </div>
           </div>
 
           {/* Blueprints */}
           <div className="rounded-3xl bg-[#0E1217] border border-white/[0.08] p-5 space-y-3 shadow-xs">
-            <h4 className="text-sm font-semibold text-white">Blueprint Automation Workflows</h4>
+            <h4 className="text-sm font-semibold text-white">{t('blueprintsTitle')}</h4>
             <div className="space-y-2">
               {blueprints.map((bp) => (
                 <div
@@ -1067,7 +1067,7 @@ export const SettingsTab: React.FC = () => {
                     }}
                     className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer shrink-0"
                   >
-                    Launch
+                    {t('launch')}
                   </button>
                 </div>
               ))}
@@ -1121,13 +1121,13 @@ export const SettingsTab: React.FC = () => {
                 onClick={() => setSelectedBlueprint(null)}
                 className="px-4 py-2 rounded-xl text-xs font-medium text-slate-400 hover:text-white cursor-pointer"
               >
-                Cancel
+                {t('cancel')}
               </button>
               <button
                 onClick={() => handleInstantiateBlueprint(selectedBlueprint.id)}
                 className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs cursor-pointer transition"
               >
-                Launch Routine
+                {t('launchRoutine')}
               </button>
             </div>
           </div>
@@ -1139,7 +1139,7 @@ export const SettingsTab: React.FC = () => {
           <div className="w-full max-w-md rounded-3xl bg-[#0E1217] border border-white/[0.1] p-5 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-2 border-b border-white/[0.08]">
               <span className="text-sm font-semibold text-white">
-                {editingProviderId ? 'Edit Model Provider' : 'Add Model Provider'}
+                {editingProviderId ? t('editModelProvider') : t('addModelProvider')}
               </span>
               <button
                 onClick={() => setShowAddModal(false)}
@@ -1178,13 +1178,13 @@ export const SettingsTab: React.FC = () => {
               {/* Provider Profile Label */}
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1">
-                  Profile Label
+                  {t('profileLabel')}
                 </label>
                 <input
                   type="text"
                   value={newProvName}
                   onChange={(e) => setNewProvName(e.target.value)}
-                  placeholder="e.g. My Anthropic Key / DeepSeek Work"
+                  placeholder={t('profilePlaceholder')}
                   className="w-full px-3.5 py-2.5 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
                 />
               </div>
@@ -1194,7 +1194,7 @@ export const SettingsTab: React.FC = () => {
                 <label className="block text-xs font-medium text-slate-400 mb-1">
                   {t('apiKey')}{' '}
                   {normProvider(newProvType) === 'lmstudio' || normProvider(newProvType) === 'ollama-cloud'
-                    ? '(optional for local providers)'
+                    ? t('optionalLocal')
                     : '*'}
                 </label>
                 <div className="relative">
@@ -1271,8 +1271,8 @@ export const SettingsTab: React.FC = () => {
             {!keysValid(newProvType, newProvKey, newProvBaseUrl) && (
               <p className="text-[11px] text-amber-400">
                 {!newProvKey.trim()
-                  ? 'An API key is required for this provider (LM Studio and Ollama Cloud work without one).'
-                  : 'This provider id is not recognized: a Base URL endpoint is required.'}
+                  ? t('keyRequired')
+                  : t('unknownProviderUrl')}
               </p>
             )}
 
@@ -1308,7 +1308,7 @@ export const SettingsTab: React.FC = () => {
                         modelId: targetModel,
                       });
                     }
-                    showToast(`Updated ${label}`);
+                    showToast(`${t('updatedItem')} ${label}`);
                   } else {
                     const newId = addConfiguredProvider({
                       provider: newProvType,
@@ -1321,13 +1321,13 @@ export const SettingsTab: React.FC = () => {
                     });
                     // Automatically activate if requested or first
                     activateProvider(newId);
-                    showToast(`Added and activated ${label}`);
+                    showToast(`${t('addedActivated')} ${label}`);
                   }
                   setShowAddModal(false);
                 }}
                 className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-xs font-semibold shadow-xs cursor-pointer transition"
               >
-                {editingProviderId ? 'Save Changes' : 'Save & Enable'}
+                {editingProviderId ? t('save') : t('saveEnable')}
               </button>
             </div>
           </div>

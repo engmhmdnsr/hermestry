@@ -156,8 +156,3 @@ export interface QueuedMessage {
   text: string;
   images: string[];
 }
-
-export interface FailedDraft {
-  text: string;
-  imageDataUrls: string[];
-}

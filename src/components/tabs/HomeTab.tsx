@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   MessageSquare,
   Terminal,
@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import { AgentStatus } from '../../types/hermes';
+import { formatHomeAgo } from '../../constants/languages';
 
 interface HomeTabProps {
   onGoChat: () => void;
@@ -19,13 +20,8 @@ interface HomeTabProps {
   onGoSettings: () => void;
 }
 
-export function homeAgo(ts: number): string {
-  if (ts <= 0) return 'never';
-  const s = Math.floor((Date.now() - ts) / 1000);
-  if (s < 60) return 'just now';
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
+export function homeAgo(ts: number, lang: string = 'en'): string {
+  return formatHomeAgo(ts, lang);
 }
 
 export const HomeTab: React.FC<HomeTabProps> = ({
@@ -146,7 +142,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   }, [sessions]);
 
   return (
-    <div className="space-y-6 max-w-2xl mx-auto px-4 pt-4 pb-28">
+    <div className="space-y-6 max-w-2xl mx-auto px-4 pt-4 pb-20">
       {/* 1. Hero Presence Banner */}
       <div
         className={`relative overflow-hidden rounded-2xl bg-gradient-to-br ${statusConfig.bgGlow} bg-[#0E1217] border ${statusConfig.borderColor} p-5 shadow-sm transition-all`}
@@ -164,11 +160,13 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                 {statusConfig.title}
               </span>
               <span className="text-slate-500">·</span>
-              <span className="text-slate-400 font-mono text-[11px] truncate max-w-[120px]">
-                {settings.modelId.split('/').pop()}
-              </span>
+              <ExpandablePill
+                value={settings.modelId.split('/').pop() || ''}
+                full={settings.modelId}
+                className="max-w-[120px]"
+              />
             </div>
-            <p className="text-xs text-slate-400 leading-relaxed pr-2">
+            <p className="text-xs text-slate-400 leading-relaxed pe-2">
               {statusConfig.desc}
             </p>
           </div>
@@ -186,9 +184,11 @@ export const HomeTab: React.FC<HomeTabProps> = ({
         <div className="mt-4 pt-3 border-t border-white/[0.06] flex items-center justify-between text-xs">
           <div className="flex items-center gap-2 min-w-0">
             <span className="text-[11px] text-slate-400 font-medium shrink-0">{t('activeModel')}:</span>
-            <span className="text-slate-200 truncate max-w-[280px]">
-              {currentTaskDesc}
-            </span>
+            <ExpandablePill
+              value={currentTaskDesc}
+              full={currentTaskDesc}
+              className="max-w-[280px] text-slate-200"
+            />
           </div>
           {streaming && (
             <span className="text-[10px] font-mono text-teal-400 uppercase tracking-wider shrink-0 flex items-center gap-1">
@@ -241,7 +241,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               await newSession();
               onGoChat();
             }}
-            className="flex flex-col items-start p-3.5 rounded-2xl bg-[#0E1217] border border-white/[0.07] hover:border-indigo-500/40 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-left"
+            className="flex flex-col items-start p-3.5 rounded-2xl bg-[#0E1217] border border-white/[0.07] hover:border-indigo-500/40 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-start"
           >
             <div className="w-8 h-8 rounded-xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
               <MessageSquare className="w-4 h-4" />
@@ -253,7 +253,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           {/* Quick Command */}
           <button
             onClick={onRunCommand}
-            className="flex flex-col items-start p-3.5 rounded-2xl bg-[#0E1217] border border-white/[0.07] hover:border-teal-500/40 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-left"
+            className="flex flex-col items-start p-3.5 rounded-2xl bg-[#0E1217] border border-white/[0.07] hover:border-teal-500/40 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-start"
           >
             <div className="w-8 h-8 rounded-xl bg-teal-500/10 text-teal-400 flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
               <Terminal className="w-4 h-4" />
@@ -265,7 +265,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           {/* Automation Jobs */}
           <button
             onClick={onGoActivity}
-            className="flex flex-col items-start p-3.5 rounded-2xl bg-[#0E1217] border border-white/[0.07] hover:border-violet-500/40 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-left"
+            className="flex flex-col items-start p-3.5 rounded-2xl bg-[#0E1217] border border-white/[0.07] hover:border-violet-500/40 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-start"
           >
             <div className="w-8 h-8 rounded-xl bg-violet-500/10 text-violet-400 flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
               <CalendarClock className="w-4 h-4" />
@@ -277,7 +277,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           {/* Settings / Ops */}
           <button
             onClick={onGoSettings}
-            className="flex flex-col items-start p-3.5 rounded-2xl bg-[#0E1217] border border-white/[0.07] hover:border-white/20 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-left"
+            className="flex flex-col items-start p-3.5 rounded-2xl bg-[#0E1217] border border-white/[0.07] hover:border-white/20 hover:bg-white/[0.02] active:scale-[0.98] transition group cursor-pointer text-start"
           >
             <div className="w-8 h-8 rounded-xl bg-slate-500/10 text-slate-300 flex items-center justify-center mb-2.5 group-hover:scale-105 transition-transform">
               <SlidersHorizontal className="w-4 h-4" />
@@ -355,7 +355,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                       <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5">
                         <span>{s.messageCount} msgs</span>
                         <span>·</span>
-                        <span>{homeAgo(s.lastActiveAt)}</span>
+                        <span>{homeAgo(s.lastActiveAt, settings.language || 'en')}</span>
                       </div>
                     </div>
                   </div>
@@ -421,5 +421,25 @@ export const HomeTab: React.FC<HomeTabProps> = ({
         </section>
       )}
     </div>
+  );
+};
+
+const ExpandablePill: React.FC<{ value: string; full: string; className?: string }> = ({
+  value,
+  full,
+  className = '',
+}) => {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => setExpanded((v) => !v)}
+      aria-expanded={expanded}
+      title={full}
+      aria-label={`${full}. Tap to ${expanded ? 'collapse' : 'expand'}.`}
+      className={`text-slate-400 font-mono text-[11px] min-w-0 text-start cursor-pointer ${expanded ? '' : `truncate ${className}`} ${expanded ? 'whitespace-normal break-all' : ''}`}
+    >
+      {value}
+    </button>
   );
 };

@@ -28,6 +28,7 @@ import {
 import { useHermes } from '../../context/HermesContext';
 import { ChatMessage, PendingApproval } from '../../types/hermes';
 import { PROVIDER_OPTIONS, normProvider } from '../../constants/providers';
+import { speechLocaleForLanguage } from '../../constants/languages';
 
 interface ChatTabProps {
   onGoSettings: () => void;
@@ -58,6 +59,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     setDraft,
     configuredProviders,
     activateProvider,
+    retryLast,
     t,
   } = useHermes();
 
@@ -70,6 +72,13 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   const [isListening, setIsListening] = useState(false);
   const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [actionToast, setActionToast] = useState<string | null>(null);
+  const [modelPillExpanded, setModelPillExpanded] = useState(false);
+
+  const showActionToast = (msg: string) => {
+    setActionToast(msg);
+    setTimeout(() => setActionToast(null), 2500);
+  };
 
   // Model selection modal search & category filters
   const [modelSearchQuery, setModelSearchQuery] = useState('');
@@ -240,7 +249,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
 
     if (!SpeechRecognition) {
-      alert('Speech recognition is not supported in this browser.');
+      alert(t('speechUnsupported'));
       return;
     }
 
@@ -248,7 +257,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       const recognition = new SpeechRecognition();
       recognition.continuous = false;
       recognition.interimResults = false;
-      recognition.lang = 'en-US';
+      recognition.lang = speechLocaleForLanguage(settings.language || 'en');
 
       recognition.onstart = () => setIsListening(true);
       recognition.onresult = (event: any) => {
@@ -284,37 +293,20 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     window.speechSynthesis.speak(utter);
   };
 
-  const handleCopy = (id: string, content: string) => {
-    navigator.clipboard.writeText(content);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 1800);
+  const handleCopy = async (id: string, content: string) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 1800);
+    } catch {
+      showActionToast(t('copyFailed'));
+    }
   };
 
   const curModelName =
     models.find((m) => m.id === settings.modelId)?.displayName ||
     settings.modelId.split('/').pop() ||
     'deepseek-chat';
-
-  const effortLabel =
-    settings.reasoningEffort === 'low'
-      ? 'Low'
-      : settings.reasoningEffort === 'high'
-      ? 'High'
-      : settings.reasoningEffort === 'none'
-      ? 'Off'
-      : 'Medium';
-
-  const cycleEffort = () => {
-    const next =
-      settings.reasoningEffort === 'none'
-        ? 'low'
-        : settings.reasoningEffort === 'low'
-        ? 'medium'
-        : settings.reasoningEffort === 'medium'
-        ? 'high'
-        : 'none';
-    updateSettings({ reasoningEffort: next });
-  };
 
   const starterChips = [
     'Search recent developments in AI agent frameworks',
@@ -327,8 +319,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     {
       label: '/retry',
       action: () => {
-        const lastUser = chat.slice().reverse().find((m) => m.sender === 'you');
-        if (lastUser) sendMessage(lastUser.content);
+        retryLast();
       },
     },
     { label: '/find', action: () => setSearchOpen(true) },
@@ -338,6 +329,11 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
 
   return (
     <div className={`flex flex-col flex-1 min-h-0 h-full ${isDesktop ? 'max-w-4xl mx-auto w-full px-6' : 'px-3 sm:px-4'} pt-2 pb-1`}>
+      {actionToast && (
+        <div className="fixed top-16 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] px-4 py-2 rounded-xl bg-rose-600 text-white text-xs font-semibold shadow-2xl">
+          {actionToast}
+        </div>
+      )}
       {/* In-chat Search Input */}
       {searchOpen && (
         <div className="flex items-center gap-2 p-2 px-3 rounded-xl bg-[#141920] border border-white/[0.08] mb-2 shrink-0 animate-in fade-in duration-150">
@@ -348,7 +344,6 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search conversation..."
             className="flex-1 bg-transparent text-xs text-white placeholder-slate-500 focus:outline-none"
-            autoFocus
           />
           {searchQuery && (
             <button
@@ -371,7 +366,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       )}
 
       {/* 2. Messages List Scroll Area */}
-      <div className="flex-1 min-h-0 overflow-y-auto space-y-4 pr-1 pb-2">
+      <div className="flex-1 min-h-0 overflow-y-auto space-y-4 pe-1 pb-2">
         {visibleMessages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center py-12 px-4 space-y-4">
             <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-500/20 to-teal-500/20 border border-indigo-500/30 flex items-center justify-center shadow-xs">
@@ -379,7 +374,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             </div>
             <div>
               <h3 className="text-base font-semibold text-white tracking-tight">
-                How can Hermes help today?
+                {t('helpToday')}
               </h3>
               <p className="text-xs text-slate-400 mt-1 max-w-sm">
                 Ask questions, orchestrate local tools, execute sandboxed code, or schedule workflows.
@@ -391,8 +386,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
               {starterChips.map((chip, idx) => (
                 <button
                   key={idx}
-                  onClick={() => handleTextChange(chip)}
-                  className="px-3.5 py-2.5 rounded-xl bg-[#0E1217] border border-white/[0.06] hover:border-indigo-500/30 text-xs text-slate-300 text-left transition hover:bg-white/[0.02] cursor-pointer"
+                  onClick={() => sendMessage(chip)}
+                  title={chip}
+                  className="px-3.5 py-2.5 rounded-xl bg-[#0E1217] border border-white/[0.06] hover:border-indigo-500/30 text-xs text-slate-300 text-start transition hover:bg-white/[0.02] cursor-pointer"
                 >
                   {chip}
                 </button>
@@ -436,7 +432,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                       )}
                       <button
                         onClick={() => handleCopy(msg.id, msg.content || msg.thinking || '')}
-                        className="text-slate-400 hover:text-white cursor-pointer ml-1"
+                        className="text-slate-400 hover:text-white cursor-pointer ms-1"
                         title="Copy message"
                       >
                         {copiedId === msg.id ? (
@@ -473,9 +469,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                       </div>
 
                       {msg.toolOutputs && msg.toolOutputs.length > 0 && (
-                        <div className="rounded-xl bg-[#090B0E] p-2.5 border border-white/[0.06] text-xs font-mono text-slate-400 space-y-1 overflow-x-auto">
+                        <div className="rounded-xl bg-[#090B0E] p-2.5 border border-white/[0.06] text-xs font-mono text-slate-400 space-y-1">
                           {msg.toolOutputs.map((out, i) => (
-                            <div key={i} className="leading-relaxed">
+                            <div key={i} className="leading-relaxed break-all whitespace-pre-wrap">
                               <span className="text-teal-400 font-medium">{out.toolName}:</span>{' '}
                               <span>{out.output}</span>
                             </div>
@@ -490,13 +486,13 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                     <div className="prose prose-invert max-w-none text-sm leading-relaxed whitespace-pre-wrap select-text font-sans">
                       {msg.content}
                       {isLiveTail && !isUser && (
-                        <span className="inline-block w-1.5 h-4 ml-1 bg-indigo-400 animate-pulse align-middle" />
+                        <span className="inline-block w-1.5 h-4 ms-1 bg-indigo-400 animate-pulse align-middle" />
                       )}
                     </div>
                   ) : isLiveTail ? (
                     <div className="flex items-center gap-2 text-xs text-slate-400 py-1">
                       <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping" />
-                      <span>Formulating response…</span>
+                      <span>{t('formulating')}</span>
                     </div>
                   ) : null}
 
@@ -547,15 +543,16 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
         <div ref={messagesEndRef} />
       </div>
 
-      {/* 3. Security Approval Confirmation Queue */}
-      {pendingApprovals.length > 0 && (
+      <div className="shrink-0 min-h-0 max-h-[32vh] overflow-y-auto space-y-2 overscroll-contain">
+            {/* 3. Security Approval Confirmation Queue */}
+            {pendingApprovals.length > 0 && (
         <div className="mb-2 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 shadow-lg animate-in slide-in-from-bottom duration-200">
           <div className="flex items-center justify-between gap-2 mb-2">
             <span className="text-xs font-semibold text-amber-200 tracking-tight">
-              Security Approval Required
+              {t('approvalTitle')}
             </span>
             <span className="text-[11px] font-mono text-amber-300/80">
-              {pendingApprovals.length} pending
+              {pendingApprovals.length} {t('pending')}
             </span>
           </div>
           <div className="space-y-3">
@@ -574,19 +571,19 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                     onClick={() => resolveApproval(approval, false)}
                     className="flex-1 min-h-[44px] py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] text-slate-300 text-xs font-medium border border-white/[0.08] transition cursor-pointer"
                   >
-                    Deny
+                    {t('deny')}
                   </button>
                   <button
                     onClick={() => resolveApproval(approval, true, 'once')}
                     className="flex-1 min-h-[44px] py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
                   >
-                    Allow Once
+                    {t('allowOnce')}
                   </button>
                   <button
                     onClick={() => resolveApproval(approval, true, 'session')}
                     className="flex-1 min-h-[44px] py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
                   >
-                    Allow Session
+                    {t('allowSession')}
                   </button>
                 </div>
               </div>
@@ -599,7 +596,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       {queuedMessages.length > 0 && (
         <div className="mb-2 px-3.5 py-2 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-between gap-2 text-xs text-indigo-300">
           <span className="min-w-0 truncate">
-            {queuedMessages.length} queued{queuedMessages[0]?.text ? `: ${queuedMessages[0].text.slice(0, 60)}` : ' for execution'}
+            {queuedMessages.length} queued{queuedMessages[0]?.text ? `: ${queuedMessages[0].text.slice(0, 60)}` : ` ${t('queuedFor')}`}
           </span>
           <button
             onClick={cancelQueued}
@@ -618,7 +615,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
               <img src={src} alt="Attached" className="w-full h-full object-cover" />
               <button
                 onClick={() => setAttachedImages((prev) => prev.filter((_, idx) => idx !== i))}
-                className="absolute top-0.5 right-0.5 p-0.5 rounded-full bg-black/80 text-white"
+                className="absolute top-0.5 end-0.5 p-0.5 rounded-full bg-black/80 text-white"
               >
                 <X className="w-3 h-3" />
               </button>
@@ -650,6 +647,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           ))}
         </div>
       )}
+      </div>
 
       {/* 4. Desktop/Mobile Composer Surface matching modern Hermes aesthetic */}
       <div className="rounded-[22px] sm:rounded-[26px] bg-[#121721] border border-white/[0.1] px-3.5 sm:px-4 pt-2.5 pb-2 shadow-2xl shrink-0 transition-all focus-within:border-indigo-500/50 focus-within:ring-1 focus-within:ring-indigo-500/20 mb-1">
@@ -691,38 +689,59 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
               <Plus className="w-4 h-4 stroke-[2.2]" />
             </button>
 
-            {/* Model Pill: e.g. "No model ▾" or active model name */}
-            <button
-              type="button"
-              onClick={() => setShowModelsSheet(true)}
-              className="h-7.5 px-2.5 sm:px-3 rounded-full flex items-center gap-1.5 text-xs text-slate-200 hover:text-white bg-[#1A2230] hover:bg-[#232D3F] active:scale-95 transition-all border border-white/[0.08] cursor-pointer shrink-0 max-w-[130px] sm:max-w-[200px] shadow-xs"
-              title={settings.modelId || 'Select Model'}
+            {/* Model pill: tap name to expand, chevron opens sheet */}
+            <div
+              className={`min-h-[30px] px-2.5 sm:px-3 rounded-full flex items-center gap-1.5 text-xs text-slate-200 bg-[#1A2230] border border-white/[0.08] shadow-xs min-w-0 ${
+                modelPillExpanded ? 'max-w-full' : 'max-w-[130px] sm:max-w-[200px]'
+              }`}
             >
-              <span className="font-mono text-[11.5px] truncate">
-                {settings.modelId ? curModelName : 'No model'}
-              </span>
-              <ChevronDown className="w-3 h-3 text-slate-400 shrink-0" />
-            </button>
+              <button
+                type="button"
+                onClick={() => setModelPillExpanded((v) => !v)}
+                aria-expanded={modelPillExpanded}
+                title={settings.modelId || 'Select Model'}
+                aria-label={`Active model: ${settings.modelId || 'none'}. Tap to ${modelPillExpanded ? 'collapse' : 'expand'}.`}
+                className="font-mono text-[11.5px] truncate min-w-0 flex-1 text-start cursor-pointer hover:text-white min-h-[30px]"
+              >
+                {settings.modelId ? curModelName : t('noModel')}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowModelsSheet(true)}
+                title="Select model"
+                aria-label="Select model"
+                className="shrink-0 cursor-pointer hover:text-white min-h-[30px] min-w-[24px] flex items-center justify-center"
+              >
+                <ChevronDown className="w-3 h-3 text-slate-400 shrink-0" />
+              </button>
+            </div>
 
-            {/* Reasoning Pill with Sliders icon: e.g. [Sliders icon] MED ▾ */}
-            <button
-              type="button"
-              onClick={cycleEffort}
-              className="h-7.5 px-2 sm:px-2.5 rounded-full flex items-center gap-1 text-xs text-sky-400 bg-sky-950/40 hover:bg-sky-950/60 active:scale-95 transition-all border border-sky-500/30 cursor-pointer shrink-0 shadow-xs"
-              title="Reasoning Effort: Click to cycle OFF / LOW / MED / HIGH"
+            {/* Reasoning effort direct-select segmented control */}
+            <div
+              role="group"
+              aria-label="Reasoning effort"
+              className="flex items-center gap-0.5 p-0.5 rounded-full bg-sky-950/40 border border-sky-500/30 shrink-0 shadow-xs"
+              title="Reasoning effort"
             >
-              <Sliders className="w-3 h-3 text-sky-400 shrink-0" />
-              <span className="font-mono font-medium text-[10.5px] uppercase tracking-wider text-sky-300">
-                {settings.reasoningEffort === 'none'
-                  ? 'OFF'
-                  : settings.reasoningEffort === 'low'
-                  ? 'LOW'
-                  : settings.reasoningEffort === 'high'
-                  ? 'HIGH'
-                  : 'MED'}
-              </span>
-              <ChevronDown className="w-2.5 h-2.5 text-sky-400 shrink-0" />
-            </button>
+              <Sliders className="w-3 h-3 text-sky-400 shrink-0 ms-1.5" />
+              {(['none', 'low', 'medium', 'high'] as const).map((level) => {
+                const active = (settings.reasoningEffort || 'medium') === level;
+                return (
+                  <button
+                    key={level}
+                    type="button"
+                    onClick={() => updateSettings({ reasoningEffort: level })}
+                    aria-pressed={active}
+                    title={`Reasoning effort: ${level}`}
+                    className={`px-1.5 py-1 rounded-full font-mono font-medium text-[10px] uppercase tracking-wider transition cursor-pointer min-h-[28px] ${
+                      active ? 'bg-sky-500/30 text-sky-100' : 'text-sky-400/70 hover:text-sky-200'
+                    }`}
+                  >
+                    {level === 'none' ? 'Off' : level === 'medium' ? 'Med' : level[0].toUpperCase() + level.slice(1)}
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           {/* Right Action Buttons: Circular Cyan Mic & Send Button */}
@@ -827,14 +846,13 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
 
             {/* Search Input Bar */}
             <div className="relative flex items-center px-3.5 py-2.5 rounded-xl bg-[#141A23] border border-white/[0.08] focus-within:border-cyan-500/50 transition shrink-0 mb-3">
-              <Search className="w-4 h-4 text-slate-400 mr-2.5 shrink-0" />
+              <Search className="w-4 h-4 text-slate-400 me-2.5 shrink-0" />
               <input
                 type="text"
                 value={modelSearchQuery}
                 onChange={(e) => setModelSearchQuery(e.target.value)}
                 placeholder={t('searchModels') || 'Search models...'}
                 className="flex-1 bg-transparent text-xs sm:text-sm text-slate-200 placeholder-slate-500 focus:outline-none font-mono"
-                autoFocus
               />
               {modelSearchQuery && (
                 <button
@@ -867,12 +885,12 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             </div>
 
             {/* Models Cards List */}
-            <div className="flex-1 overflow-y-auto space-y-2 pr-1 min-h-0">
+            <div className="flex-1 overflow-y-auto space-y-2 pe-1 min-h-0">
               {filteredModels.length === 0 ? (
                 <div className="text-center py-10 text-slate-500 text-xs font-mono">
                   {modelSearchQuery
-                    ? `No models matching "${modelSearchQuery}"`
-                    : 'No models found for this provider.'}
+                    ? `${t('noModelsMatch')} "${modelSearchQuery}"`
+                    : t('noModelsProvider')}
                 </div>
               ) : (
                 filteredModels.map((m) => {
@@ -896,7 +914,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                         }
                         setShowModelsSheet(false);
                       }}
-                      className={`w-full flex flex-col p-3 sm:p-3.5 rounded-2xl border text-left transition cursor-pointer group shadow-xs ${
+                      className={`w-full flex flex-col p-3 sm:p-3.5 rounded-2xl border text-start transition cursor-pointer group shadow-xs ${
                         isSelected
                           ? 'bg-[#122232] border-cyan-500/70 text-white'
                           : 'bg-[#131924] border-white/[0.06] hover:border-cyan-500/40 text-slate-300'

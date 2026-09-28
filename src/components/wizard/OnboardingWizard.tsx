@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Eye, EyeOff, Check, AlertCircle, Sparkles, ArrowRight, ShieldCheck } from 'lucide-react';
+import { Eye, EyeOff, Check, Sparkles, ArrowRight, ShieldCheck } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import {
   PROVIDER_OPTIONS,
@@ -25,6 +25,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
     startGateway,
     installGateway,
     updateSettings,
+    t,
   } = useHermes();
 
   const [step, setStep] = useState<number>(install === 'INSTALLED' ? 2 : 0);
@@ -53,10 +54,9 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
   const isKeyValid = keysValid(effectiveProvider, apiKey, baseUrl);
 
   const saveBlockReason: string | null = (() => {
-    if (customProvider && !provider.trim()) return 'Enter a custom provider id.';
-    if (!apiKey.trim() && !isKeyless)
-      return 'An API key is required for this provider (LM Studio and Ollama Cloud work without one).';
-    if (!isKnown && !baseUrl.trim()) return 'Custom providers need a Base URL endpoint.';
+    if (customProvider && !provider.trim()) return t('customProviderRequired');
+    if (!apiKey.trim() && !isKeyless) return t('keyRequired');
+    if (!isKnown && !baseUrl.trim()) return t('customUrlRequired');
     return null;
   })();
 
@@ -65,12 +65,12 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
       {/* Step Indicators */}
       <div className="mb-6 pt-4">
         <div className="flex items-center justify-between text-xs text-slate-400 mb-2 font-medium">
-          <span>Step {step + 1} of 4</span>
+          <span>{t('stepWord')} {step + 1} {t('ofWord')} 4</span>
           <span>
-            {step === 0 && 'Welcome'}
-            {step === 1 && 'Environment'}
-            {step === 2 && 'API Credentials'}
-            {step === 3 && 'Start Daemon'}
+            {step === 0 && t('stepWelcome')}
+            {step === 1 && t('stepEnvironment')}
+            {step === 2 && t('stepCredentials')}
+            {step === 3 && t('stepStart')}
           </span>
         </div>
 
@@ -95,20 +95,20 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
             </div>
 
             <h1 className="text-2xl font-bold text-white tracking-tight">
-              Welcome to Hermes Mobile
+              {t('welcomeTitle')}
             </h1>
 
             <p className="text-sm text-slate-400 leading-relaxed">
-              Hermes Mobile gives you a native on-device gateway experience with streaming tool executions, reasoning accordions, autonomous scheduled cron jobs, and multi-model access.
+              {t('welcomeDesc')}
             </p>
 
             <div className="p-4 rounded-2xl bg-[#0E1217] border border-white/[0.08] space-y-2 mt-4">
               <div className="flex items-center gap-2 text-xs font-semibold text-white">
                 <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                <span>Zero-Cloud Telemetry</span>
+                <span>{t('zeroTelemetry')}</span>
               </div>
               <p className="text-xs text-slate-400">
-                Your keys, chat histories, and cron triggers stay strictly on your device.
+                {t('zeroTelemetryDesc')}
               </p>
             </div>
 
@@ -120,7 +120,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                 }}
                 className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 active:scale-[0.99] text-white font-semibold text-sm transition shadow-sm cursor-pointer flex items-center justify-center gap-2"
               >
-                <span>Continue</span>
+                <span>{t('continue')}</span>
                 <ArrowRight className="w-4 h-4" />
               </button>
             </div>
@@ -131,12 +131,12 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
           <div className="space-y-4">
             <div>
               <h2 className="text-xl font-bold text-white tracking-tight">
-                Preparing Gateway Environment
+                {t('preparingEnv')}
               </h2>
               <p className="text-xs text-slate-400 mt-1">
-                {install === 'INSTALLING' && 'Unpacking runtime layers and configuring daemon sockets…'}
-                {install === 'INSTALLED' && 'Environment verified and ready.'}
-                {install === 'FAILED' && 'An error occurred during verification.'}
+                {install === 'INSTALLING' && t('installingMsg')}
+                {install === 'INSTALLED' && t('installedMsg')}
+                {install === 'FAILED' && t('failedMsg')}
               </p>
             </div>
 
@@ -164,7 +164,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                   onClick={() => setStep(2)}
                   className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm transition cursor-pointer"
                 >
-                  Continue to Credentials
+                  {t('continueCredentials')}
                 </button>
               )}
               {install === 'FAILED' && (
@@ -178,7 +178,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                     onClick={() => installGateway()}
                     className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm transition cursor-pointer"
                   >
-                    Retry Setup
+                    {t('retrySetup')}
                   </button>
                 </div>
               )}
@@ -186,7 +186,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                 onClick={() => setStep(0)}
                 className="w-full text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
               >
-                Back
+                {t('back')}
               </button>
             </div>
           </div>
@@ -196,10 +196,10 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
           <div className="space-y-4">
             <div>
               <h2 className="text-xl font-bold text-white tracking-tight">
-                Model Credentials
+                {t('modelCredentials')}
               </h2>
               <p className="text-xs text-slate-400 mt-1">
-                Select your preferred LLM provider and enter your API key.
+                {t('modelCredentialsDesc')}
               </p>
             </div>
 
@@ -207,7 +207,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="block text-xs font-medium text-slate-400">
-                    Provider
+                    {t('providerLabel')}
                   </label>
                   <button
                     type="button"
@@ -218,7 +218,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                         : 'bg-white/[0.04] text-slate-400 hover:text-white'
                     }`}
                   >
-                    {customProvider ? 'Custom: On' : 'Custom: Off'}
+                    {customProvider ? t('customOn') : t('customOff')}
                   </button>
                 </div>
                 {customProvider ? (
@@ -246,7 +246,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
 
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1">
-                  API Key {isKeyless ? '(optional for local providers)' : '*'}
+                  {t('apiKey')} {isKeyless ? t('optionalLocal') : '*'}
                 </label>
                 <div className="relative">
                   <input
@@ -268,7 +268,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
 
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1">
-                  Base URL Endpoint{(customProvider || !isKnown) ? ' *' : ' (optional)'}
+                  {t('baseUrl')}{(customProvider || !isKnown) ? ' *' : ` ${t('optionalSuffix')}`}
                 </label>
                 <input
                   type="text"
@@ -281,7 +281,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
 
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1">
-                  Model Identifier (optional)
+                  {t('modelLabel')} {t('optionalSuffix')}
                 </label>
                 <input
                   type="text"
@@ -294,7 +294,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
 
               <div>
                 <label className="block text-xs font-medium text-slate-400 mb-1">
-                  Telegram Bot Token (optional)
+                  {t('telegramBridge')} {t('optionalSuffix')}
                 </label>
                 <input
                   type="password"
@@ -322,13 +322,13 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                     : 'bg-white/[0.04] text-slate-600 cursor-not-allowed'
                 }`}
               >
-                Save and Continue
+                {t('saveContinue')}
               </button>
               <button
                 onClick={() => setStep(1)}
                 className="w-full text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
               >
-                Back
+                {t('back')}
               </button>
             </div>
           </div>
@@ -338,17 +338,17 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
           <div className="space-y-4">
             <div>
               <h2 className="text-xl font-bold text-white tracking-tight">
-                Launch On-Device Gateway
+                {t('launchGateway')}
               </h2>
               <p className="text-xs text-slate-400 mt-1">
-                Start the local socket daemon to begin processing conversations.
+                {t('launchGatewayDesc')}
               </p>
             </div>
 
             <div className="p-4 rounded-2xl bg-[#0E1217] border border-white/[0.08] space-y-2">
-              <p className="text-xs font-semibold text-white">Auto-launch on startup?</p>
+              <p className="text-xs font-semibold text-white">{t('autostartTitle')}?</p>
               <p className="text-xs text-slate-400">
-                With this enabled, the gateway initializes automatically when the app loads.
+                {t('autostartWizardDesc')}
               </p>
               <div className="flex gap-2 pt-2">
                 <button
@@ -359,7 +359,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                       : 'bg-white/[0.04] text-slate-400'
                   }`}
                 >
-                  Enable
+                  {t('enable')}
                 </button>
                 <button
                   onClick={() => setBootRestart(false)}
@@ -369,7 +369,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                       : 'bg-white/[0.04] text-slate-400'
                   }`}
                 >
-                  Skip
+                  {t('skip')}
                 </button>
               </div>
             </div>
@@ -384,7 +384,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                 className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm transition cursor-pointer flex items-center justify-center gap-2 shadow-xs"
               >
                 <Check className="w-4 h-4" />
-                <span>Launch Hermes</span>
+                <span>{t('launchHermes')}</span>
               </button>
 
               <button
@@ -394,14 +394,14 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                 }}
                 className="w-full text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
               >
-                Skip to Workspace
+                {t('skipWorkspace')}
               </button>
 
               <button
                 onClick={() => setStep(2)}
                 className="w-full text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
               >
-                Back
+                {t('back')}
               </button>
             </div>
           </div>

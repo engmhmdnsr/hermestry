@@ -228,7 +228,7 @@ export const THEME_PALETTES: ThemePalette[] = [
       accentText: '#8839EF',
       text: '#4C4F69',
       textMuted: '#6C6F85',
-      textDim: '#9CA0B0',
+      textDim: '#6C6F85',
       inputBg: '#FFFFFF',
     },
   },
@@ -500,4 +500,33 @@ export const applyThemeToDom = (paletteId: string, mode: ThemeMode) => {
   } else {
     root.classList.remove('dark');
   }
+};
+
+// Live OS-theme tracking for `system` mode. Returns an unsubscribe function.
+// The settings/theme owner (HermesContext) should call this when the user
+// picks `system` and unsubscribe on mode change or unmount.
+export const watchSystemThemePreference = (
+  paletteId: string,
+  onChange?: (dark: boolean) => void,
+): (() => void) => {
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  const apply = (dark: boolean) => {
+    applyThemeToDom(paletteId, 'system');
+    onChange?.(dark);
+  };
+  const listener = (e: MediaQueryListEvent) => apply(e.matches);
+  if (typeof mq.addEventListener === 'function') {
+    mq.addEventListener('change', listener);
+  } else {
+    mq.addListener(listener);
+  }
+  // Sync once in case the OS theme changed since last apply.
+  apply(mq.matches);
+  return () => {
+    if (typeof mq.removeEventListener === 'function') {
+      mq.removeEventListener('change', listener);
+    } else {
+      mq.removeListener(listener);
+    }
+  };
 };

@@ -10,14 +10,24 @@ const MAX_ATTEMPTS = 5;
 const LOCKOUT_SECONDS = 30;
 
 export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
-  const { settings } = useHermes();
+  const { settings, t, unlockSecrets } = useHermes();
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [attempts, setAttempts] = useState(0);
   const [lockoutLeft, setLockoutLeft] = useState(0);
   const clearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const expectedLen = Math.min(8, Math.max(4, (settings.appLockPin || '').length || 4));
+  const storedPinLen = (() => {
+    try {
+      return Number(localStorage.getItem('hermes_pinlen')) || 0;
+    } catch {
+      return 0;
+    }
+  })();
+  const expectedLen = Math.min(
+    8,
+    Math.max(4, (settings.appLockPin || '').length || storedPinLen || 4),
+  );
   const lockedOut = lockoutLeft > 0;
 
   useEffect(() => {
@@ -48,26 +58,41 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
     }
   };
 
+  const failAttempt = () => {
+    const used = attempts + 1;
+    setAttempts(used);
+    if (used >= MAX_ATTEMPTS) {
+      setLockoutLeft(LOCKOUT_SECONDS);
+      setPin('');
+      setError(`${t('tooManyAttempts')} ${LOCKOUT_SECONDS}s.`);
+    } else {
+      flashError(`${t('incorrectPin')} ${MAX_ATTEMPTS - used} ${t('attemptsLeft')}.`);
+    }
+  };
+
   const handleDigit = (d: string) => {
     if (lockedOut) return;
     if (pin.length >= expectedLen) return;
     const next = pin + d;
     setPin(next);
     setError(null);
-    if (next.length === expectedLen) {
-      if (next === settings.appLockPin) {
-        onUnlocked();
-      } else {
-        const used = attempts + 1;
-        setAttempts(used);
-        if (used >= MAX_ATTEMPTS) {
-          setLockoutLeft(LOCKOUT_SECONDS);
-          setPin('');
-          setError(`Too many wrong attempts. Try again in ${LOCKOUT_SECONDS}s.`);
+    if (next.length !== expectedLen) return;
+    let hasVault = false;
+    try {
+      hasVault = !!localStorage.getItem('hermes_vault');
+    } catch {}
+    if (hasVault) {
+      unlockSecrets(next).then((ok) => {
+        if (ok) {
+          onUnlocked();
         } else {
-          flashError(`Incorrect PIN. ${MAX_ATTEMPTS - used} attempts left.`);
+          failAttempt();
         }
-      }
+      });
+    } else if (next === settings.appLockPin) {
+      onUnlocked();
+    } else {
+      failAttempt();
     }
   };
 
@@ -77,6 +102,26 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
     setError(null);
   };
 
+  // Refs so the global keydown listener always calls the latest handlers.
+  const handleDigitRef = useRef(handleDigit);
+  handleDigitRef.current = handleDigit;
+  const handleDeleteRef = useRef(handleDelete);
+  handleDeleteRef.current = handleDelete;
+
+  // Physical keyboard support: digits append, Backspace deletes.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (lockedOut) return;
+      if (/^[0-9]$/.test(e.key)) {
+        handleDigitRef.current(e.key);
+      } else if (e.key === 'Backspace') {
+        handleDeleteRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lockedOut]);
+
   return (
     <div className="fixed inset-0 z-50 bg-[#090B0E] flex flex-col items-center justify-center p-6 text-slate-200">
       <div className="w-16 h-16 rounded-3xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center mb-6 shadow-sm">
@@ -84,10 +129,10 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
       </div>
 
       <h2 className="text-lg font-semibold text-white tracking-tight mb-1">
-        Workspace Locked
+        {t('lockedTitle')}
       </h2>
       <p className="text-xs text-slate-400 mb-8">
-        Enter your {expectedLen}-digit PIN to access Hermes Mobile
+        {t('enterPin')} {expectedLen}{t('digitPinAccess')}
       </p>
 
       {/* PIN indicator dots */}
@@ -117,7 +162,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
 
       {lockedOut && (
         <p className="text-xs text-amber-300 mb-4 font-mono">
-          Locked for {lockoutLeft}s
+          {t('lockedFor')} {lockoutLeft}s
         </p>
       )}
 
@@ -128,6 +173,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
             key={digit}
             onClick={() => handleDigit(digit)}
             disabled={lockedOut}
+            aria-label={`${t('digitLabel')} ${digit}`}
             className="h-14 rounded-2xl bg-[#0E1217] hover:bg-white/[0.06] active:scale-95 border border-white/[0.06] text-base font-semibold text-white flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
           >
             {digit}
@@ -136,13 +182,15 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
         <button
           onClick={() => setPin('')}
           disabled={lockedOut}
+          aria-label={t('clear')}
           className="h-14 rounded-2xl bg-[#0E1217] hover:bg-white/[0.06] active:scale-95 border border-white/[0.06] text-xs font-medium text-slate-400 flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
         >
-          Clear
+          {t('clear')}
         </button>
         <button
           onClick={() => handleDigit('0')}
           disabled={lockedOut}
+          aria-label={`${t('digitLabel')} 0`}
           className="h-14 rounded-2xl bg-[#0E1217] hover:bg-white/[0.06] active:scale-95 border border-white/[0.06] text-base font-semibold text-white flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
         >
           0
@@ -151,7 +199,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
           onClick={handleDelete}
           disabled={lockedOut}
           className="h-14 rounded-2xl bg-[#0E1217] hover:bg-white/[0.06] active:scale-95 border border-white/[0.06] text-slate-400 hover:text-white flex items-center justify-center transition cursor-pointer disabled:cursor-not-allowed"
-          aria-label="Delete"
+          aria-label={t('deleteLabel')}
         >
           <Delete className="w-5 h-5" />
         </button>
@@ -159,7 +207,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
 
       <p className="mt-8 text-xs text-slate-500 flex items-center gap-1.5">
         <Shield className="w-3.5 h-3.5" />
-        <span>PIN is stored only on this device</span>
+        <span>{t('pinLocalOnly')}</span>
       </p>
     </div>
   );

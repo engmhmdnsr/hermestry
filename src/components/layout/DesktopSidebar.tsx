@@ -60,7 +60,7 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
 
   return (
     <aside
-      className={`h-screen border-r flex flex-col transition-all duration-200 select-none shrink-0 ${
+      className={`h-screen border-e flex flex-col transition-all duration-200 select-none shrink-0 ${
         collapsed ? 'w-16' : 'w-64'
       }`}
       style={{
@@ -108,7 +108,7 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
       </div>
 
       {/* 2. Primary Navigation */}
-      <div className="p-2 space-y-1">
+      <div className={`p-2 space-y-1 ${collapsed ? '[&>button]:flex-col [&>button]:gap-1 [&>button]:px-1 [&>button]:py-2' : ''}`}>
         {navItems.map((item) => {
           const isActive = currentTab === item.id;
           return (
@@ -120,15 +120,18 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
                   ? 'bg-indigo-600/15 text-indigo-300 font-semibold border border-indigo-500/30 shadow-xs'
                   : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
               }`}
-              title={collapsed ? item.label : undefined}
+              title={item.label}
+              aria-label={item.label}
             >
               <item.icon
                 className={`w-4 h-4 shrink-0 transition-transform ${
                   isActive ? 'text-indigo-400 scale-105' : 'text-slate-400 group-hover:text-white'
                 }`}
               />
-              {!collapsed && (
-                <span className="truncate flex-1 text-left">{item.label}</span>
+              {!collapsed ? (
+                <span className="truncate flex-1 text-start">{item.label}</span>
+              ) : (
+                <span className="text-[9px] leading-tight line-clamp-2 text-center w-full">{item.label}</span>
               )}
 
               {/* Badges */}
@@ -151,6 +154,7 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
           onClick={onOpenNewChat}
           className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 active:scale-[0.99] text-white text-xs font-semibold shadow-xs transition cursor-pointer"
           title={t('newSession')}
+          aria-label={t('newSession')}
         >
           <Plus className="w-4 h-4" />
           {!collapsed && <span>{t('newSession')}</span>}
@@ -162,13 +166,13 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
         <div className="flex-1 overflow-y-auto px-2 space-y-3 pb-3">
           {/* Quick Search */}
           <div className="relative px-1 pt-1">
-            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+            <Search className="w-3.5 h-3.5 absolute start-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
             <input
               type="text"
               value={sessionSearch}
               onChange={(e) => setSessionSearch(e.target.value)}
               placeholder={t('filterSessions')}
-              className="w-full pl-8 pr-2.5 py-1.5 rounded-lg bg-[#11151B] border border-white/[0.06] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500/50"
+              className="w-full ps-8 pe-2.5 py-1.5 rounded-lg bg-[#11151B] border border-white/[0.06] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500/50"
             />
           </div>
 
@@ -252,14 +256,16 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
                 selectSession(s.id);
                 onSelectTab(1);
               }}
-              className={`w-9 h-9 rounded-xl flex items-center justify-center text-xs transition cursor-pointer ${
+              className={`w-12 min-h-[44px] rounded-xl flex flex-col items-center justify-center gap-0.5 px-1 py-1.5 text-xs transition cursor-pointer ${
                 s.id === currentSessionId && currentTab === 1
                   ? 'bg-indigo-600 text-white'
                   : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
               }`}
-              title={s.title}
+              title={s.title || 'Untitled session'}
+              aria-label={s.title || 'Untitled session'}
             >
-              <MessageSquare className="w-4 h-4" />
+              <MessageSquare className="w-4 h-4 shrink-0" />
+              <span className="text-[9px] leading-tight line-clamp-2 text-center w-full">{s.title || 'Untitled'}</span>
             </button>
           ))}
         </div>

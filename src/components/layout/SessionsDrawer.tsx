@@ -52,6 +52,12 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
   const [deleteTarget, setDeleteTarget] = useState<MobileSession | null>(null);
   const [exportTarget, setExportTarget] = useState<MobileSession | null>(null);
   const [copied, setCopied] = useState(false);
+  const [drawerToast, setDrawerToast] = useState<string | null>(null);
+
+  const showDrawerToast = (msg: string) => {
+    setDrawerToast(msg);
+    setTimeout(() => setDrawerToast(null), 2500);
+  };
 
   const presentSources = useMemo(() => {
     return Array.from(new Set(sessions.map((s) => s.source || 'web'))).sort();
@@ -105,21 +111,30 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     URL.revokeObjectURL(url);
   };
 
-  const handleCopyTranscript = (sess: MobileSession) => {
+  const handleCopyTranscript = async (sess: MobileSession) => {
     const targetMessages = gatewayService.loadLocalMessages(sess.id);
     let md = `# Session Transcript\n\n`;
     for (const msg of targetMessages) {
       md += `**${msg.sender === 'you' ? 'User' : 'Hermes'}:**\n${msg.content}\n\n`;
     }
-    navigator.clipboard.writeText(md);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(md);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      showDrawerToast('Copy failed: clipboard unavailable');
+    }
   };
 
   if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex">
+      {drawerToast && (
+        <div className="fixed top-16 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] px-4 py-2 rounded-xl bg-rose-600 text-white text-xs font-semibold shadow-2xl">
+          {drawerToast}
+        </div>
+      )}
       {/* Backdrop */}
       <div
         className="fixed inset-0 bg-black/60 backdrop-blur-xs transition-opacity duration-200"
@@ -127,14 +142,14 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       />
 
       {/* Drawer Container */}
-      <aside className="relative w-full max-w-xs bg-[#0E1217] border-r border-white/[0.08] h-full flex flex-col z-10 shadow-2xl animate-in slide-in-from-left duration-200">
+      <aside className="relative w-full max-w-xs bg-[#0E1217] border-e border-white/[0.08] h-full flex flex-col z-10 shadow-2xl animate-in slide-in-from-left rtl:slide-in-from-right duration-200">
         {/* Header */}
         <div className="p-4 border-b border-white/[0.08] flex items-center justify-between">
           <div>
             <span className="text-xs font-semibold text-white tracking-tight">
               Conversations
             </span>
-            <span className="text-[11px] text-slate-500 ml-1.5">
+            <span className="text-[11px] text-slate-500 ms-1.5">
               ({sessions.length})
             </span>
           </div>
@@ -153,7 +168,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
             </button>
             <button
               onClick={onClose}
-              className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.06] transition ml-1"
+              className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.06] transition ms-1"
               title="Close"
             >
               <X className="w-4 h-4" />
@@ -164,19 +179,19 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
         {/* Search & Filters */}
         <div className="p-3 border-b border-white/[0.06] space-y-2.5">
           <div className="relative">
-            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+            <Search className="w-3.5 h-3.5 absolute start-3 top-1/2 -translate-y-1/2 text-slate-500" />
             <input
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search conversations..."
-              className="w-full pl-9 pr-3 py-1.5 rounded-xl bg-[#141920] border border-white/[0.06] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+              className="w-full ps-9 pe-3 py-1.5 rounded-xl bg-[#141920] border border-white/[0.06] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
             />
           </div>
 
           {/* Clean Segmented Sort Control */}
           <div className="flex items-center gap-1 text-[11px]">
-            <span className="text-slate-500 text-[10px] uppercase font-medium mr-1">Sort:</span>
+            <span className="text-slate-500 text-[10px] uppercase font-medium me-1">Sort:</span>
             {[
               { label: 'Newest', mode: 0 },
               { label: 'Oldest', mode: 1 },
@@ -281,8 +296,16 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
 
       {/* Rename Dialog */}
       {renameTarget && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
-          <div className="w-full max-w-sm rounded-3xl bg-[#0E1217] border border-white/[0.1] p-5 shadow-2xl space-y-4">
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setRenameTarget(null);
+          }}
+        >
+          <div
+            className="w-full max-w-sm rounded-3xl bg-[#0E1217] border border-white/[0.1] p-5 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
             <h3 className="text-sm font-semibold text-white">
               Rename Conversation
             </h3>
@@ -291,7 +314,6 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
               value={renameTitle}
               onChange={(e) => setRenameTitle(e.target.value)}
               className="w-full px-3.5 py-2 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
-              autoFocus
             />
             <div className="flex justify-end gap-2 pt-1">
               <button
@@ -318,8 +340,16 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
 
       {/* Delete Dialog */}
       {deleteTarget && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
-          <div className="w-full max-w-sm rounded-3xl bg-[#0E1217] border border-white/[0.1] p-5 shadow-2xl space-y-3">
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setDeleteTarget(null);
+          }}
+        >
+          <div
+            className="w-full max-w-sm rounded-3xl bg-[#0E1217] border border-white/[0.1] p-5 shadow-2xl space-y-3"
+            onClick={(e) => e.stopPropagation()}
+          >
             <h3 className="text-sm font-semibold text-white">
               Delete Conversation?
             </h3>
@@ -433,7 +463,7 @@ const SessionCard: React.FC<SessionCardProps> = ({
             e.stopPropagation();
             onRename();
           }}
-          className="hover:text-white transition flex items-center gap-1"
+          className="hover:text-white transition flex items-center gap-1 min-h-[44px]"
         >
           <Edit2 className="w-3 h-3" />
           <span>Rename</span>
@@ -443,7 +473,7 @@ const SessionCard: React.FC<SessionCardProps> = ({
             e.stopPropagation();
             onFork();
           }}
-          className="hover:text-indigo-400 transition flex items-center gap-1"
+          className="hover:text-indigo-400 transition flex items-center gap-1 min-h-[44px]"
         >
           <GitFork className="w-3 h-3" />
           <span>Branch</span>
@@ -453,7 +483,7 @@ const SessionCard: React.FC<SessionCardProps> = ({
             e.stopPropagation();
             onDelete();
           }}
-          className="hover:text-rose-400 transition flex items-center gap-1"
+          className="hover:text-rose-400 transition flex items-center gap-1 min-h-[44px]"
         >
           <Trash2 className="w-3 h-3" />
           <span>Delete</span>

@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import { CronJob } from '../../types/hermes';
+import { formatDateTime } from '../../constants/languages';
 
 const OVERDUE_GRACE_MS = 5 * 60 * 1000;
 
@@ -74,6 +75,7 @@ export const JobsTab: React.FC = () => {
   const [query, setQuery] = useState('');
   const [historyForId, setHistoryForId] = useState<string | null>(null);
   const [pendingDeleteJob, setPendingDeleteJob] = useState<CronJob | null>(null);
+  const [expandedPrompts, setExpandedPrompts] = useState<Record<string, boolean>>({});
 
   const presets = [
     { label: 'Run Once', val: 'once' },
@@ -173,10 +175,10 @@ export const JobsTab: React.FC = () => {
   }, [jobs, query]);
 
   return (
-    <div className="space-y-6 max-w-2xl mx-auto px-4 pt-4 pb-28">
+    <div className="space-y-6 max-w-2xl mx-auto px-4 pt-4 pb-20">
       {/* Toast popup */}
       {toast && (
-        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-semibold shadow-2xl animate-in fade-in slide-in-from-top-2">
+        <div className="fixed top-16 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-semibold shadow-2xl animate-in fade-in slide-in-from-top-2">
           {toast}
         </div>
       )}
@@ -260,13 +262,13 @@ export const JobsTab: React.FC = () => {
       {/* 2. Search & Filter Bar */}
       {jobs.length > 0 && (
         <div className="relative">
-          <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+          <Search className="w-4 h-4 absolute start-3.5 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
           <input
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={t('search')}
-            className="w-full pl-10 pr-3.5 py-2 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
+            className="w-full ps-10 pe-3.5 py-2 rounded-xl bg-[#0E1217] border border-white/[0.08] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
           />
         </div>
       )}
@@ -335,7 +337,7 @@ export const JobsTab: React.FC = () => {
                 {j.nextRunAt && (
                   <div className="flex items-center gap-2 text-xs text-slate-400 font-mono">
                     <Clock className="w-3.5 h-3.5 text-slate-500" />
-                    <span>Next execution: {j.nextRunAt.replace('T', ' ').slice(0, 19)}</span>
+                    <span>{t('nextRun')}: {formatDateTime(j.nextRunAt, hermes.settings?.language || 'en')}</span>
                   </div>
                 )}
 
@@ -345,9 +347,16 @@ export const JobsTab: React.FC = () => {
                   </div>
                 )}
 
-                <div className="text-xs text-slate-300 bg-[#141920] p-3 rounded-xl border border-white/[0.06] font-mono leading-relaxed">
+                <button
+                  type="button"
+                  onClick={() => setExpandedPrompts((prev) => ({ ...prev, [j.id]: !prev[j.id] }))}
+                  aria-expanded={!!expandedPrompts[j.id]}
+                  title={j.prompt}
+                  aria-label={`Job prompt: ${j.prompt}. Tap to ${expandedPrompts[j.id] ? 'collapse' : 'expand'}.`}
+                  className={`block w-full text-start text-xs text-slate-300 bg-[#141920] p-3 rounded-xl border border-white/[0.06] font-mono leading-relaxed cursor-pointer ${expandedPrompts[j.id] ? 'whitespace-pre-wrap break-all' : 'line-clamp-6'}`}
+                >
                   {j.prompt}
-                </div>
+                </button>
 
                 {/* Job Action Controls */}
                 <div className="flex items-center justify-between pt-2 border-t border-white/[0.06] text-xs">
@@ -355,7 +364,7 @@ export const JobsTab: React.FC = () => {
                     {j.enabled ? (
                       <button
                         onClick={() => jobAction(j.id, 'pause')}
-                        className="text-slate-400 hover:text-white cursor-pointer flex items-center gap-1.5 transition"
+                        className="text-slate-400 hover:text-white cursor-pointer flex items-center gap-1.5 transition min-h-[44px]"
                       >
                         <Pause className="w-3.5 h-3.5" />
                         <span>Pause</span>
@@ -363,7 +372,7 @@ export const JobsTab: React.FC = () => {
                     ) : (
                       <button
                         onClick={() => jobAction(j.id, 'resume')}
-                        className="text-indigo-400 hover:text-indigo-300 cursor-pointer flex items-center gap-1.5 transition"
+                        className="text-indigo-400 hover:text-indigo-300 cursor-pointer flex items-center gap-1.5 transition min-h-[44px]"
                       >
                         <Play className="w-3.5 h-3.5" />
                         <span>Resume</span>
@@ -372,7 +381,7 @@ export const JobsTab: React.FC = () => {
 
                     <button
                       onClick={() => jobAction(j.id, 'run')}
-                      className="text-indigo-400 hover:text-indigo-300 cursor-pointer flex items-center gap-1.5 transition font-medium"
+                      className="text-indigo-400 hover:text-indigo-300 cursor-pointer flex items-center gap-1.5 transition font-medium min-h-[44px]"
                     >
                       <Play className="w-3.5 h-3.5" />
                       <span>Run Now</span>
@@ -380,7 +389,7 @@ export const JobsTab: React.FC = () => {
 
                     <button
                       onClick={() => openEdit(j)}
-                      className="text-slate-400 hover:text-white cursor-pointer flex items-center gap-1.5 transition"
+                      className="text-slate-400 hover:text-white cursor-pointer flex items-center gap-1.5 transition min-h-[44px]"
                     >
                       <Pencil className="w-3.5 h-3.5" />
                       <span>Edit</span>
@@ -395,7 +404,7 @@ export const JobsTab: React.FC = () => {
                           await fetchRuns(j.id);
                         }
                       }}
-                      className="text-slate-400 hover:text-white cursor-pointer flex items-center gap-1.5 transition"
+                      className="text-slate-400 hover:text-white cursor-pointer flex items-center gap-1.5 transition min-h-[44px]"
                     >
                       <History className="w-3.5 h-3.5" />
                       <span>{isHistoryOpen ? 'Close History' : 'History'}</span>
@@ -454,8 +463,16 @@ export const JobsTab: React.FC = () => {
 
       {/* Delete Modal */}
       {pendingDeleteJob && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="w-full max-w-sm rounded-3xl bg-[#0E1217] border border-white/[0.1] p-5 shadow-2xl space-y-4">
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setPendingDeleteJob(null);
+          }}
+        >
+          <div
+            className="w-full max-w-sm rounded-3xl bg-[#0E1217] border border-white/[0.1] p-5 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
             <h3 className="text-base font-semibold text-white">
               Delete Schedule?
             </h3>
@@ -485,8 +502,16 @@ export const JobsTab: React.FC = () => {
 
       {/* Edit Modal */}
       {editingJob && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="w-full max-w-sm rounded-3xl bg-[#0E1217] border border-white/[0.1] p-5 shadow-2xl space-y-4">
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setEditingJob(null);
+          }}
+        >
+          <div
+            className="w-full max-w-sm rounded-3xl bg-[#0E1217] border border-white/[0.1] p-5 shadow-2xl space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between pb-2 border-b border-white/[0.08]">
               <span className="text-sm font-semibold text-white">Edit Schedule</span>
               <button

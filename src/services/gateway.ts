@@ -29,6 +29,22 @@ export interface StreamChatCallbacks {
   onStopped?: () => void;
 }
 
+// Honesty flags for data that may be served from a local fallback when the
+// gateway is unreachable. stale is always false (we never serve cached
+// gateway data as fresh), live tells the UI whether the payload came from
+// a live gateway response.
+export interface LiveFlag {
+  stale: boolean;
+  live: boolean;
+}
+
+export type LiveValue<T> = T & LiveFlag;
+export type LiveList<T> = T[] & LiveFlag;
+
+const REQUEST_TIMEOUT_MS = 15000;
+const HEALTH_TIMEOUT_MS = 5000;
+const JOB_ACTIONS = new Set(['pause', 'resume', 'run', 'delete']);
+
 export class GatewayService {
   private baseUrl: string;
   private apiKey: () => string;
@@ -70,15 +86,29 @@ export class GatewayService {
     return headers;
   }
 
-  async health(): Promise<boolean> {
+  // Combine a fixed timeout with an optional caller abort signal so every
+  // request is bounded even when the caller does not pass a signal.
+  private requestSignal(caller: AbortSignal | undefined, ms: number): AbortSignal {
+    const timeout = AbortSignal.timeout(ms);
+    if (!caller) return timeout;
+    if (caller.aborted) return caller;
+    return AbortSignal.any([caller, timeout]);
+  }
+
+  private flagList<T>(data: T[], live: boolean): LiveList<T> {
+    return Object.assign(data, { stale: false, live });
+  }
+
+  private flagValue<T extends object>(data: T, live: boolean): LiveValue<T> {
+    return Object.assign(data, { stale: false, live });
+  }
+
+  async health(callerSignal?: AbortSignal): Promise<boolean> {
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2000);
       const res = await fetch(`${this.baseUrl}/health`, {
-        signal: controller.signal,
+        signal: this.requestSignal(callerSignal, HEALTH_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
-      clearTimeout(timeoutId);
       this.isConnected = res.ok;
       return res.ok;
     } catch {
@@ -87,9 +117,10 @@ export class GatewayService {
     }
   }
 
-  async healthDetailed(): Promise<GatewayStatus> {
+  async healthDetailed(callerSignal?: AbortSignal): Promise<GatewayStatus> {
     try {
       const res = await fetch(`${this.baseUrl}/health/detailed`, {
+        signal: this.requestSignal(callerSignal, HEALTH_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
       if (!res.ok) {
@@ -126,9 +157,10 @@ export class GatewayService {
     }
   }
 
-  async modelOptions(provider: string = 'deepseek'): Promise<AiModelInfo[]> {
+  async modelOptions(provider: string = 'deepseek', callerSignal?: AbortSignal): Promise<AiModelInfo[]> {
     try {
       const res = await fetch(`${this.baseUrl}/api/model/options`, {
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
       if (!res.ok) return [];
@@ -158,9 +190,10 @@ export class GatewayService {
     }
   }
 
-  async fetchSessions(): Promise<MobileSession[]> {
+  async fetchSessions(callerSignal?: AbortSignal): Promise<MobileSession[]> {
     try {
       const res = await fetch(`${this.baseUrl}/api/sessions?limit=100&offset=0`, {
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
       if (!res.ok) return this.loadLocalSessions();
@@ -180,9 +213,10 @@ export class GatewayService {
     }
   }
 
-  async createSession(model: string, title?: string): Promise<string> {
+  async createSession(model: string, title?: string, callerSignal?: AbortSignal): Promise<string> {
     const res = await fetch(`${this.baseUrl}/api/sessions`, {
       method: 'POST',
+      signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
       headers: this.getHeaders(),
       body: JSON.stringify({ model: model || undefined, title }),
     });
@@ -197,10 +231,11 @@ export class GatewayService {
     return String(s.id);
   }
 
-  async deleteSession(id: string): Promise<boolean> {
+  async deleteSession(id: string, callerSignal?: AbortSignal): Promise<boolean> {
     try {
       const res = await fetch(`${this.baseUrl}/api/sessions/${encodeURIComponent(id)}`, {
         method: 'DELETE',
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
       return res.ok;
@@ -209,10 +244,11 @@ export class GatewayService {
     }
   }
 
-  async renameSession(id: string, title: string): Promise<boolean> {
+  async renameSession(id: string, title: string, callerSignal?: AbortSignal): Promise<boolean> {
     try {
       const res = await fetch(`${this.baseUrl}/api/sessions/${encodeURIComponent(id)}`, {
         method: 'PATCH',
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
         body: JSON.stringify({ title }),
       });
@@ -222,10 +258,11 @@ export class GatewayService {
     }
   }
 
-  async forkSession(id: string): Promise<string | null> {
+  async forkSession(id: string, callerSignal?: AbortSignal): Promise<string | null> {
     try {
       const res = await fetch(`${this.baseUrl}/api/sessions/${encodeURIComponent(id)}/fork`, {
         method: 'POST',
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
         body: JSON.stringify({}),
       });
@@ -239,11 +276,14 @@ export class GatewayService {
     }
   }
 
-  async sessionMessages(sessionId: string): Promise<ChatMessage[]> {
+  async sessionMessages(sessionId: string, callerSignal?: AbortSignal): Promise<ChatMessage[]> {
     try {
       const res = await fetch(
         `${this.baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages?limit=200`,
-        { headers: this.getHeaders() }
+        {
+          signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+          headers: this.getHeaders(),
+        }
       );
       if (!res.ok) return this.loadLocalMessages(sessionId);
       const data = await res.json();
@@ -264,10 +304,11 @@ export class GatewayService {
     }
   }
 
-  async stopRun(runId: string): Promise<boolean> {
+  async stopRun(runId: string, callerSignal?: AbortSignal): Promise<boolean> {
     try {
       const res = await fetch(`${this.baseUrl}/v1/runs/${encodeURIComponent(runId)}/stop`, {
         method: 'POST',
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
         body: JSON.stringify({}),
       });
@@ -277,13 +318,19 @@ export class GatewayService {
     }
   }
 
-  async resolveApproval(runId: string, allow: boolean, mode: string = 'once'): Promise<boolean> {
+  async resolveApproval(
+    runId: string,
+    allow: boolean,
+    mode: string = 'once',
+    callerSignal?: AbortSignal
+  ): Promise<boolean> {
     try {
       const body = {
         choice: allow ? mode : 'deny',
       };
       const res = await fetch(`${this.baseUrl}/v1/runs/${encodeURIComponent(runId)}/approval`, {
         method: 'POST',
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
         body: JSON.stringify(body),
       });
@@ -302,6 +349,15 @@ export class GatewayService {
     callbacks: StreamChatCallbacks,
     abortSignal?: AbortSignal
   ): Promise<void> {
+    // Streaming responses stay open for minutes by design, so no fixed
+    // timeout applies here. The caller abort signal is honored, and the
+    // reader is always cancelled and released to avoid leaking locks.
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    const onAbort = () => {
+      if (reader) {
+        reader.cancel().catch(() => {});
+      }
+    };
     try {
       const body: Record<string, any> = { model };
       if (imageDataUrls && imageDataUrls.length > 0) {
@@ -338,68 +394,97 @@ export class GatewayService {
         return;
       }
 
-      const reader = res.body.getReader();
+      reader = res.body.getReader();
+      abortSignal?.addEventListener('abort', onAbort, { once: true });
       const decoder = new TextDecoder();
       let buffer = '';
       let currentEvent = '';
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
 
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed.startsWith('event:')) {
-            currentEvent = trimmed.replace('event:', '').trim();
-          } else if (trimmed.startsWith('data:')) {
-            const dataRaw = trimmed.replace('data:', '').trim();
-            if (!dataRaw) continue;
-            try {
-              const ev = JSON.parse(dataRaw);
-              if (ev.run_id && callbacks.onRunId) {
-                callbacks.onRunId(ev.run_id);
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith('event:')) {
+              currentEvent = trimmed.replace('event:', '').trim();
+            } else if (trimmed.startsWith('data:')) {
+              const dataRaw = trimmed.replace('data:', '').trim();
+              if (!dataRaw) continue;
+              try {
+                const ev = JSON.parse(dataRaw);
+                if (ev.run_id && callbacks.onRunId) {
+                  callbacks.onRunId(ev.run_id);
+                }
+                if (currentEvent === 'assistant.delta' && ev.delta) {
+                  callbacks.onThinkingDone();
+                  callbacks.onText(ev.delta);
+                } else if (currentEvent === 'assistant.commentary' && ev.text) {
+                  callbacks.onThinkingDone();
+                  callbacks.onText(ev.text);
+                } else if (currentEvent === 'tool.progress') {
+                  if (ev.tool_name === '_thinking' || ev.tool_name === 'thinking') {
+                    callbacks.onThinking(ev.delta || ev.preview || '');
+                  } else {
+                    callbacks.onTool(ev.tool_name || 'tool');
+                  }
+                } else if (currentEvent === 'tool.started' || currentEvent === 'tool.completed') {
+                  callbacks.onThinkingDone();
+                  const name = ev.tool_name || 'tool';
+                  callbacks.onTool(name);
+                  if (ev.output && callbacks.onToolOutput) {
+                    callbacks.onToolOutput(name, ev.output);
+                  }
+                } else if (currentEvent === 'approval.request') {
+                  if (ev.run_id) {
+                    callbacks.onApproval({
+                      runId: String(ev.run_id),
+                      sessionId,
+                      summary: ev.description || ev.command || 'Approval requested for action',
+                    });
+                  }
+                } else if (ev.usage) {
+                  callbacks.onUsage(ev.usage.input_tokens || 0, ev.usage.output_tokens || 0);
+                }
+              } catch {
+                // Non JSON line, skip
               }
-              if (currentEvent === 'assistant.delta' && ev.delta) {
-                callbacks.onThinkingDone();
-                callbacks.onText(ev.delta);
-              } else if (currentEvent === 'assistant.commentary' && ev.text) {
-                callbacks.onThinkingDone();
-                callbacks.onText(ev.text);
-              } else if (currentEvent === 'tool.progress') {
-                if (ev.tool_name === '_thinking' || ev.tool_name === 'thinking') {
-                  callbacks.onThinking(ev.delta || ev.preview || '');
-                } else {
-                  callbacks.onTool(ev.tool_name || 'tool');
-                }
-              } else if (currentEvent === 'tool.started' || currentEvent === 'tool.completed') {
-                callbacks.onThinkingDone();
-                const name = ev.tool_name || 'tool';
-                callbacks.onTool(name);
-                if (ev.output && callbacks.onToolOutput) {
-                  callbacks.onToolOutput(name, ev.output);
-                }
-              } else if (currentEvent === 'approval.request') {
-                if (ev.run_id) {
-                  callbacks.onApproval({
-                    runId: String(ev.run_id),
-                    sessionId,
-                    summary: ev.description || ev.command || 'Approval requested for action',
-                  });
-                }
-              } else if (ev.usage) {
-                callbacks.onUsage(ev.usage.input_tokens || 0, ev.usage.output_tokens || 0);
-              }
-            } catch {
-              // Non JSON line, skip
             }
           }
         }
+      } finally {
+        abortSignal?.removeEventListener('abort', onAbort);
+        try {
+          await reader.cancel();
+        } catch {
+          // Stream already closed, nothing to cancel
+        }
+        try {
+          reader.releaseLock();
+        } catch {
+          // Lock already released, ignore
+        }
+        reader = null;
       }
       callbacks.onThinkingDone();
     } catch (err: any) {
+      if (reader) {
+        try {
+          await reader.cancel();
+        } catch {
+          // Ignore cancel errors during teardown
+        }
+        try {
+          reader.releaseLock();
+        } catch {
+          // Ignore release errors during teardown
+        }
+        reader = null;
+      }
       if (err && err.name === 'AbortError') {
         callbacks.onStopped?.();
         return;
@@ -409,9 +494,10 @@ export class GatewayService {
   }
 
   // Jobs CRUD
-  async jobs(): Promise<CronJob[]> {
+  async jobs(callerSignal?: AbortSignal): Promise<CronJob[]> {
     try {
       const res = await fetch(`${this.baseUrl}/api/jobs`, {
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
       if (!res.ok) return [];
@@ -433,10 +519,16 @@ export class GatewayService {
     }
   }
 
-  async createJob(name: string, schedule: string, prompt: string): Promise<boolean> {
+  async createJob(
+    name: string,
+    schedule: string,
+    prompt: string,
+    callerSignal?: AbortSignal
+  ): Promise<boolean> {
     try {
       const res = await fetch(`${this.baseUrl}/api/jobs`, {
         method: 'POST',
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
         body: JSON.stringify({ name, schedule, prompt, deliver: 'local' }),
       });
@@ -446,10 +538,15 @@ export class GatewayService {
     }
   }
 
-  async updateJob(id: string, patch: Record<string, unknown>): Promise<boolean> {
+  async updateJob(
+    id: string,
+    patch: Record<string, unknown>,
+    callerSignal?: AbortSignal
+  ): Promise<boolean> {
     try {
       const res = await fetch(`${this.baseUrl}/api/jobs/${encodeURIComponent(id)}`, {
         method: 'PUT',
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
         body: JSON.stringify(patch),
       });
@@ -459,10 +556,12 @@ export class GatewayService {
     }
   }
 
-  async jobAction(id: string, action: string): Promise<boolean> {
+  async jobAction(id: string, action: string, callerSignal?: AbortSignal): Promise<boolean> {
+    if (!JOB_ACTIONS.has(action)) return false;
     try {
       const res = await fetch(`${this.baseUrl}/api/jobs/${encodeURIComponent(id)}/${encodeURIComponent(action)}`, {
         method: action === 'delete' ? 'DELETE' : 'POST',
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
         body: action === 'delete' ? undefined : JSON.stringify({}),
       });
@@ -472,15 +571,16 @@ export class GatewayService {
     }
   }
 
-  async cronRuns(jobId: string): Promise<CronRun[]> {
+  async cronRuns(jobId: string, callerSignal?: AbortSignal): Promise<LiveList<CronRun>> {
     try {
       const res = await fetch(`${this.baseUrl}/api/jobs/${encodeURIComponent(jobId)}/runs`, {
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
-      if (!res.ok) return [];
+      if (!res.ok) return this.flagList([], false);
       const data = await res.json();
       const arr = data.runs || data.data || [];
-      return arr.map((r: any, idx: number) => ({
+      const runs: CronRun[] = arr.map((r: any, idx: number) => ({
         id: String(r.id || `${jobId}-run-${idx}`),
         jobId,
         status: r.status || r.state || 'success',
@@ -488,29 +588,33 @@ export class GatewayService {
         finishedAt: r.finished_at || '',
         error: r.error || '',
       }));
+      return this.flagList(runs, true);
     } catch {
-      return [];
+      return this.flagList([], false);
     }
   }
 
   // Skills
-  async skillsList(): Promise<SkillInfo[]> {
+  async skillsList(callerSignal?: AbortSignal): Promise<LiveList<SkillInfo>> {
     try {
       const res = await fetch(`${this.baseUrl}/api/skills`, {
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
-      if (!res.ok) return [];
+      if (!res.ok) return this.flagList([], false);
       const data = await res.json();
-      return data.skills || [];
+      const skills: SkillInfo[] = data.skills || [];
+      return this.flagList(skills, true);
     } catch {
-      return [];
+      return this.flagList([], false);
     }
   }
 
-  async skillToggle(id: string, enabled: boolean): Promise<boolean> {
+  async skillToggle(id: string, enabled: boolean, callerSignal?: AbortSignal): Promise<boolean> {
     try {
       const res = await fetch(`${this.baseUrl}/api/skills/${encodeURIComponent(id)}/toggle`, {
         method: 'POST',
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
         body: JSON.stringify({ enabled }),
       });
@@ -521,40 +625,51 @@ export class GatewayService {
   }
 
   // Memory
-  async memoryGet(): Promise<MemoryInfo> {
+  async memoryGet(callerSignal?: AbortSignal): Promise<LiveValue<MemoryInfo>> {
     try {
       const res = await fetch(`${this.baseUrl}/api/memory`, {
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
       if (!res.ok) {
-        return {
-          enabled: false,
-          provider: '',
-          summary: `Memory unavailable: HTTP ${res.status}`,
-          entries: 0,
-        };
+        return this.flagValue(
+          {
+            enabled: false,
+            provider: '',
+            summary: `Memory unavailable: HTTP ${res.status}`,
+            entries: 0,
+          },
+          false
+        );
       }
       const data = await res.json();
-      return {
-        enabled: Boolean(data.enabled),
-        provider: data.provider || '',
-        summary: data.summary || '',
-        entries: typeof data.entries === 'number' ? data.entries : 0,
-      };
+      return this.flagValue(
+        {
+          enabled: Boolean(data.enabled),
+          provider: data.provider || '',
+          summary: data.summary || '',
+          entries: typeof data.entries === 'number' ? data.entries : 0,
+        },
+        true
+      );
     } catch (e: unknown) {
-      return {
-        enabled: false,
-        provider: '',
-        summary: e instanceof Error ? `Memory unavailable: ${e.message}` : 'Memory unavailable: gateway unreachable',
-        entries: 0,
-      };
+      return this.flagValue(
+        {
+          enabled: false,
+          provider: '',
+          summary: e instanceof Error ? `Memory unavailable: ${e.message}` : 'Memory unavailable: gateway unreachable',
+          entries: 0,
+        },
+        false
+      );
     }
   }
 
   // Blueprints
-  async blueprints(): Promise<Blueprint[]> {
+  async blueprints(callerSignal?: AbortSignal): Promise<Blueprint[]> {
     try {
       const res = await fetch(`${this.baseUrl}/api/blueprints`, {
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
       if (!res.ok) return [];
@@ -565,10 +680,15 @@ export class GatewayService {
     }
   }
 
-  async instantiateBlueprint(id: string, slots: Record<string, string>): Promise<boolean> {
+  async instantiateBlueprint(
+    id: string,
+    slots: Record<string, string>,
+    callerSignal?: AbortSignal
+  ): Promise<boolean> {
     try {
       const res = await fetch(`${this.baseUrl}/api/blueprints/${encodeURIComponent(id)}/instantiate`, {
         method: 'POST',
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
         body: JSON.stringify({ slots }),
       });
@@ -579,9 +699,10 @@ export class GatewayService {
   }
 
   // Diagnostics & Ops
-  async doctor(): Promise<DoctorReport> {
+  async doctor(callerSignal?: AbortSignal): Promise<DoctorReport> {
     try {
       const res = await fetch(`${this.baseUrl}/api/doctor`, {
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
       if (!res.ok) {
@@ -603,10 +724,11 @@ export class GatewayService {
     }
   }
 
-  async backup(): Promise<BackupResult> {
+  async backup(callerSignal?: AbortSignal): Promise<BackupResult> {
     try {
       const res = await fetch(`${this.baseUrl}/api/backup`, {
         method: 'POST',
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
       if (!res.ok) {
@@ -626,10 +748,11 @@ export class GatewayService {
     }
   }
 
-  async debugShare(): Promise<DebugShare> {
+  async debugShare(callerSignal?: AbortSignal): Promise<DebugShare> {
     try {
       const res = await fetch(`${this.baseUrl}/api/debug/share`, {
         method: 'POST',
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
       if (!res.ok) {
@@ -647,53 +770,69 @@ export class GatewayService {
     }
   }
 
-  async serverLogs(level: string = '', query: string = '', limit: number = 200): Promise<LogLine[]> {
+  async serverLogs(
+    level: string = '',
+    query: string = '',
+    limit: number = 200,
+    callerSignal?: AbortSignal
+  ): Promise<LiveList<LogLine>> {
     try {
       const res = await fetch(
         `${this.baseUrl}/api/logs?level=${encodeURIComponent(level)}&query=${encodeURIComponent(query)}&limit=${limit}`,
-        { headers: this.getHeaders() }
+        {
+          signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+          headers: this.getHeaders(),
+        }
       );
-      if (!res.ok) return [];
+      if (!res.ok) return this.flagList([], false);
       const data = await res.json();
-      return data.logs || [];
+      const logs: LogLine[] = data.logs || [];
+      return this.flagList(logs, true);
     } catch {
-      return [];
+      return this.flagList([], false);
     }
   }
 
-  async usageAnalytics(range: string = '7d'): Promise<UsageAnalytics> {
+  async usageAnalytics(range: string = '7d', callerSignal?: AbortSignal): Promise<LiveValue<UsageAnalytics>> {
+    const empty: UsageAnalytics = {
+      range,
+      sessions: 0,
+      messages: 0,
+      costUsd: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+    };
     try {
       const res = await fetch(`${this.baseUrl}/api/usage?range=${encodeURIComponent(range)}`, {
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
       if (!res.ok) {
-        return {
-          range,
-          sessions: 0,
-          messages: 0,
-          costUsd: 0,
-          inputTokens: 0,
-          outputTokens: 0,
-        };
+        return this.flagValue({ ...empty }, false);
       }
-      return await res.json();
+      const data = await res.json();
+      return this.flagValue({ ...empty, ...data, range: data.range || range }, true);
     } catch {
-      return {
-        range,
-        sessions: 0,
-        messages: 0,
-        costUsd: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-      };
+      return this.flagValue({ ...empty }, false);
     }
   }
 
-  async providersValidate(provider: string, envVar: string, key: string): Promise<boolean | null> {
+  async providersValidate(
+    provider: string,
+    envVar: string,
+    key: string,
+    callerSignal?: AbortSignal
+  ): Promise<boolean | null> {
     if (!key.trim()) return false;
+    // Never send the key when the gateway is unreachable. Probe reachability
+    // first with a keyless health check and bail out before any network call
+    // that carries the key.
+    const reachable = await this.health(callerSignal);
+    if (!reachable) return null;
     try {
       const res = await fetch(`${this.baseUrl}/api/providers/validate`, {
         method: 'POST',
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
         body: JSON.stringify({ provider, key, env_var: envVar }),
       });

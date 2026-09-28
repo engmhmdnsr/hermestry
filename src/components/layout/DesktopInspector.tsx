@@ -48,7 +48,7 @@ export const DesktopInspector: React.FC<DesktopInspectorProps> = ({ isOpen, onCl
     .reverse();
 
   return (
-    <aside className="w-80 h-screen bg-[#080B0E] border-l border-white/[0.07] flex flex-col shrink-0 text-xs">
+    <aside className="w-80 h-screen bg-[#080B0E] border-s border-white/[0.07] flex flex-col shrink-0 text-xs">
       {/* 1. Header */}
       <div className="h-14 border-b border-white/[0.06] flex items-center justify-between px-4">
         <div className="flex items-center gap-2">
@@ -137,7 +137,7 @@ export const DesktopInspector: React.FC<DesktopInspectorProps> = ({ isOpen, onCl
                   {msg.toolOutputs && msg.toolOutputs.length > 0 && (
                     <div className="mt-2 pt-2 border-t border-white/[0.05] space-y-1 font-mono text-[11px] text-slate-400 max-h-36 overflow-y-auto">
                       {msg.toolOutputs.map((out, idx) => (
-                        <div key={idx} className="bg-black/30 p-2 rounded leading-relaxed">
+                        <div key={idx} className="bg-black/30 p-2 rounded leading-relaxed break-all whitespace-pre-wrap">
                           <span className="text-teal-400 font-bold">{out.toolName}</span>: {out.output}
                         </div>
                       ))}
