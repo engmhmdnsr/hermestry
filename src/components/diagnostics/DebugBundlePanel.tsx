@@ -118,12 +118,12 @@ export const DebugBundlePanel: React.FC<DebugBundlePanelProps> = ({ sharing, res
         onClick={onShareDebug}
         disabled={sharing || !ready}
         title={!selfTests.passed ? 'Redaction self-tests must pass first' : undefined}
-        className="px-3.5 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer"
+        className="px-3.5 py-2 min-h-[44px] rounded-xl bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer"
       >
         {sharing ? 'Generating bundle...' : 'Generate and share debug bundle'}
       </button>
       {result && (
-        <p className="text-[11px] text-slate-300">{result.summary}</p>
+        <p role="status" className="text-[11px] text-slate-300">{result.summary}</p>
       )}
     </div>
   );

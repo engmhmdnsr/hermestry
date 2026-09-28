@@ -162,12 +162,12 @@ export const BackupPanel: React.FC<BackupPanelProps> = ({ running, result, onRun
       <button
         onClick={onRunBackup}
         disabled={running || !ack}
-        className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer"
+        className="px-3.5 py-2 min-h-[44px] rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer"
       >
         {running ? 'Creating snapshot...' : 'Create safe snapshot'}
       </button>
       {result && (
-        <p className={`text-[11px] ${result.ok ? 'text-emerald-400' : 'text-rose-400'}`}>
+        <p role="status" className={`text-[11px] ${result.ok ? 'text-emerald-400' : 'text-rose-400'}`}>
           {result.message}
         </p>
       )}

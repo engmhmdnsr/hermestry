@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- EDGE-TO-EDGE-EXPLICIT (INSET-01/02): these four ANDROID 15 (API 35)
+         overrides spell out the inset policy instead of relying on the
+         platform default.
+
+         targetSdk is 36, so Android 15+ enforces edge-to-edge for this app.
+         The app does NOT opt out: the WebView spans the full window, the
+         status bar and the gesture/nav bar are drawn over the web content,
+         and the web layer pads itself with env(safe-area-inset-*) (viewport-fit=cover
+         is present in index.html) or, when the WebView predates the Chromium
+         safe-area fix (major version below 140), with the safe-area-inset-top /
+         -right / -bottom / -left CSS custom properties that Capacitor's
+         SystemBars plugin injects on the document element.
+
+         Do not flip this to true: opting out letterboxes the WebView, the CSS
+         safe-area insets collapse to 0, and the header/drawer/bottom nav lose
+         the padding the web layer is being taught to apply.
+
+         Kept in values-v35 because android:windowOptOutEdgeToEdgeEnforcement
+         only exists from API 35; declaring it unconditionally would be a
+         NewApi lint error against lower API levels. Each style is restated in
+         full because a style resource in a qualified folder replaces, not
+         merges with, the base definition. -->
+    <style name="AppTheme" parent="Theme.AppCompat.Light.DarkActionBar">
+        <item name="colorPrimary">@color/colorPrimary</item>
+        <item name="colorPrimaryDark">@color/colorPrimaryDark</item>
+        <item name="colorAccent">@color/colorAccent</item>
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">false</item>
+    </style>
+
+    <style name="AppTheme.NoActionBar" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="windowActionBar">false</item>
+        <item name="windowNoTitle">true</item>
+        <item name="android:background">@null</item>
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">false</item>
+    </style>
+
+    <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
+        <item name="android:background">@drawable/splash</item>
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">false</item>
+    </style>
+</resources>

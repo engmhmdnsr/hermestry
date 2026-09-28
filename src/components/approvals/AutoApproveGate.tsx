@@ -97,11 +97,18 @@ export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChan
 
   if (policy.enabled) {
     return (
-      <div className="p-3 rounded-2xl bg-red-500/10 border border-red-500/30 space-y-2">
+      <div
+        role="status"
+        aria-live="polite"
+        className="p-3 rounded-2xl bg-red-500/10 border border-red-500/30 space-y-2"
+      >
         <div className="flex items-center gap-2">
           <AlertTriangle className="w-4 h-4 text-red-300 shrink-0" />
           <p className="text-xs font-semibold text-red-200">
-            {tr('gateOnFor')} {policy.scopes.join(', ') || tr('gateOnNone')}
+            {tr('gateOnFor')}{' '}
+            {policy.scopes.length > 0
+              ? policy.scopes.map((s) => tr(SCOPE_LABEL_KEYS[s])).join(', ')
+              : tr('gateOnNone')}
           </p>
         </div>
         <p className="text-[11px] text-slate-400">
@@ -128,14 +135,16 @@ export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChan
         </div>
         <button
           onClick={() => setExpanded((v) => !v)}
-          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-white/[0.04] text-slate-300 border border-white/[0.08] cursor-pointer shrink-0"
+          aria-expanded={expanded}
+          aria-controls="auto-approve-options"
+          className="px-3 min-h-[44px] rounded-lg text-xs font-medium bg-white/[0.04] text-slate-300 border border-white/[0.08] cursor-pointer shrink-0"
         >
           {expanded ? tr('cancel') : tr('enable')}
         </button>
       </div>
 
       {expanded && (
-        <div className="space-y-2 pt-1">
+        <div id="auto-approve-options" className="space-y-2 pt-1">
           <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-start gap-2">
             <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
             <p className="text-[11px] text-amber-200 leading-relaxed">

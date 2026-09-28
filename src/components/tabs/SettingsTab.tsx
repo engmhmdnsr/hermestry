@@ -20,6 +20,9 @@ import {
   RefreshCw,
   Wifi,
   WifiOff,
+  MoreVertical,
+  Pencil,
+  Trash2,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import {
@@ -41,6 +44,7 @@ import {
 import { deriveUiFlags, type GatewayState } from '../../services/gatewayState';
 import { validationFingerprint } from '../../services/providerValidation';
 import { AutoApproveGate } from '../approvals/AutoApproveGate';
+import { useOverlayBehavior } from '../../hooks/useOverlayBehavior';
 import {
   DEFAULT_AUTO_APPROVE_POLICY,
   normalizePolicy,
@@ -58,6 +62,15 @@ import {
 
 type SectionId = 'connection' | 'security' | 'gateway' | 'automation' | 'appearance' | 'advanced';
 
+// Fixed order of the section rail and the DOM ids its chips control. Module
+// scope so the scroll tracker and the chips share one source of truth.
+const SECTION_IDS: SectionId[] = ['connection', 'security', 'gateway', 'automation', 'appearance', 'advanced'];
+const sectionDomId = (id: SectionId) => `settings-section-${id}`;
+// The tab scrolls inside #main-content under a sticky header; the small offset
+// keeps an opened card clear of that header instead of half hidden beneath it.
+const SECTION_SCROLL_OFFSET = 12;
+const SCROLL_PROBE_OFFSET = 96;
+
 // Field name of the provider credential, held once as a literal constant so
 // the patch objects below never repeat a credential-shaped source literal.
 const PROVIDER_CREDENTIAL_FIELD = 'apiKey' as const;
@@ -72,7 +85,7 @@ const RiskBadge: React.FC<{ level: RiskLevel; label: string }> = ({ level, label
     off: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30',
   };
   return (
-    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-[var(--radius-sm,6px)] text-[10px] font-semibold border ${styles[level]}`}>
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-semibold border ${styles[level]}`}>
       {level === 'off' ? <ShieldCheck className="w-3 h-3" /> : <ShieldAlert className="w-3 h-3" />}
       {label}
     </span>
@@ -109,7 +122,7 @@ const StateNote: React.FC<{ state: DataState; message: string; onRetry?: () => v
       )}
       <span className="flex-1">{message}</span>
       {onRetry && (state === 'error' || state === 'offline') && (
-        <button onClick={onRetry} className="text-indigo-300 hover:text-indigo-200 font-semibold cursor-pointer shrink-0">
+        <button onClick={onRetry} className="hm-hit text-indigo-300 hover:text-indigo-200 font-semibold cursor-pointer shrink-0">
           Retry
         </button>
       )}
@@ -122,10 +135,14 @@ const Section: React.FC<{
   subtitle: string;
   open: boolean;
   onToggle: () => void;
+  id?: string;
   badge?: React.ReactNode;
   children: React.ReactNode;
-}> = ({ title, subtitle, open, onToggle, badge, children }) => (
-  <section className="rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] shadow-xs overflow-hidden">
+}> = ({ title, subtitle, open, onToggle, id, badge, children }) => (
+  <section
+    id={id}
+    className="scroll-mt-4 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] shadow-xs overflow-hidden"
+  >
     <button
       onClick={onToggle}
       aria-expanded={open}
@@ -622,7 +639,96 @@ export const SettingsTab: React.FC = () => {
     appearance: false,
     advanced: false,
   });
-  const toggleSection = (id: SectionId) => setOpenSections((p) => ({ ...p, [id]: !p[id] }));
+  // The section rail keeps exactly one chip marked current: scroll position
+  // feeds it while the user scrolls, and a chip tap or an opening card moves
+  // it immediately. Collapse state stays independent (aria-expanded per chip).
+  const [currentSection, setCurrentSection] = useState<SectionId>('connection');
+  // The provider row's overflow menu, one open sheet at a time.
+  const [menuProviderId, setMenuProviderId] = useState<string | null>(null);
+  const pendingScrollRef = useRef<SectionId | null>(null);
+  const scrollFrameRef = useRef<number | null>(null);
+
+  // Scroll an opened card into view. The tab scrolls inside #main-content, so
+  // the target top is computed against that scroller and pulled up by
+  // SECTION_SCROLL_OFFSET; the result is scrollIntoView(block:'start') plus the
+  // sticky-header allowance.
+  const scrollSectionIntoView = (id: SectionId) => {
+    if (typeof document === 'undefined') return;
+    const target = document.getElementById(sectionDomId(id));
+    if (!target) return;
+    const scroller = document.getElementById('main-content');
+    if (!scroller) {
+      target.scrollIntoView({ block: 'start' });
+      return;
+    }
+    const top =
+      target.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top +
+      scroller.scrollTop -
+      SECTION_SCROLL_OFFSET;
+    scroller.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+  };
+
+  const toggleSection = (id: SectionId) => {
+    const willOpen = !openSections[id];
+    setOpenSections((p) => ({ ...p, [id]: !p[id] }));
+    setCurrentSection(id);
+    // Never leave the opened card below the fold: scroll it in after commit.
+    if (willOpen) pendingScrollRef.current = id;
+  };
+
+  // One place that reveals the Connection card, so the "Review keys" control
+  // and any future jump share the same open-plus-scroll behavior.
+  const revealConnection = () => {
+    setOpenSections((p) => ({ ...p, connection: true }));
+    setCurrentSection('connection');
+    pendingScrollRef.current = 'connection';
+  };
+
+  // Runs after a card opens (state commit), so the DOM already has its height.
+  useEffect(() => {
+    const id = pendingScrollRef.current;
+    if (!id) return;
+    pendingScrollRef.current = null;
+    const timer = window.setTimeout(() => scrollSectionIntoView(id), 80);
+    return () => window.clearTimeout(timer);
+  }, [openSections]);
+
+  // Track the section nearest the top of the scroll viewport so exactly one
+  // chip reads as current no matter how the user got there.
+  useEffect(() => {
+    const scroller = document.getElementById('main-content');
+    const listenTarget: EventTarget = scroller ?? window;
+    const computeCurrent = () => {
+      const probe = (scroller ? scroller.getBoundingClientRect().top : 0) + SCROLL_PROBE_OFFSET;
+      let active: SectionId = SECTION_IDS[0];
+      for (const id of SECTION_IDS) {
+        const el = document.getElementById(sectionDomId(id));
+        if (!el) continue;
+        if (el.getBoundingClientRect().top <= probe) active = id;
+      }
+      setCurrentSection(active);
+    };
+    const onScroll = () => {
+      if (scrollFrameRef.current !== null) return;
+      scrollFrameRef.current = window.requestAnimationFrame(() => {
+        scrollFrameRef.current = null;
+        computeCurrent();
+      });
+    };
+    computeCurrent();
+    listenTarget.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      listenTarget.removeEventListener('scroll', onScroll);
+      if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+    };
+  }, []);
+
+  // Every overlay in this file gets Escape, the Android back button, Tab
+  // trapping and focus restore from the one shared hook.
+  const providerMenuRef = useOverlayBehavior(!!menuProviderId, () => setMenuProviderId(null));
+  const addModalRef = useOverlayBehavior(showAddModal, closeAddModal);
+  const blueprintModalRef = useOverlayBehavior(!!selectedBlueprint, () => setSelectedBlueprint(null));
 
   // Preferences search filters
   const [themeSearch, setThemeSearch] = useState('');
@@ -991,6 +1097,80 @@ export const SettingsTab: React.FC = () => {
     }
   };
 
+  // ---------------------------------------------------------------------------
+  // Provider row actions (driven from the row's overflow sheet)
+  // ---------------------------------------------------------------------------
+  const handleUseProvider = (prov: ConfiguredProvider) => {
+    setMenuProviderId(null);
+    // One apply path: activate, confirm the write, then mirror + restart so the
+    // running gateway stops using the previous provider's key/URL.
+    const before = saveErrorRef.current;
+    activateProvider(prov.id);
+    void runApply(prov.id, {
+      label: prov.name,
+      before,
+      successMsg: `${t('switchedTo')} ${prov.name}`,
+      restartedMsg: `${t('switchedTo')} ${prov.name}. ${tx('gatewayRestartedShort', 'Gateway restarted.')}`,
+    });
+  };
+
+  const handleEditProvider = (prov: ConfiguredProvider) => {
+    setMenuProviderId(null);
+    setEditingProviderId(prov.id);
+    setNewProvType(prov.provider);
+    setNewProvName(prov.name);
+    setNewProvKey(prov.apiKey || '');
+    setNewProvBaseUrl(prov.baseUrl || '');
+    setNewProvModel(prov.defaultModel || '');
+    setKeyResult(null);
+    setKeyOk(null);
+    setTestedFingerprint('');
+    setShowNewKey(false);
+    setActivateNewProvider(false);
+    setShowAddModal(true);
+  };
+
+  // Test an existing profile from the overflow sheet: run the same validation
+  // the modal uses, and persist the validated flag only on a real pass so the
+  // "Untested" chip cannot be cleared by a guess.
+  const handleTestProvider = async (prov: ConfiguredProvider) => {
+    setMenuProviderId(null);
+    const cleaned = (prov.apiKey || '').trim();
+    if (!cleaned) {
+      showToast(`${prov.name}: ${t('keyRequired')}`, 'error');
+      return;
+    }
+    showToast(`${tx('testing', 'Testing…')} ${prov.name}`, 'info');
+    let valid: boolean | null = null;
+    try {
+      valid = await service.providersValidate(normProvider(prov.provider), 'HERMES_API_KEY', cleaned);
+    } catch {
+      valid = null;
+    }
+    if (valid === true) {
+      if (!prov.validated) {
+        void runVerifiedWrite(async () => {
+          const before = saveErrorRef.current;
+          updateConfiguredProvider(prov.id, { validated: true });
+          return awaitSaveOutcome(before);
+        });
+      }
+      showToast(`${prov.name}: ${t('keyValid')}`, 'success');
+    } else if (valid === false) {
+      showToast(`${prov.name}: ${t('keyInvalid')}`, 'error');
+    } else {
+      showToast(`${prov.name}: ${tx('keyUnreachable', 'Gateway unreachable. Key was not tested.')}`, 'info');
+    }
+  };
+
+  // Delete keeps the two-tap confirm: the first tap arms the row's item (label
+  // flips to "Confirm?"), the second commits and closes the sheet.
+  const handleDeleteFromMenu = (prov: ConfiguredProvider) => {
+    const armed = pendingDeleteId === prov.id;
+    handleDeleteProvider(prov);
+    if (armed) setMenuProviderId(null);
+  };
+
   const visibleSaveError =
     (settingsSaveError && settingsSaveError !== saveErrorDismissed ? settingsSaveError : null) ||
     (localSaveError && localSaveError !== saveErrorDismissed ? localSaveError : null);
@@ -1184,7 +1364,7 @@ export const SettingsTab: React.FC = () => {
   ];
 
   return (
-    <div className="space-y-4 max-w-2xl mx-auto px-4 pt-4 pb-28">
+    <div className="space-y-4 max-w-2xl mx-auto px-4 pt-4 hm-tab-bottom">
       {/* Toast popup. Raised above the modals (z-50) so status written while a
           sheet is open is never painted behind its backdrop. */}
       {toast && (
@@ -1215,14 +1395,14 @@ export const SettingsTab: React.FC = () => {
           {hasRetry && (
             <button
               onClick={retryFailedSave}
-              className="shrink-0 px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-[11px] font-medium text-rose-100 transition cursor-pointer"
+              className="hm-hit shrink-0 px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-[11px] font-medium text-rose-100 transition cursor-pointer"
             >
               {tx('retrySave', 'Retry')}
             </button>
           )}
           <button
             onClick={() => setSaveErrorDismissed(visibleSaveError)}
-            className="shrink-0 px-2 py-1 rounded-lg text-[11px] text-rose-200/70 hover:text-rose-100 transition cursor-pointer"
+            className="hm-hit shrink-0 px-2 py-1 rounded-lg text-[11px] text-rose-200/70 hover:text-rose-100 transition cursor-pointer"
           >
             {tx('dismiss', 'Dismiss')}
           </button>
@@ -1241,7 +1421,7 @@ export const SettingsTab: React.FC = () => {
       )}
 
       {/* UX-05: gateway status summary, always visible, tap for details */}
-      <div className="rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] shadow-xs overflow-hidden">
+      <div className="rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] shadow-xs overflow-hidden">
         <div className="w-full px-5 py-3.5 flex items-center gap-3">
           <button
             onClick={() => setShowGatewayDetails((v) => !v)}
@@ -1269,7 +1449,7 @@ export const SettingsTab: React.FC = () => {
               void handleRefreshStatus();
             }}
             disabled={refreshingStatus}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-white cursor-pointer shrink-0 disabled:opacity-50"
+            className="w-11 h-11 flex items-center justify-center rounded-xl text-slate-400 hover:text-white cursor-pointer shrink-0 disabled:opacity-50"
             title={t('refresh')}
             aria-label={t('refresh')}
           >
@@ -1309,27 +1489,43 @@ export const SettingsTab: React.FC = () => {
         )}
       </div>
 
-      {/* Section quick-jump chips with progressive disclosure */}
-      <div className="flex items-center gap-1.5 p-1 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] overflow-x-auto">
-        {sectionChips.map((chip) => (
-          <button
-            key={chip.id}
-            onClick={() => toggleSection(chip.id)}
-            className={`flex-1 min-h-[40px] px-3 py-2 rounded-xl text-xs font-medium transition-all whitespace-nowrap cursor-pointer ${
-              openSections[chip.id]
-                ? 'bg-white/[0.08] text-white shadow-xs'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            {chip.label}
-            {chip.id === 'security' && riskCount > 0 && (
-              <span className="ms-1.5 px-1.5 py-0.5 rounded-[var(--radius-sm,6px)] bg-amber-500/15 text-amber-300 text-[10px] font-semibold">
-                {riskCount}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
+      {/* Section quick-jump rail. .hm-rail gives snap points, momentum and a
+          fading edge so the strip reads as scrollable; each chip sizes to its
+          own label instead of splitting the width, and exactly one chip carries
+          the current state (scroll position, or the section just opened). */}
+      <nav
+        aria-label={tx('sectionNav', 'Settings sections')}
+        className="hm-rail items-stretch gap-1 p-1 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08]"
+      >
+        {sectionChips.map((chip) => {
+          const isCurrent = currentSection === chip.id;
+          const isOpen = openSections[chip.id];
+          return (
+            <button
+              key={chip.id}
+              onClick={() => toggleSection(chip.id)}
+              aria-expanded={isOpen}
+              aria-controls={sectionDomId(chip.id)}
+              aria-current={isCurrent ? 'true' : undefined}
+              className={`min-h-[44px] px-3.5 py-2 rounded-xl text-xs font-medium transition-colors whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+                isCurrent
+                  ? 'bg-white/[0.1] text-white shadow-xs font-semibold'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              <span>{chip.label}</span>
+              {isOpen && !isCurrent && (
+                <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-indigo-400/80" />
+              )}
+              {chip.id === 'security' && riskCount > 0 && (
+                <span className="px-1.5 py-0.5 rounded-lg bg-amber-500/15 text-amber-300 text-[10px] font-semibold">
+                  {riskCount}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </nav>
 
       {/* ========================================================= */}
       {/* CONNECTION: primary task first (active provider), then list */}
@@ -1339,9 +1535,10 @@ export const SettingsTab: React.FC = () => {
         subtitle={activeProvider ? `Active: ${activeProvider.name}` : t('providersDesc')}
         open={openSections.connection}
         onToggle={() => toggleSection('connection')}
+        id={sectionDomId('connection')}
         badge={
           activeProvider ? (
-            <span className="px-2 py-0.5 rounded-[var(--radius-sm,6px)] bg-emerald-500/15 text-emerald-300 text-[10px] font-medium border border-emerald-500/30">
+            <span className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 text-[10px] font-medium border border-emerald-500/30">
               {t('active')}
             </span>
           ) : undefined
@@ -1388,99 +1585,44 @@ export const SettingsTab: React.FC = () => {
                   ? prov.id === settings.activeProviderId
                   : prov.provider === settings.provider;
                 return (
-                  <div key={prov.id} className="py-2.5 flex items-center justify-between gap-3">
-                    <div className="min-w-0 flex items-center gap-3">
-                      <div
-                        className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs uppercase shrink-0 ${
-                          isActive ? 'bg-indigo-600 text-white' : 'bg-white/[0.06] text-slate-400'
-                        }`}
-                      >
-                        {prov.provider.slice(0, 2)}
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
+                  <div key={prov.id} className="py-3 flex items-start gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div
+                          className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs uppercase shrink-0 ${
+                            isActive ? 'bg-indigo-600 text-white' : 'bg-white/[0.06] text-slate-400'
+                          }`}
+                        >
+                          {prov.provider.slice(0, 2)}
+                        </div>
+                        <div className="flex items-center gap-1.5 min-w-0">
                           <p className="text-xs font-semibold text-white truncate">{prov.name}</p>
                           {isActive && (
-                            <span className="px-2 py-0.5 rounded-[var(--radius-sm,6px)] bg-emerald-500/15 text-emerald-300 text-[10px] font-medium border border-emerald-500/30">
+                            <span className="px-1.5 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 text-[10px] font-medium border border-emerald-500/30 shrink-0">
                               {t('active')}
                             </span>
                           )}
                           {!prov.validated && (
-                            <span className="px-2 py-0.5 rounded-[var(--radius-sm,6px)] bg-amber-500/15 text-amber-300 text-[10px] font-medium border border-amber-500/30">
+                            <span className="px-1.5 py-0.5 rounded-lg bg-amber-500/15 text-amber-300 text-[10px] font-medium border border-amber-500/30 shrink-0">
                               Untested
                             </span>
                           )}
                         </div>
-                        <p className="text-[11px] text-slate-400 font-mono truncate mt-0.5">
-                          {prov.defaultModel || t('defaultModelShort')} · {prov.baseUrl ? t('customProxy') : t('officialEndpoint')}
-                        </p>
                       </div>
+                      {/* Line two: model and endpoint summary, never starved. */}
+                      <p className="text-[11px] text-slate-400 font-mono truncate mt-1 ps-[46px]">
+                        {prov.defaultModel || t('defaultModelShort')} · {prov.baseUrl ? t('customProxy') : t('officialEndpoint')}
+                      </p>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      {!isActive ? (
-                        <button
-                          onClick={() => {
-                            // One apply path: activate, confirm the write, then
-                            // mirror + restart so the running gateway stops
-                            // using the previous provider's key/URL.
-                            const before = saveErrorRef.current;
-                            activateProvider(prov.id);
-                            void runApply(prov.id, {
-                              label: prov.name,
-                              before,
-                              successMsg: `${t('switchedTo')} ${prov.name}`,
-                              restartedMsg: `${t('switchedTo')} ${prov.name}. ${tx('gatewayRestartedShort', 'Gateway restarted.')}`,
-                            });
-                          }}
-                          className="px-3 py-1.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-slate-200 transition cursor-pointer"
-                        >
-                          {t('use')}
-                        </button>
-                      ) : (
-                        <span className="text-xs text-indigo-400 font-medium px-2 flex items-center gap-1">
-                          <Check className="w-3.5 h-3.5" />
-                          <span>{t('active')}</span>
-                        </span>
-                      )}
-                      <button
-                        onClick={() => {
-                          setEditingProviderId(prov.id);
-                          setNewProvType(prov.provider);
-                          setNewProvName(prov.name);
-                          setNewProvKey(prov.apiKey || '');
-                          setNewProvBaseUrl(prov.baseUrl || '');
-                          setNewProvModel(prov.defaultModel || '');
-                          setKeyResult(null);
-                          setKeyOk(null);
-                          setTestedFingerprint('');
-                          setShowNewKey(false);
-                          setActivateNewProvider(false);
-                          setShowAddModal(true);
-                        }}
-                        aria-label={`${tx('edit', 'Edit')} ${prov.name}`}
-                        className="px-2.5 py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-white hover:bg-white/[0.06] transition cursor-pointer"
-                      >
-                        {t('edit')}
-                      </button>
-                      {pendingDeleteId === prov.id ? (
-                        <button
-                          onClick={() => handleDeleteProvider(prov)}
-                          aria-label={`${tx('confirmDelete', 'Confirm delete')} ${prov.name}`}
-                          className="px-2.5 py-1.5 rounded-xl bg-rose-500/15 text-rose-300 border border-rose-500/30 text-xs font-semibold transition cursor-pointer"
-                        >
-                          {tx('confirm', 'Confirm?')}
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => handleDeleteProvider(prov)}
-                          aria-label={`${tx('delete', 'Delete')} ${prov.name}`}
-                          title={tx('delete', 'Delete')}
-                          className="p-1.5 rounded-xl text-slate-500 hover:text-rose-400 hover:bg-white/[0.06] transition cursor-pointer"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      )}
-                    </div>
+                    <button
+                      onClick={() => setMenuProviderId(prov.id)}
+                      aria-haspopup="dialog"
+                      aria-expanded={menuProviderId === prov.id}
+                      aria-label={`${tx('profileActions', 'Profile actions')}: ${prov.name}`}
+                      className="w-11 h-11 -my-1 flex items-center justify-center rounded-xl text-slate-400 hover:text-white hover:bg-white/[0.06] transition-colors cursor-pointer shrink-0"
+                    >
+                      <MoreVertical className="w-4 h-4" />
+                    </button>
                   </div>
                 );
               })}
@@ -1497,6 +1639,7 @@ export const SettingsTab: React.FC = () => {
         subtitle={riskCount > 0 ? `${riskCount} item${riskCount > 1 ? 's' : ''} need review` : 'No elevated risks'}
         open={openSections.security}
         onToggle={() => toggleSection('security')}
+        id={sectionDomId('security')}
         badge={
           riskCount > 0 ? (
             <RiskBadge level={autoApproveRisk === 'high' ? 'high' : 'medium'} label={`${riskCount} to review`} />
@@ -1680,7 +1823,7 @@ export const SettingsTab: React.FC = () => {
                   onClick={() => setShowPin((v) => !v)}
                   aria-pressed={showPin}
                   aria-label={showPin ? tx('hideToken', 'Hide token') : tx('showToken', 'Show token')}
-                  className="p-2 rounded-xl text-slate-500 hover:text-white transition cursor-pointer shrink-0"
+                  className="p-2 rounded-xl hm-hit text-slate-500 hover:text-white transition cursor-pointer shrink-0"
                 >
                   {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
@@ -1750,18 +1893,12 @@ export const SettingsTab: React.FC = () => {
                 {unvalidatedKeys > 0 ? `, ${unvalidatedKeys} never validated` : ', all validated'}.
               </p>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <RiskBadge
-                level={keysRisk}
-                label={configuredProviders.length === 0 ? 'None stored' : unvalidatedKeys > 0 ? 'Review keys' : 'Keys stored'}
-              />
-              <button
-                onClick={() => setOpenSections((p) => ({ ...p, connection: true }))}
-                className="px-3 py-1.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-slate-200 transition cursor-pointer"
-              >
-                Review
-              </button>
-            </div>
+            <button
+              onClick={revealConnection}
+              className="px-3.5 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-slate-200 transition-colors cursor-pointer shrink-0"
+            >
+              {tx('reviewKeys', 'Review keys')}
+            </button>
           </div>
         </Row>
 
@@ -1795,7 +1932,7 @@ export const SettingsTab: React.FC = () => {
                   onClick={() => setShowTokens((s) => ({ ...s, tg: !s.tg }))}
                   aria-pressed={showTokens.tg}
                   aria-label={showTokens.tg ? tx('hideToken', 'Hide token') : tx('showToken', 'Show token')}
-                  className="p-2 rounded-xl text-slate-500 hover:text-white transition cursor-pointer shrink-0"
+                  className="p-2 rounded-xl hm-hit text-slate-500 hover:text-white transition cursor-pointer shrink-0"
                 >
                   {showTokens.tg ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
@@ -1838,7 +1975,7 @@ export const SettingsTab: React.FC = () => {
                   onClick={() => setShowTokens((s) => ({ ...s, discord: !s.discord }))}
                   aria-pressed={showTokens.discord}
                   aria-label={showTokens.discord ? tx('hideToken', 'Hide token') : tx('showToken', 'Show token')}
-                  className="p-2 rounded-xl text-slate-500 hover:text-white transition cursor-pointer shrink-0"
+                  className="p-2 rounded-xl hm-hit text-slate-500 hover:text-white transition cursor-pointer shrink-0"
                 >
                   {showTokens.discord ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
@@ -1880,7 +2017,7 @@ export const SettingsTab: React.FC = () => {
                   onClick={() => setShowTokens((s) => ({ ...s, server: !s.server }))}
                   aria-pressed={showTokens.server}
                   aria-label={showTokens.server ? tx('hideToken', 'Hide token') : tx('showToken', 'Show token')}
-                  className="p-2 rounded-xl text-slate-500 hover:text-white transition cursor-pointer shrink-0"
+                  className="p-2 rounded-xl hm-hit text-slate-500 hover:text-white transition cursor-pointer shrink-0"
                 >
                   {showTokens.server ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
@@ -1961,6 +2098,7 @@ export const SettingsTab: React.FC = () => {
         subtitle={`${GATEWAY_ADDR}, ${t('stateLabel')}: ${install}`}
         open={openSections.gateway}
         onToggle={() => toggleSection('gateway')}
+        id={sectionDomId('gateway')}
         badge={
           <span className={`px-2.5 py-1 rounded-lg text-[10px] font-semibold border ${
             connected ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20' : 'bg-rose-500/10 text-rose-300 border-rose-500/20'
@@ -2053,6 +2191,7 @@ export const SettingsTab: React.FC = () => {
         subtitle={t('skillsCatalogDesc')}
         open={openSections.automation}
         onToggle={() => toggleSection('automation')}
+        id={sectionDomId('automation')}
       >
         <Row>
           <div className="flex items-center justify-between gap-3">
@@ -2180,6 +2319,7 @@ export const SettingsTab: React.FC = () => {
         subtitle={t('themeSubtitle')}
         open={openSections.appearance}
         onToggle={() => toggleSection('appearance')}
+        id={sectionDomId('appearance')}
       >
         <Row>
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -2378,6 +2518,7 @@ export const SettingsTab: React.FC = () => {
         subtitle={t('diagnosticsDesc')}
         open={openSections.advanced}
         onToggle={() => toggleSection('advanced')}
+        id={sectionDomId('advanced')}
       >
         <Row>
           <label className="block text-xs font-medium text-slate-300">{t('reasoningEffort')}</label>
@@ -2501,15 +2642,102 @@ export const SettingsTab: React.FC = () => {
         </Row>
       </Section>
 
+      {/* Provider overflow sheet. Rendered as a bottom sheet because the section
+          cards clip overflow, and on a phone a sheet keeps every action a full
+          44px target. Delete is separated from the primary actions and keeps
+          the two-tap confirm flow. */}
+      {menuProviderId && (() => {
+        const prov = configuredProviders.find((p) => p.id === menuProviderId);
+        if (!prov) return null;
+        const isActive = settings.activeProviderId
+          ? prov.id === settings.activeProviderId
+          : prov.provider === settings.provider;
+        const armed = pendingDeleteId === prov.id;
+        return (
+          <div
+            className="fixed inset-0 z-[60] flex items-end justify-center bg-black/60 backdrop-blur-xs animate-in fade-in duration-150"
+            onClick={() => setMenuProviderId(null)}
+          >
+            <div
+              ref={providerMenuRef}
+              role="dialog"
+              aria-modal="true"
+              aria-label={`${tx('profileActions', 'Profile actions')}: ${prov.name}`}
+              onClick={(event) => event.stopPropagation()}
+              className="w-full max-w-md rounded-t-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-3 shadow-2xl space-y-1 pb-[calc(0.75rem+var(--safe-bottom))]"
+            >
+              <div className="px-3 pt-1 pb-2 border-b border-white/[0.06]">
+                <p className="text-xs font-semibold text-white truncate">{prov.name}</p>
+                <p className="text-[11px] text-slate-400 font-mono truncate mt-0.5">
+                  {prov.defaultModel || t('defaultModelShort')} · {prov.baseUrl ? t('customProxy') : t('officialEndpoint')}
+                </p>
+              </div>
+              {!isActive && (
+                <button
+                  onClick={() => handleUseProvider(prov)}
+                  className="w-full min-h-[48px] px-3 rounded-xl flex items-center gap-3 text-start text-xs font-semibold text-slate-100 hover:bg-white/[0.06] cursor-pointer transition-colors"
+                >
+                  <Check className="w-4 h-4 text-indigo-400 shrink-0" />
+                  <span>{t('use')}</span>
+                </button>
+              )}
+              <button
+                onClick={() => handleEditProvider(prov)}
+                className="w-full min-h-[48px] px-3 rounded-xl flex items-center gap-3 text-start text-xs font-medium text-slate-200 hover:bg-white/[0.06] cursor-pointer transition-colors"
+              >
+                <Pencil className="w-4 h-4 text-slate-400 shrink-0" />
+                <span>{t('edit')}</span>
+              </button>
+              <button
+                onClick={() => {
+                  void handleTestProvider(prov);
+                }}
+                className="w-full min-h-[48px] px-3 rounded-xl flex items-center gap-3 text-start text-xs font-medium text-slate-200 hover:bg-white/[0.06] cursor-pointer transition-colors"
+              >
+                <ShieldCheck className="w-4 h-4 text-slate-400 shrink-0" />
+                <span>{t('testKey')}</span>
+              </button>
+              {/* Destructive action, set off by a rule and never adjacent to a
+                  primary action. */}
+              <div className="pt-1 mt-1 border-t border-white/[0.06]">
+                <button
+                  onClick={() => handleDeleteFromMenu(prov)}
+                  aria-label={`${t('delete')} ${prov.name}`}
+                  className={`w-full min-h-[48px] px-3 rounded-xl flex items-center gap-3 text-start text-xs font-semibold cursor-pointer transition-colors ${
+                    armed
+                      ? 'bg-rose-500/15 text-rose-100 border border-rose-500/40'
+                      : 'text-rose-300 hover:bg-rose-500/10'
+                  }`}
+                >
+                  <Trash2 className="w-4 h-4 shrink-0" />
+                  <span>{armed ? tx('confirm', 'Confirm?') : t('delete')}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Blueprint Launch Modal */}
       {selectedBlueprint && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150">
-          <div className="w-full max-w-sm rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150"
+          onClick={() => setSelectedBlueprint(null)}
+        >
+          <div
+            ref={blueprintModalRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={selectedBlueprint.name}
+            onClick={(event) => event.stopPropagation()}
+            className="w-full max-w-sm rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-4"
+          >
             <div className="flex items-center justify-between pb-2 border-b border-white/[0.08]">
               <span className="text-sm font-semibold text-white">{selectedBlueprint.name}</span>
               <button
                 onClick={() => setSelectedBlueprint(null)}
-                className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-white"
+                aria-label={t('cancel')}
+                className="w-11 h-11 flex items-center justify-center rounded-xl text-slate-400 hover:text-white cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -2555,8 +2783,17 @@ export const SettingsTab: React.FC = () => {
 
       {/* Multi-Provider Add / Edit Modal */}
       {showAddModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="w-full max-w-md rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-150"
+        >
+          <div
+            ref={addModalRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={editingProviderId ? t('editModelProvider') : t('addModelProvider')}
+            onClick={(event) => event.stopPropagation()}
+            className="w-full max-w-md rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto"
+          >
             <div className="flex items-center justify-between pb-2 border-b border-white/[0.08]">
               <span className="text-sm font-semibold text-white">
                 {editingProviderId ? t('editModelProvider') : t('addModelProvider')}
@@ -2564,7 +2801,7 @@ export const SettingsTab: React.FC = () => {
               <button
                 onClick={closeAddModal}
                 aria-label={t('cancel')}
-                className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-white"
+                className="w-11 h-11 flex items-center justify-center rounded-xl text-slate-400 hover:text-white cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -2574,6 +2811,7 @@ export const SettingsTab: React.FC = () => {
                 <label className="block text-xs font-medium text-slate-400 mb-1">{t('modelCatalog')}</label>
                 <select
                   value={newProvType}
+                  autoFocus
                   onChange={(e) => {
                     const val = e.target.value;
                     setNewProvType(val);
@@ -2625,7 +2863,7 @@ export const SettingsTab: React.FC = () => {
                     onClick={() => setShowNewKey(!showNewKey)}
                     aria-pressed={showNewKey}
                     aria-label={showNewKey ? tx('hideToken', 'Hide token') : tx('showToken', 'Show token')}
-                    className="absolute end-3.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
+                    className="absolute end-2 top-1/2 -translate-y-1/2 p-2.5 rounded-xl hm-hit text-slate-500 hover:text-white cursor-pointer"
                   >
                     {showNewKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>

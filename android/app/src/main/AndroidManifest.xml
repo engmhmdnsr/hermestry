@@ -24,7 +24,17 @@
             android:label="@string/title_activity_main"
             android:theme="@style/AppTheme.NoActionBarLaunch"
             android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize"
             android:exported="true">
+            <!-- adjustResize (INSET-01): the chat composer and any focused
+                 input must not sit behind the IME.
+                 API 35+ (edge-to-edge enforced, see res/values-v35/styles.xml):
+                 the window is never resized by the IME, the system reports the
+                 IME inset and Capacitor 8 SystemBars pads the decor view by it
+                 (insetsHandling=css default, viewport-fit=cover in index.html).
+                 API < 35 (legacy window): adjustResize shrinks the window, so
+                 the IME inset reads 0 and SystemBars adds no second padding.
+                 MainActivity does not touch softInputMode at runtime. -->
 
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

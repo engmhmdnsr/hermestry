@@ -599,8 +599,10 @@ body {
 }
 
 :root {
-  --safe-top: env(safe-area-inset-top, 0px);
-  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  /* Capacitor SystemBars injects --safe-area-inset-* on documentElement on the
+     Android shell; env() is the fallback for WebViews that do not. */
+  --safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --safe-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
   --bottom-nav-height: 4rem;
 }
 

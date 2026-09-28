@@ -13,6 +13,10 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(HermesGatewayPlugin.class);
+        // Native "App" plugin (backButton event + exitApp) consumed by
+        // src/App.tsx. Must be registered before super.onCreate so the plugin
+        // exists when the web layer registers its backButton listener.
+        registerPlugin(AppPlugin.class);
         super.onCreate(savedInstanceState);
         // The app is served from https://localhost but the on-device gateway
         // binds plain http on 127.0.0.1:8080. Without this the WebView treats

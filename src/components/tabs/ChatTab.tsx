@@ -34,6 +34,11 @@ import {
   revokeRef,
 } from '../../services/attachmentRefs';
 import { ApprovalCard } from '../approvals/ApprovalCard';
+import { useOverlayBehavior } from '../../hooks/useOverlayBehavior';
+
+// Reasoning effort levels, in the order the sheet renders them.
+const EFFORT_LEVELS = ['none', 'low', 'medium', 'high'] as const;
+type EffortLevel = (typeof EFFORT_LEVELS)[number];
 
 interface ChatTabProps {
   onGoSettings: () => void;
@@ -152,16 +157,48 @@ const MessageRow: React.FC<MessageRowProps> = memo(
     t,
   }) => {
     const isUser = msg.sender === 'you';
+    // Actions are revealed on tap (or Enter when the row has focus) instead of
+    // adding a full action band under every bubble on a phone screen.
+    const [actionsOpen, setActionsOpen] = useState(false);
+    const showActions = actionsOpen || menuOpen;
+    const handleBubbleClick = (event: React.MouseEvent<HTMLDivElement>) => {
+      const target = event.target as HTMLElement;
+      // Never steal a tap meant for a control, a menu, or a text selection.
+      if (target.closest('button, a, input, textarea, summary, [role="menu"]')) return;
+      if ((window.getSelection?.()?.toString() || '').length > 0) return;
+      setActionsOpen((v) => !v);
+    };
+
+    const handleBubbleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        setActionsOpen((v) => !v);
+        return;
+      }
+      if (event.key === 'Escape' && actionsOpen) {
+        setActionsOpen(false);
+      }
+    };
+
     return (
-      <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
-        {/* Bubble Container */}
+      <div
+        className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
+        tabIndex={0}
+        role="group"
+        aria-label={`${isUser ? 'Your message' : 'Hermes response'}. ${
+          showActions ? 'Actions shown. Press Escape to hide them.' : 'Press Enter for message actions.'
+        }`}
+        onClick={handleBubbleClick}
+        onKeyDown={handleBubbleKeyDown}
+      >
+        {/* Bubble Container: user turns size to their content, replies stay full width */}
         <div
           role="article"
           aria-label={isUser ? 'Your message' : 'Hermes response'}
-          className={`w-full max-w-[94%] sm:max-w-[88%] rounded-2xl p-4 transition-all ${
+          className={`rounded-2xl p-4 transition-all ${
             isUser
-              ? 'bg-indigo-600/90 text-white shadow-xs'
-              : 'bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-slate-200'
+              ? 'w-fit max-w-[80%] bg-indigo-600/90 text-white shadow-xs'
+              : 'w-full max-w-[94%] sm:max-w-[88%] bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-slate-200'
           }`}
           style={{
             fontSize: `${fontScale * 14}px`,
@@ -256,7 +293,8 @@ const MessageRow: React.FC<MessageRowProps> = memo(
             </div>
           ) : null}
 
-          {/* Message Actions: Regenerate stays visible, rest behind overflow menu */}
+          {/* Message Actions: revealed on tap, Regenerate stays visible once open */}
+          {showActions && (
           <div className="relative flex items-center justify-end gap-3 mt-3 pt-2 border-t border-white/[0.06] text-xs">
             {isUser && (
               <button
@@ -322,6 +360,7 @@ const MessageRow: React.FC<MessageRowProps> = memo(
               </div>
             )}
           </div>
+          )}
         </div>
       </div>
     );
@@ -390,7 +429,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [actionToast, setActionToast] = useState<string | null>(null);
   const [toastKind, setToastKind] = useState<'info' | 'success' | 'error'>('info');
-  const [modelPillExpanded, setModelPillExpanded] = useState(false);
+  const [showEffortSheet, setShowEffortSheet] = useState(false);
   const [confirmSessionRunId, setConfirmSessionRunId] = useState<string | null>(null);
   const [streamErrorDismissed, setStreamErrorDismissed] = useState<string | null>(null);
   const [stickToBottom, setStickToBottom] = useState(true);
@@ -398,6 +437,15 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   // opened, and gateway-side failures are shown on the card they belong to.
   const [approvalsExpanded, setApprovalsExpanded] = useState(true);
   const [approvalFailures, setApprovalFailures] = useState<Record<string, string>>({});
+
+  // One polite announcement channel for events a screen reader must hear once
+  // (stream start/stop, queue changes) instead of per render.
+  const [liveAnnouncement, setLiveAnnouncement] = useState('');
+
+  // On-screen keyboard inset, measured from the visual viewport. The app is
+  // edge-to-edge on Android 15+, so the composer would otherwise sit behind the
+  // keyboard. See the effect below for the resize assumption.
+  const [keyboardInset, setKeyboardInset] = useState(0);
 
   // Optional context surface (lands with the context owner's stream-error
   // work): the live failure banner below activates when present, and stays
@@ -418,6 +466,12 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   const toastTimerRef = useRef<number | null>(null);
   const getDraftRef = useRef(getDraft);
   getDraftRef.current = getDraft;
+  // Latest turn metadata for the stop announcement. Kept in a ref so the
+  // announcement effect depends on the streaming transition alone.
+  const turnMetaRef = useRef(turnMeta);
+  turnMetaRef.current = turnMeta;
+  const prevStreamingRef = useRef(streaming);
+  const prevQueuedCountRef = useRef(queuedMessages.length);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
   const showActionToast = (msg: string, kind: 'info' | 'success' | 'error' = 'info') => {
@@ -1238,16 +1292,100 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     setOpenMenuId(id);
   }, []);
 
-  // Model sheet: Escape closes, search input autofocuses on open.
+  // Model and effort sheets: Escape and the Android back button close them,
+  // Tab focus stays inside, and focus returns to the trigger on close. The
+  // sheet roots carry role=dialog / aria-modal.
+  const closeModelsSheet = useCallback(() => setShowModelsSheet(false), []);
+  const closeEffortSheet = useCallback(() => setShowEffortSheet(false), []);
+  const modelsSheetRef = useOverlayBehavior(showModelsSheet, closeModelsSheet);
+  const effortSheetRef = useOverlayBehavior(showEffortSheet, closeEffortSheet);
+
+  // Model sheet: focus the search field on pointer/keyboard devices only, so
+  // opening the sheet on a phone does not drop the soft keyboard over the list.
   useEffect(() => {
     if (!showModelsSheet) return;
-    sheetSearchRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setShowModelsSheet(false);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    let finePointer = false;
+    try {
+      finePointer = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+    } catch {
+      finePointer = false;
+    }
+    if (finePointer) sheetSearchRef.current?.focus();
   }, [showModelsSheet]);
+
+  // Keyboard awareness. The tab is padded by the measured occlusion instead of
+  // trusting the WebView to be resized, so it holds with and without
+  // adjustResize in the Android manifest:
+  //   innerHeight shrinks (adjustResize) -> occlusion is ~0, no padding added
+  //   only the visual viewport shrinks   -> occlusion pads the composer up
+  // The 80px floor ignores URL bar and chrome shifts that are not a keyboard.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      const occlusion = Math.max(
+        0,
+        Math.round(window.innerHeight - (vv.height + vv.offsetTop))
+      );
+      const next = occlusion >= 80 ? occlusion : 0;
+      setKeyboardInset((prev) => (Math.abs(prev - next) > 2 ? next : prev));
+    };
+    const schedule = () => {
+      if (!frame) frame = window.requestAnimationFrame(measure);
+    };
+    measure();
+    vv.addEventListener('resize', schedule);
+    vv.addEventListener('scroll', schedule);
+    return () => {
+      vv.removeEventListener('resize', schedule);
+      vv.removeEventListener('scroll', schedule);
+      if (frame) window.cancelAnimationFrame(frame);
+    };
+  }, []);
+
+  // The keyboard moves the composer, so keep the newest message in view while
+  // the user is pinned to the tail.
+  useEffect(() => {
+    if (!stickToBottom) return;
+    const timer = window.setTimeout(() => scrollToBottom(keyboardInset === 0), 60);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keyboardInset, stickToBottom]);
+
+  // Announce stream start and stop once per transition, never per render.
+  useEffect(() => {
+    if (streaming === prevStreamingRef.current) return;
+    prevStreamingRef.current = streaming;
+    if (streaming) {
+      setLiveAnnouncement(tx('announceStreamStarted', 'Hermes is responding.'));
+      return;
+    }
+    const lastId = chatLatestRef.current[chatLatestRef.current.length - 1]?.id;
+    const stopped = !!lastId && !!turnMetaRef.current[lastId]?.stopped;
+    setLiveAnnouncement(
+      stopped
+        ? tx('announceStreamStopped', 'Response stopped.')
+        : tx('announceStreamFinished', 'Hermes finished responding.')
+    );
+  }, [streaming, tx]);
+
+  // Queue changes go through the same polite region, once per count change.
+  useEffect(() => {
+    const count = queuedMessages.length;
+    if (count === prevQueuedCountRef.current) return;
+    prevQueuedCountRef.current = count;
+    setLiveAnnouncement(
+      count === 0
+        ? tx('announceQueueCleared', 'Message queue is empty.')
+        : `${count} ${
+            count === 1
+              ? tx('announceQueueQueued', 'message queued')
+              : tx('announceQueueQueuedMany', 'messages queued')
+          }`
+    );
+  }, [queuedMessages.length, tx]);
 
   // Overflow menu: close on outside tap or Escape.
   useEffect(() => {
@@ -1286,6 +1424,23 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     models.find((m) => m.id === settings.modelId)?.displayName ||
     settings.modelId.split('/').pop() ||
     'deepseek-chat';
+
+  // Reasoning effort: one label per level, shared by the compact pill and the
+  // sheet so they can never disagree.
+  const effortLevel: EffortLevel = (EFFORT_LEVELS as readonly string[]).includes(
+    settings.reasoningEffort
+  )
+    ? (settings.reasoningEffort as EffortLevel)
+    : 'medium';
+  const effortLabelFor = (level: EffortLevel): string =>
+    level === 'none'
+      ? tx('effortOff', 'Off')
+      : level === 'low'
+        ? tx('effortLow', 'Low')
+        : level === 'medium'
+          ? tx('effortMedium', 'Med')
+          : tx('effortHigh', 'High');
+  const effortLabel = effortLabelFor(effortLevel);
 
   const starterChips = [
     'Search recent developments in AI agent frameworks',
@@ -1383,7 +1538,18 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   };
 
   return (
-    <div className={`flex flex-col flex-1 min-h-0 h-full ${isDesktop ? 'max-w-4xl mx-auto w-full px-6' : 'px-3 sm:px-4'} pt-2 pb-1`}>
+    <div
+      className={`flex flex-col flex-1 min-h-0 h-full ${
+        isDesktop ? 'max-w-4xl mx-auto w-full px-6' : 'px-3 sm:px-4'
+      } pt-2`}
+      style={keyboardInset > 0 ? { paddingBottom: `calc(${keyboardInset}px + 0.5rem)` } : undefined}
+    >
+      {/* One polite channel for events a screen reader must hear once: stream
+          start/stop and queue changes. It is not inside the message list, so a
+          streaming token flush can never re-announce it. */}
+      <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+        {liveAnnouncement}
+      </div>
       {actionToast && (
         <div
           role={toastKind === 'error' ? 'alert' : 'status'}
@@ -1429,6 +1595,10 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       <div
         ref={scrollRef}
         onScroll={handleScroll}
+        role="log"
+        aria-live="polite"
+        aria-relevant="additions text"
+        aria-busy={streaming}
         aria-label="Conversation messages"
         className="relative flex-1 min-h-0 overflow-y-auto space-y-4 pe-1 pb-2"
       >
@@ -1613,16 +1783,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             <div className="px-3 pb-3 space-y-3">
               {pendingApprovals.map((approval) => (
                 <div key={approval.runId} className="space-y-2">
-                  {approvalFailures[approval.runId] && (
-                    <p
-                      role="alert"
-                      className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-2 text-[11px] text-rose-200"
-                    >
-                      {approvalFailures[approval.runId]}
-                    </p>
-                  )}
                   <ApprovalCard
                     approval={approval}
+                    error={approvalFailures[approval.runId]}
                     resolving={resolvingRunId === approval.runId}
                     onDeny={(a) => void handleResolveApproval(a, false)}
                     onAllow={(a, scope) => void handleResolveApproval(a, true, scope)}
@@ -1658,8 +1821,6 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           sent now, so the queue is never a dead end waiting on the gateway. */}
       {queuedMessages.length > 0 && (
         <div
-          role="status"
-          aria-live="polite"
           aria-label={`${queuedMessages.length} queued: ${queuedMessages[0]?.text || ''}`}
           className="mb-2 px-3.5 py-2 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-between gap-2 text-xs text-indigo-300"
         >
@@ -1731,17 +1892,20 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
         </div>
       )}
       {attached.length > 0 && (
-        <div className="flex items-center gap-2 mb-2 p-2 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] overflow-x-auto">
+        <div className="hm-rail items-center gap-2 mb-2 p-2 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08]">
           {attached.map((item, i) => (
             <div key={item.ref.id} className="relative w-12 h-12 rounded-lg overflow-hidden shrink-0 border border-white/10 group">
               <img src={item.previewUrl} alt={item.name || 'Attached'} className="w-full h-full object-cover" />
+              {/* Remove badge: the tap target is the badge plus a small margin
+                  (28px), not a 44px box that overlaps the neighbouring tile. */}
               <button
+                type="button"
                 onClick={() => removeAttachment(i)}
-                aria-label={`Remove attachment ${i + 1}`}
-                className="absolute -top-2 -end-2 min-w-[44px] min-h-[44px] flex items-start justify-end p-1.5 text-white"
+                aria-label={`Remove attachment: ${item.name || `attachment ${i + 1}`}`}
+                className="absolute -top-1 -end-1 w-7 h-7 rounded-full flex items-center justify-center text-white cursor-pointer"
               >
-                <span className="p-0.5 rounded-full bg-black/80 flex items-center justify-center">
-                  <X className="w-3 h-3" />
+                <span className="w-4 h-4 rounded-full bg-black/80 border border-white/20 flex items-center justify-center">
+                  <X className="w-2.5 h-2.5" />
                 </span>
               </button>
             </div>
@@ -1758,7 +1922,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       {(text === '' || text.startsWith('/')) && visibleSlashCommands.length > 0 && (
         <div role="toolbar" aria-label="Slash commands" className="mb-2 space-y-1 shrink-0">
           {slashActions.length > 0 && (
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
+            <div className="hm-rail items-center gap-1.5 pb-1 text-xs">
               <span className="shrink-0 font-mono text-[10px] uppercase tracking-wide text-slate-500">
                 {tx('slashAppActions', 'App actions')}
               </span>
@@ -1782,7 +1946,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             </div>
           )}
           {slashMessages.length > 0 && (
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
+            <div className="hm-rail items-center gap-1.5 pb-1 text-xs">
               <span className="shrink-0 font-mono text-[10px] uppercase tracking-wide text-slate-500">
                 {tx('slashSentToModel', 'Sent to model')}
               </span>
@@ -1801,6 +1965,43 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           )}
         </div>
       )}
+      </div>
+
+      {/* Compact model + effort row: one tap target each, both open a sheet, and
+          the composer bar below keeps only attach, mic and send. Pills are 36px
+          tall with a hm-hit expanded tap area; the 16px gap equals that
+          expansion, so neighbouring hit areas never overlap. */}
+      <div
+        role="group"
+        aria-label={tx('composerSettings', 'Model and reasoning effort')}
+        className="flex items-center gap-4 mb-1.5 px-1 shrink-0"
+      >
+        <button
+          type="button"
+          onClick={() => setShowModelsSheet(true)}
+          title={settings.modelId || t('noModel')}
+          aria-label={`${tx('activeModel', 'Active model')}: ${
+            settings.modelId ? curModelName : t('noModel')
+          }. ${tx('opensModelList', 'Opens the model list.')}`}
+          className="hm-hit min-h-[36px] min-w-0 max-w-[62%] flex items-center gap-1 px-3 rounded-full text-[11.5px] font-mono text-slate-200 bg-[var(--app-card-subtle,#1A2230)] border border-white/[0.08] shadow-xs cursor-pointer hover:text-white"
+        >
+          <span className="truncate">{settings.modelId ? curModelName : t('noModel')}</span>
+          <ChevronDown className="w-3 h-3 text-slate-400 shrink-0" />
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowEffortSheet(true)}
+          title={tx('reasoningEffort', 'Reasoning effort')}
+          aria-label={`${tx('reasoningEffort', 'Reasoning effort')}: ${effortLabel}. ${tx(
+            'opensEffortOptions',
+            'Opens the reasoning effort options.'
+          )}`}
+          className="hm-hit min-h-[36px] flex items-center gap-1 px-3 rounded-full text-[11px] font-mono text-sky-300 bg-sky-950/40 border border-sky-500/30 shadow-xs cursor-pointer hover:text-sky-100"
+        >
+          <Sliders className="w-3 h-3 shrink-0" />
+          <span>{effortLabel}</span>
+          <ChevronDown className="w-3 h-3 text-sky-400/70 shrink-0" />
+        </button>
       </div>
 
       {/* 4. Desktop/Mobile Composer Surface matching modern Hermes aesthetic */}
@@ -1826,83 +2027,26 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           Enter sends, Shift plus Enter adds a new line.
         </p>
 
-        {/* Action Toolbar Row: wraps on narrow screens so mic/send never scroll off-canvas */}
-        <div className="flex items-center justify-between flex-wrap pt-1.5 gap-1.5 sm:gap-2 border-t border-white/[0.04]">
-          {/* Left Action Buttons: Circular + Button, Model Pill, Reasoning Pill */}
-          <div className="flex items-center gap-1.5 min-w-0 flex-1 flex-wrap py-0.5">
-            {/* Circular (+) Attachment Button */}
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleImageAttach}
-              accept="image/*,.txt,.md,.markdown,.csv,.json"
-              multiple
-              className="hidden"
-            />
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="w-7.5 h-7.5 min-w-[44px] min-h-[44px] rounded-full flex items-center justify-center text-slate-300 hover:text-white bg-[var(--app-card-subtle,#1A2230)] hover:bg-[var(--app-card-subtle,#232D3F)] active:scale-95 transition-all border border-white/[0.08] cursor-pointer shrink-0 shadow-xs"
-              title="Attach image or text file (.txt/.md/.csv/.json)"
-              aria-label="Attach image or text file (.txt/.md/.csv/.json)"
-            >
-              <Plus className="w-4 h-4 stroke-[2.2]" />
-            </button>
-
-            {/* Model pill: tap name to expand, chevron opens sheet */}
-            <div
-              className={`min-h-[44px] px-2.5 sm:px-3 rounded-full flex items-center gap-1.5 text-xs text-slate-200 bg-[var(--app-card-subtle,#1A2230)] border border-white/[0.08] shadow-xs min-w-0 ${
-                modelPillExpanded ? 'max-w-full' : 'max-w-[130px] sm:max-w-[200px]'
-              }`}
-            >
-              <button
-                type="button"
-                onClick={() => setModelPillExpanded((v) => !v)}
-                aria-expanded={modelPillExpanded}
-                title={settings.modelId || 'Select Model'}
-                aria-label={`Active model: ${settings.modelId || 'none'}. Tap to ${modelPillExpanded ? 'collapse' : 'expand'}.`}
-                className="font-mono text-[11.5px] truncate min-w-0 flex-1 text-start cursor-pointer hover:text-white min-h-[44px] flex items-center"
-              >
-                {settings.modelId ? curModelName : t('noModel')}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowModelsSheet(true)}
-                title="Select model"
-                aria-label="Select model"
-                className="shrink-0 cursor-pointer hover:text-white min-h-[44px] min-w-[44px] flex items-center justify-center"
-              >
-                <ChevronDown className="w-3 h-3 text-slate-400 shrink-0" />
-              </button>
-            </div>
-
-            {/* Reasoning effort direct-select segmented control */}
-            <div
-              role="group"
-              aria-label="Reasoning effort"
-              className="flex items-center gap-0.5 p-0.5 rounded-full bg-sky-950/40 border border-sky-500/30 shrink-0 shadow-xs"
-              title="Reasoning effort"
-            >
-              <Sliders className="w-3 h-3 text-sky-400 shrink-0 ms-1.5" />
-              {(['none', 'low', 'medium', 'high'] as const).map((level) => {
-                const active = (settings.reasoningEffort || 'medium') === level;
-                return (
-                  <button
-                    key={level}
-                    type="button"
-                    onClick={() => updateSettings({ reasoningEffort: level })}
-                    aria-pressed={active}
-                    title={`Reasoning effort: ${level}`}
-                    className={`px-2.5 min-w-[44px] min-h-[44px] py-1 rounded-full font-mono font-medium text-[10px] uppercase tracking-wider transition cursor-pointer flex items-center justify-center ${
-                      active ? 'bg-sky-500/30 text-sky-100' : 'text-sky-400/70 hover:text-sky-200'
-                    }`}
-                  >
-                    {level === 'none' ? 'Off' : level === 'medium' ? 'Med' : level[0].toUpperCase() + level.slice(1)}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+        {/* Action Bar: attach on the left, mic and send on the right. Model and
+            effort now live in the compact row above the composer. */}
+        <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-white/[0.04]">
+          <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleImageAttach}
+            accept="image/*,.txt,.md,.markdown,.csv,.json"
+            multiple
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="min-w-[44px] min-h-[44px] rounded-full flex items-center justify-center text-slate-300 hover:text-white bg-[var(--app-card-subtle,#1A2230)] hover:bg-[var(--app-card-subtle,#232D3F)] active:scale-95 transition-all border border-white/[0.08] cursor-pointer shrink-0 shadow-xs"
+            title="Attach image or text file (.txt/.md/.csv/.json)"
+            aria-label="Attach image or text file (.txt/.md/.csv/.json)"
+          >
+            <Plus className="w-4 h-4 stroke-[2.2]" />
+          </button>
 
           {/* Right Action Buttons: Circular Cyan Mic & Send Button */}
           <div className="flex items-center gap-1.5 shrink-0">
@@ -1988,7 +2132,10 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             if (e.target === e.currentTarget) setShowModelsSheet(false);
           }}
         >
-          <div className="w-full sm:max-w-lg bg-[var(--app-bg,#0B0F15)] border border-white/[0.09] rounded-t-[28px] sm:rounded-3xl p-4 sm:p-5 shadow-2xl flex flex-col max-h-[85vh] sm:max-h-[80vh] animate-in slide-in-from-bottom-4 duration-200">
+          <div
+            ref={modelsSheetRef}
+            className="w-full sm:max-w-lg bg-[var(--app-bg,#0B0F15)] border border-white/[0.09] rounded-t-[28px] sm:rounded-3xl p-4 sm:p-5 shadow-2xl flex flex-col max-h-[85vh] sm:max-h-[80vh] animate-in slide-in-from-bottom-4 duration-200"
+          >
             {/* Top Pull Bar / Handle */}
             <div className="w-10 h-1 bg-slate-500/50 rounded-full mx-auto mb-3 shrink-0 sm:hidden" />
 
@@ -2136,6 +2283,87 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                 + Manage Providers in Settings
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reasoning effort sheet: same overlay contract (Escape, Android back,
+          focus trap) as the model sheet. */}
+      {showEffortSheet && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={tx('reasoningEffort', 'Reasoning effort')}
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm p-0 sm:p-4 animate-in fade-in duration-150"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowEffortSheet(false);
+          }}
+        >
+          <div
+            ref={effortSheetRef}
+            className="w-full sm:max-w-sm bg-[var(--app-bg,#0B0F15)] border border-white/[0.09] rounded-t-[28px] sm:rounded-3xl p-4 sm:p-5 shadow-2xl flex flex-col max-h-[80vh] animate-in slide-in-from-bottom-4 duration-200"
+          >
+            <div className="w-10 h-1 bg-slate-500/50 rounded-full mx-auto mb-3 shrink-0 sm:hidden" />
+            <div className="flex items-start justify-between pb-3 shrink-0">
+              <div>
+                <h2 className="text-sky-400 text-[17px] font-mono font-medium tracking-tight">
+                  {tx('reasoningEffort', 'Reasoning effort')}
+                </h2>
+                <p className="text-xs text-slate-400 font-mono mt-0.5">
+                  {tx('effortCurrent', 'Current')}: {effortLabel}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowEffortSheet(false)}
+                className="min-w-[44px] min-h-[44px] rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.06] transition cursor-pointer"
+                title={t('cancel')}
+                aria-label={t('cancel') || 'Close reasoning effort options'}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="space-y-2 overflow-y-auto min-h-0 pe-1">
+              {EFFORT_LEVELS.map((level) => {
+                const active = effortLevel === level;
+                return (
+                  <button
+                    key={level}
+                    type="button"
+                    onClick={() => {
+                      updateSettings({ reasoningEffort: level });
+                      setShowEffortSheet(false);
+                    }}
+                    aria-pressed={active}
+                    className={`w-full flex items-center justify-between gap-2 p-3 min-h-[44px] rounded-2xl border text-start transition cursor-pointer ${
+                      active
+                        ? 'bg-sky-950/50 border-sky-500/60 text-white'
+                        : 'bg-[var(--app-card-subtle,#131924)] border-white/[0.06] hover:border-sky-500/40 text-slate-300'
+                    }`}
+                  >
+                    <span className="flex flex-col">
+                      <span className="text-[13.5px] font-semibold">{effortLabelFor(level)}</span>
+                      <span className="text-[11px] text-slate-400 mt-0.5">
+                        {level === 'none'
+                          ? tx('effortNoneHint', 'No reasoning step is requested.')
+                          : level === 'low'
+                            ? tx('effortLowHint', 'Short reasoning budget.')
+                            : level === 'medium'
+                              ? tx('effortMediumHint', 'Balanced reasoning budget.')
+                              : tx('effortHighHint', 'Longest reasoning budget.')}
+                      </span>
+                    </span>
+                    {active && <Check className="w-4 h-4 text-sky-400 stroke-[2.5] shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="pt-3 mt-2 border-t border-white/[0.06] text-[11px] text-slate-500 shrink-0">
+              {tx(
+                'effortSheetHint',
+                'Applies to the next turn. Providers that do not support reasoning effort ignore this setting.'
+              )}
+            </p>
           </div>
         </div>
       )}

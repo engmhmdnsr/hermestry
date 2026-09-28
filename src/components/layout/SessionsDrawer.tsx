@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import {
   X,
   Plus,
@@ -14,6 +14,7 @@ import {
 import { useHermes } from '../../context/HermesContext';
 import { GatewayService } from '../../services/gateway';
 import { resolveListUiState } from '../../services/pagination';
+import { useOverlayBehavior } from '../../hooks/useOverlayBehavior';
 import { MobileSession } from '../../types/hermes';
 
 const gatewayService = new GatewayService();
@@ -40,7 +41,15 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     refreshNow,
     pinnedIds,
     togglePin,
+    t,
   } = useHermes();
+
+  // English fallback for keys constants/languages.ts does not ship yet, so a
+  // missing key degrades to English instead of printing the raw key.
+  const tx = (key: string, fallback: string): string => {
+    const v = t(key);
+    return !v || v === key ? fallback : v;
+  };
 
   const [query, setQuery] = useState('');
   const [sortMode, setSortMode] = useState<0 | 1 | 2>(0);
@@ -72,6 +81,25 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
   const [metaLoading, setMetaLoading] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
 
+  // Escape / Android back button / Tab focus trap for the whole drawer. The
+  // close handler unwinds the top-most surface first (rename or delete dialog,
+  // then the drawer itself) so the back button never skips a dialog.
+  const closeTop = useCallback(() => {
+    if (renameTarget) {
+      setRenameTarget(null);
+      setRenameError('');
+      return;
+    }
+    if (deleteTarget) {
+      setDeleteTarget(null);
+      setDeleteError('');
+      return;
+    }
+    onClose();
+  }, [renameTarget, deleteTarget, onClose]);
+
+  const drawerRef = useOverlayBehavior(isOpen, closeTop);
+
   useEffect(() => {
     return () => {
       if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -102,7 +130,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
         setNextOffset(page.nextOffset);
       } catch (e) {
         if (cancelled) return;
-        setPageError(e instanceof Error ? e.message : 'Could not load conversations.');
+        setPageError(e instanceof Error ? e.message : tx('couldNotLoadConversations', 'Could not load conversations.'));
       } finally {
         if (!cancelled) setMetaLoading(false);
       }
@@ -128,7 +156,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       setNextOffset(page.nextOffset);
       if (page.error && !page.stale) setPageError(page.error);
     } catch (e) {
-      setPageError(e instanceof Error ? e.message : 'Could not load more conversations.');
+      setPageError(e instanceof Error ? e.message : tx('couldNotLoadMore', 'Could not load more conversations.'));
     } finally {
       setLoadingMore(false);
     }
@@ -147,7 +175,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       setHasMore(page.hasMore);
       setNextOffset(page.nextOffset);
     } catch (e) {
-      setPageError(e instanceof Error ? e.message : 'Could not load conversations.');
+      setPageError(e instanceof Error ? e.message : tx('couldNotLoadConversations', 'Could not load conversations.'));
     }
   };
 
@@ -157,7 +185,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       onSelectSession(newId);
       onClose();
     } catch {
-      showDrawerToast('Could not create session. Gateway unreachable.', 'error');
+      showDrawerToast(tx('couldNotCreateSession', 'Could not create session. Gateway unreachable.'), 'error');
     }
   };
 
@@ -165,7 +193,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     try {
       await forkSession(id);
     } catch {
-      showDrawerToast('Fork failed. The conversation was not forked.', 'error');
+      showDrawerToast(tx('forkFailed', 'Fork failed. The conversation was not forked.'), 'error');
     }
   };
 
@@ -281,7 +309,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     // On mobile WebViews a blob download often goes nowhere, so prefer
     // the native share sheet when it can take the file.
     if (await shareNative(sess, md)) {
-      showDrawerToast('Transcript shared.', 'success');
+      showDrawerToast(tx('transcriptShared', 'Transcript shared.'), 'success');
       return;
     }
     try {
@@ -294,13 +322,13 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      showDrawerToast('Transcript exported.', 'success');
+      showDrawerToast(tx('transcriptExported', 'Transcript exported.'), 'success');
     } catch {
       try {
         await navigator.clipboard.writeText(md);
-        showDrawerToast('Download unavailable. Transcript copied instead.', 'info');
+        showDrawerToast(tx('downloadUnavailableCopied', 'Download unavailable. Transcript copied instead.'), 'info');
       } catch {
-        showDrawerToast('Export failed: no download, share, or clipboard available.', 'error');
+        showDrawerToast(tx('exportFailed', 'Export failed: no download, share, or clipboard available.'), 'error');
       }
     }
   };
@@ -310,18 +338,37 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     const md = buildTranscriptMarkdown(sess, targetMessages);
     try {
       await navigator.clipboard.writeText(md);
-      showDrawerToast('Transcript copied.', 'success');
+      showDrawerToast(tx('transcriptCopied', 'Transcript copied.'), 'success');
     } catch {
-      showDrawerToast('Copy failed: clipboard unavailable', 'error');
+      showDrawerToast(tx('copyFailed', 'Copy failed: clipboard unavailable'), 'error');
+    }
+  };
+
+  const saveRename = async (target: MobileSession, next: string) => {
+    setRenameError('');
+    setIsSavingRename(true);
+    try {
+      await renameSession(target.id, next);
+      setRenameTarget(null);
+      showDrawerToast(tx('conversationRenamed', 'Conversation renamed.'), 'success');
+    } catch {
+      setRenameError(tx('renameFailed', 'Rename failed. The conversation was not renamed.'));
+    } finally {
+      setIsSavingRename(false);
     }
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex">
+    <div ref={drawerRef} className="fixed inset-0 z-50 flex">
       {drawerToast && (
-        <div role="status" aria-live="polite" className={`fixed top-16 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] px-4 py-2 rounded-xl text-white text-xs font-semibold shadow-2xl ${toastKind === 'error' ? 'bg-rose-600' : toastKind === 'success' ? 'bg-emerald-600' : 'bg-slate-800 border border-white/[0.1]'}`}>
+        <div
+          role="status"
+          aria-live="polite"
+          style={{ top: 'calc(4rem + env(safe-area-inset-top, 0px))' }}
+          className={`fixed start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] px-4 py-2 rounded-lg text-white text-xs font-semibold shadow-2xl ${toastKind === 'error' ? 'bg-rose-600' : toastKind === 'success' ? 'bg-emerald-600' : 'bg-slate-800 border border-white/[0.1]'}`}
+        >
           {drawerToast}
         </div>
       )}
@@ -329,35 +376,47 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       <div
         className="fixed inset-0 bg-black/60 backdrop-blur-xs transition-opacity duration-200"
         onClick={onClose}
+        aria-hidden="true"
       />
 
-      {/* Drawer Container */}
-      <aside className="relative w-full max-w-xs bg-[var(--app-card,#0E1217)] border-e border-white/[0.08] h-full flex flex-col z-10 shadow-2xl animate-in slide-in-from-left rtl:slide-in-from-right duration-200">
-        {/* Header */}
-        <div className="p-4 border-b border-white/[0.08] flex items-center justify-between">
-          <div>
-            <span className="text-xs font-semibold text-white tracking-tight">
-              Conversations
+      {/* Drawer Container. The panel carries the top safe-area inset itself:
+          it is a sibling of the sticky header and would otherwise slide under
+          the status bar and notch on Android 15+ (edge-to-edge). */}
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-label={tx('conversations', 'Conversations')}
+        style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
+        className="relative w-full max-w-xs bg-[var(--app-card,#0E1217)] border-e border-white/[0.08] h-full flex flex-col z-10 shadow-2xl animate-in slide-in-from-left rtl:slide-in-from-right duration-200"
+      >
+        {/* Header: 44px row carrying 36px controls. */}
+        <div className="px-3 min-h-[44px] border-b border-white/[0.08] flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <span className="text-xs font-semibold text-white tracking-tight truncate">
+              {tx('conversations', 'Conversations')}
             </span>
-            <span className="text-[11px] text-slate-500 ms-1.5" aria-label={`${allSessions.length} conversations`}>
+            <span
+              className="text-[11px] text-slate-500 shrink-0"
+              aria-label={`${allSessions.length} ${tx('conversations', 'Conversations')}`}
+            >
               ({allSessions.length})
             </span>
           </div>
 
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 shrink-0">
             <button
               onClick={() => void handleNewSession()}
-              className="w-7 h-7 min-w-[44px] min-h-[44px] rounded-lg flex items-center justify-center text-indigo-400 hover:text-white hover:bg-white/[0.06] transition"
-              title="New Session"
-              aria-label="New Session"
+              className="w-9 h-9 rounded-lg flex items-center justify-center text-indigo-400 hover:text-white hover:bg-white/[0.06] transition"
+              title={tx('newSession', 'New Session')}
+              aria-label={tx('newSession', 'New Session')}
             >
               <Plus className="w-4 h-4" />
             </button>
             <button
               onClick={onClose}
-              className="w-7 h-7 min-w-[44px] min-h-[44px] rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.06] transition ms-1"
-              title="Close"
-              aria-label="Close conversations"
+              className="w-9 h-9 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.06] transition"
+              title={tx('closeConversations', 'Close conversations')}
+              aria-label={tx('closeConversations', 'Close conversations')}
             >
               <X className="w-4 h-4" />
             </button>
@@ -365,23 +424,23 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
         </div>
 
         {/* Search & Filters */}
-        <div className="p-3 border-b border-white/[0.06] space-y-2.5">
+        <div className="px-3 py-2 border-b border-white/[0.06] space-y-2">
           <div className="relative">
             <Search className="w-3.5 h-3.5 absolute start-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
             <input
               type="text"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search title, model, or id..."
-              aria-label="Search conversations"
-              className="w-full ps-9 pe-9 py-1.5 min-h-[44px] rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+              placeholder={tx('searchConversationsPlaceholder', 'Search title, model, or id…')}
+              aria-label={tx('searchConversations', 'Search conversations')}
+              className="w-full ps-9 pe-9 h-9 rounded-lg bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
             />
             {query && (
               <button
                 type="button"
                 onClick={() => setQuery('')}
-                aria-label="Clear search"
-                className="absolute end-1 top-1/2 -translate-y-1/2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg text-slate-500 hover:text-white transition"
+                aria-label={tx('clearSearch', 'Clear search')}
+                className="hm-hit absolute end-0.5 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:text-white transition"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -389,23 +448,25 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
           </div>
           {query.trim() && (
             <p className="text-[11px] text-slate-500" role="status">
-              {visibleSessions.length} of {allSessions.length} conversations match
+              {visibleSessions.length} / {allSessions.length} {tx('conversationsMatch', 'conversations match')}
             </p>
           )}
 
-          {/* Clean Segmented Sort Control */}
-          <div className="flex items-center gap-1 text-[11px]">
-            <span className="text-slate-500 text-[10px] uppercase font-medium me-1">Sort:</span>
+          {/* Segmented sort control: 36px controls, one radius. */}
+          <div className="flex items-center gap-1">
+            <span className="text-slate-500 text-[11px] uppercase font-medium me-1">
+              {tx('sortLabel', 'Sort:')}
+            </span>
             {[
-              { label: 'Newest', mode: 0 },
-              { label: 'Oldest', mode: 1 },
-              { label: 'Messages', mode: 2 },
+              { label: tx('sortNewest', 'Newest'), mode: 0 },
+              { label: tx('sortOldest', 'Oldest'), mode: 1 },
+              { label: tx('sortMessages', 'Messages'), mode: 2 },
             ].map((s) => (
               <button
                 key={s.mode}
                 onClick={() => setSortMode(s.mode as any)}
                 aria-pressed={sortMode === s.mode}
-                className={`px-3 min-h-[44px] py-0.5 rounded-md transition ${
+                className={`px-3 h-9 rounded-lg text-xs transition ${
                   sortMode === s.mode
                     ? 'bg-white/[0.08] text-white font-medium'
                     : 'text-slate-400 hover:text-white'
@@ -420,50 +481,54 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
         {/* Sessions Scroll List */}
         <div className="flex-1 overflow-y-auto p-2.5 space-y-1.5">
           {(listState === 'stale' || listState === 'offline') && (
-            <div role="status" className="px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300">
-              <p className="font-semibold">Offline, showing cached data</p>
-              {syncedLabel && <p className="text-amber-300/70 mt-0.5">Last synced {syncedLabel}</p>}
+            <div role="status" className="px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[11px] text-amber-300">
+              <p className="font-semibold">{tx('offlineCached', 'Offline, showing cached data')}</p>
+              {syncedLabel && (
+                <p className="text-amber-300/70 mt-0.5">
+                  {tx('lastSynced', 'Last synced')} {syncedLabel}
+                </p>
+              )}
             </div>
           )}
           {pageError && (
-            <div role="alert" className="px-3 py-2 rounded-xl bg-rose-500/10 border border-rose-500/30 text-[11px] text-rose-300 space-y-1.5">
+            <div role="alert" className="px-3 py-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-[11px] text-rose-300 space-y-2">
               <p>{pageError}</p>
               <button
                 onClick={() => void handleRetryList()}
-                className="px-2.5 min-h-[44px] rounded-lg bg-rose-600/20 hover:bg-rose-600/30 text-rose-200 font-semibold cursor-pointer"
+                className="h-9 px-3 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 text-rose-200 font-semibold cursor-pointer"
               >
-                Retry
+                {tx('retry', 'Retry')}
               </button>
             </div>
           )}
           {listState === 'loading' ? (
-            <div className="py-12 text-center text-xs text-slate-400" role="status" aria-label="Loading conversations">
-              <p>Loading conversations...</p>
+            <div className="py-12 text-center text-xs text-slate-400" role="status" aria-label={tx('loadingConversations', 'Loading conversations…')}>
+              <p>{tx('loadingConversations', 'Loading conversations…')}</p>
             </div>
           ) : listState === 'error' ? (
             <div className="py-12 text-center text-xs text-slate-400 space-y-3" role="alert">
-              <p>Could not load conversations.</p>
+              <p>{tx('couldNotLoadConversations', 'Could not load conversations.')}</p>
               {pageMeta.error && <p className="text-[11px] text-slate-500">{pageMeta.error}</p>}
               <button
                 onClick={() => void handleRetryList()}
-                className="px-4 min-h-[44px] py-1.5 rounded-xl bg-indigo-600 text-white text-xs font-medium cursor-pointer"
+                className="h-9 px-4 rounded-lg bg-indigo-600 text-white text-xs font-medium cursor-pointer"
               >
-                Retry
+                {tx('retry', 'Retry')}
               </button>
             </div>
           ) : allSessions.length === 0 ? (
             <div className="py-12 text-center text-xs text-slate-400">
-              <p>No conversations yet</p>
+              <p>{tx('noConversationsYet', 'No conversations yet')}</p>
               <button
                 onClick={() => void handleNewSession()}
-                className="mt-3 px-3 py-1.5 rounded-xl bg-indigo-600 text-white text-xs font-medium cursor-pointer"
+                className="mt-3 h-9 px-3 rounded-lg bg-indigo-600 text-white text-xs font-medium cursor-pointer"
               >
-                Create First Session
+                {tx('createFirstSession', 'Create First Session')}
               </button>
             </div>
           ) : visibleSessions.length === 0 ? (
             <div className="py-12 text-center text-xs text-slate-400">
-              <p>No conversations match your search</p>
+              <p>{tx('noConversationsMatch', 'No conversations match your search')}</p>
             </div>
           ) : (
             <>
@@ -472,7 +537,9 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                 <div className="space-y-1 mb-3">
                   <div className="flex items-center gap-1.5 px-2 text-[11px] text-amber-400 font-medium">
                     <Star className="w-3 h-3 fill-amber-400" />
-                    <span aria-label={`${pinnedSessions.length} favorites`}>Favorites ({pinnedSessions.length})</span>
+                    <span aria-label={`${pinnedSessions.length} ${tx('favorites', 'Favorites')}`}>
+                      {tx('favorites', 'Favorites')} ({pinnedSessions.length})
+                    </span>
                   </div>
                   {pinnedSessions.map((sess) => (
                     <SessionCard
@@ -531,16 +598,16 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                       setOpenMenuId((prev) => (prev === sess.id ? null : sess.id))
                     }
                     onCloseMenu={() => setOpenMenuId(null)}
-                    />
+                  />
                 ))}
               </div>
               {hasMore && nextOffset !== null && (
                 <button
                   onClick={() => void handleLoadMore()}
                   disabled={loadingMore}
-                  className="w-full mt-2 px-3 min-h-[44px] py-2 rounded-xl bg-white/[0.04] hover:bg-white/[0.07] disabled:opacity-50 text-xs font-medium text-slate-300 border border-white/[0.07] transition cursor-pointer"
+                  className="w-full mt-2 h-9 px-3 rounded-lg bg-white/[0.04] hover:bg-white/[0.07] disabled:opacity-50 text-xs font-medium text-slate-300 border border-white/[0.07] transition cursor-pointer"
                 >
-                  {loadingMore ? 'Loading...' : 'Load more conversations'}
+                  {loadingMore ? tx('loadingMore', 'Loading…') : tx('loadMoreConversations', 'Load more conversations')}
                 </button>
               )}
             </>
@@ -553,45 +620,33 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
         <div
           role="dialog"
           aria-modal="true"
-          aria-label="Rename conversation"
+          aria-label={tx('renameConversation', 'Rename conversation')}
           className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
           onClick={(e) => {
             if (e.target === e.currentTarget) setRenameTarget(null);
           }}
         >
           <div
-            className="w-full max-w-sm rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-4"
+            className="w-full max-w-sm rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-4"
             onClick={(e) => e.stopPropagation()}
           >
             <h3 className="text-sm font-semibold text-white">
-              Rename Conversation
+              {tx('renameConversationTitle', 'Rename Conversation')}
             </h3>
             <input
               type="text"
               value={renameTitle}
               onChange={(e) => setRenameTitle(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && renameTitle.trim() && !isSavingRename) {
+                if (e.key === 'Enter' && renameTitle.trim() && !isSavingRename && renameTarget) {
                   e.preventDefault();
-                  void (async () => {
-                    setRenameError('');
-                    setIsSavingRename(true);
-                    try {
-                      await renameSession(renameTarget.id, renameTitle.trim());
-                      setRenameTarget(null);
-                      showDrawerToast('Conversation renamed.', 'success');
-                    } catch {
-                      setRenameError('Rename failed. The conversation was not renamed.');
-                    } finally {
-                      setIsSavingRename(false);
-                    }
-                  })();
+                  void saveRename(renameTarget, renameTitle.trim());
                 }
               }}
               // eslint-disable-next-line jsx-a11y/no-autofocus
               autoFocus
-              aria-label="Conversation title"
-              className="w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
+              aria-label={tx('conversationTitle', 'Conversation title')}
+              className="w-full px-3.5 h-9 rounded-lg bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
             />
             {renameError && (
               <p className="text-xs text-rose-400" role="alert">{renameError}</p>
@@ -602,29 +657,19 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                   setRenameTarget(null);
                   setRenameError('');
                 }}
-                className="px-4 min-h-[44px] py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-white"
+                className="h-9 px-4 rounded-lg text-xs font-medium text-slate-400 hover:text-white"
               >
-                Cancel
+                {t('cancel') || tx('cancel', 'Cancel')}
               </button>
               <button
-                onClick={async () => {
-                  if (!renameTitle.trim()) return;
-                  setRenameError('');
-                  setIsSavingRename(true);
-                  try {
-                    await renameSession(renameTarget.id, renameTitle.trim());
-                    setRenameTarget(null);
-                    showDrawerToast('Conversation renamed.', 'success');
-                  } catch {
-                    setRenameError('Rename failed. The conversation was not renamed.');
-                  } finally {
-                    setIsSavingRename(false);
-                  }
+                onClick={() => {
+                  if (!renameTitle.trim() || !renameTarget) return;
+                  void saveRename(renameTarget, renameTitle.trim());
                 }}
                 disabled={isSavingRename}
-                className="px-4 min-h-[44px] py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold"
+                className="h-9 px-4 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold"
               >
-                {isSavingRename ? 'Saving...' : 'Save'}
+                {isSavingRename ? tx('saving', 'Saving…') : t('save') || tx('save', 'Save')}
               </button>
             </div>
           </div>
@@ -636,21 +681,21 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
         <div
           role="dialog"
           aria-modal="true"
-          aria-label="Delete conversation"
+          aria-label={tx('deleteConversation', 'Delete conversation')}
           className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
           onClick={(e) => {
             if (e.target === e.currentTarget) setDeleteTarget(null);
           }}
         >
           <div
-            className="w-full max-w-sm rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-3"
+            className="w-full max-w-sm rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] p-5 shadow-2xl space-y-3"
             onClick={(e) => e.stopPropagation()}
           >
             <h3 className="text-sm font-semibold text-white">
-              Delete Conversation?
+              {tx('deleteConversationTitle', 'Delete Conversation?')}
             </h3>
             <p className="text-xs text-slate-400">
-              Are you sure you want to delete "{deleteTarget.title}"?
+              {tx('deleteConversationLead', 'Are you sure you want to delete')} "{deleteTarget.title}"?
             </p>
             {deleteError && (
               <p className="text-xs text-rose-400" role="alert">{deleteError}</p>
@@ -661,27 +706,28 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                   setDeleteTarget(null);
                   setDeleteError('');
                 }}
-                className="px-4 min-h-[44px] py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-white"
+                className="h-9 px-4 rounded-lg text-xs font-medium text-slate-400 hover:text-white"
               >
-                Cancel
+                {t('cancel') || tx('cancel', 'Cancel')}
               </button>
               <button
                 onClick={async () => {
+                  if (!deleteTarget) return;
                   setDeleteError('');
                   setIsDeleting(true);
                   try {
                     await deleteSession(deleteTarget.id);
                     setDeleteTarget(null);
                   } catch {
-                    setDeleteError('Delete failed. The conversation was not deleted.');
+                    setDeleteError(tx('deleteFailed', 'Delete failed. The conversation was not deleted.'));
                   } finally {
                     setIsDeleting(false);
                   }
                 }}
                 disabled={isDeleting}
-                className="px-4 min-h-[44px] py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-semibold"
+                className="h-9 px-4 rounded-lg bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-semibold"
               >
-                {isDeleting ? 'Deleting...' : 'Delete'}
+                {isDeleting ? tx('deleting', 'Deleting…') : t('delete') || tx('delete', 'Delete')}
               </button>
             </div>
           </div>
@@ -722,19 +768,23 @@ const SessionCard: React.FC<SessionCardProps> = ({
   onToggleMenu,
   onCloseMenu,
 }) => {
-  const title = session.title || 'Untitled Session';
   const { t } = useHermes();
+  const tx = (key: string, fallback: string): string => {
+    const v = t(key);
+    return !v || v === key ? fallback : v;
+  };
+  const title = session.title || tx('untitledSession', 'Untitled Session');
   const menuItems: {
     label: string;
     icon: React.ReactNode;
     danger?: boolean;
     run: () => void;
   }[] = [
-    { label: 'Export', icon: <Download className="w-3.5 h-3.5" />, run: onExport },
-    { label: 'Copy transcript', icon: <Copy className="w-3.5 h-3.5" />, run: onCopy },
-    { label: 'Rename', icon: <Edit2 className="w-3.5 h-3.5" />, run: onRename },
-    { label: t('fork'), icon: <GitFork className="w-3.5 h-3.5" />, run: onFork },
-    { label: 'Delete', icon: <Trash2 className="w-3.5 h-3.5" />, danger: true, run: onDelete },
+    { label: tx('export', 'Export'), icon: <Download className="w-3.5 h-3.5" />, run: onExport },
+    { label: tx('copyTranscript', 'Copy transcript'), icon: <Copy className="w-3.5 h-3.5" />, run: onCopy },
+    { label: tx('rename', 'Rename'), icon: <Edit2 className="w-3.5 h-3.5" />, run: onRename },
+    { label: t('fork') || tx('fork', 'Fork'), icon: <GitFork className="w-3.5 h-3.5" />, run: onFork },
+    { label: t('delete') || tx('delete', 'Delete'), icon: <Trash2 className="w-3.5 h-3.5" />, danger: true, run: onDelete },
   ];
 
   return (
@@ -749,8 +799,8 @@ const SessionCard: React.FC<SessionCardProps> = ({
         }
       }}
       aria-current={isSelected ? 'true' : undefined}
-      aria-label={`${title}${isSelected ? ', current conversation' : ''}`}
-      className={`group relative p-3 rounded-2xl border transition-all cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
+      aria-label={`${title}${isSelected ? `, ${tx('currentConversation', 'current conversation')}` : ''}`}
+      className={`group relative min-h-[44px] p-2.5 rounded-lg border transition-all cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${
         isSelected
           ? 'bg-indigo-600/10 border-indigo-500/40 text-white'
           : 'bg-[var(--app-card-subtle,#141920)]/60 hover:bg-[var(--app-card-subtle,#141920)] border-white/[0.05] hover:border-white/[0.1]'
@@ -760,17 +810,17 @@ const SessionCard: React.FC<SessionCardProps> = ({
         <h4 className="text-xs font-medium text-slate-200 line-clamp-1 flex-1 leading-snug">
           {title}
         </h4>
-        <div className="flex items-center gap-0.5">
+        <div className="flex items-center gap-0.5 -me-0.5 -mt-0.5">
           <button
             onClick={(e) => {
               e.stopPropagation();
               onTogglePin();
             }}
-            className={`min-w-[44px] min-h-[44px] flex items-center justify-center p-1 rounded-md transition ${
+            className={`w-9 h-9 flex items-center justify-center rounded-lg transition ${
               isPinned ? 'text-amber-400' : 'text-slate-500 hover:text-slate-300'
             }`}
-            title={isPinned ? 'Unpin' : 'Pin to favorites'}
-            aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${title}`}
+            title={isPinned ? tx('unpin', 'Unpin') : tx('pinToFavorites', 'Pin to favorites')}
+            aria-label={`${isPinned ? tx('unpin', 'Unpin') : tx('pin', 'Pin')} ${title}`}
             aria-pressed={isPinned}
           >
             <Star className={`w-3.5 h-3.5 ${isPinned ? 'fill-amber-400' : ''}`} />
@@ -786,8 +836,8 @@ const SessionCard: React.FC<SessionCardProps> = ({
               }}
               aria-haspopup="menu"
               aria-expanded={isMenuOpen}
-              aria-label={`More actions for ${title}`}
-              className="min-w-[44px] min-h-[44px] flex items-center justify-center p-1 rounded-md text-slate-500 hover:text-white transition"
+              aria-label={`${tx('moreActions', 'More actions')}: ${title}`}
+              className="w-9 h-9 flex items-center justify-center rounded-lg text-slate-500 hover:text-white transition"
             >
               <MoreHorizontal className="w-4 h-4" />
             </button>
@@ -799,11 +849,12 @@ const SessionCard: React.FC<SessionCardProps> = ({
                     e.stopPropagation();
                     onCloseMenu();
                   }}
+                  aria-hidden="true"
                 />
                 <div
                   role="menu"
-                  aria-label={`Actions for ${title}`}
-                  className="absolute end-0 top-full z-50 w-44 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.1] shadow-2xl p-1"
+                  aria-label={`${tx('moreActions', 'More actions')}: ${title}`}
+                  className="absolute end-0 top-full z-50 w-44 rounded-lg bg-[var(--app-card,#0E1217)] border border-white/[0.1] shadow-2xl p-1"
                   onClick={(e) => e.stopPropagation()}
                   onKeyDown={(e) => {
                     if (e.key === 'Escape') onCloseMenu();
@@ -817,7 +868,7 @@ const SessionCard: React.FC<SessionCardProps> = ({
                         onCloseMenu();
                         item.run();
                       }}
-                      className={`w-full min-h-[44px] px-3 flex items-center gap-2.5 rounded-lg text-xs transition cursor-pointer ${
+                      className={`w-full h-9 px-2.5 flex items-center gap-2.5 rounded-lg text-xs transition cursor-pointer ${
                         item.danger
                           ? 'text-rose-400 hover:bg-rose-500/10'
                           : 'text-slate-300 hover:bg-white/[0.06] hover:text-white'
@@ -834,8 +885,10 @@ const SessionCard: React.FC<SessionCardProps> = ({
         </div>
       </div>
 
-      <div className="flex items-center justify-between mt-1 text-[11px] text-slate-400">
-        <span aria-label={`${session.messageCount} messages`}>{session.messageCount} msgs</span>
+      <div className="flex items-center justify-between mt-0.5 text-[11px] text-slate-400">
+        <span aria-label={`${session.messageCount} ${tx('messages', 'messages')}`}>
+          {session.messageCount} {tx('msgs', 'msgs')}
+        </span>
         <span>{new Date(session.lastActiveAt).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span>
       </div>
     </div>
