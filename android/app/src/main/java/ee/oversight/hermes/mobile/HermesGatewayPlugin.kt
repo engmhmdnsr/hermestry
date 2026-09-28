@@ -135,6 +135,14 @@ class HermesGatewayPlugin : Plugin() {
   }
 
   @PluginMethod
+  fun health(call: PluginCall) {
+    val up = healthOk()
+    call.resolve(JSObject()
+      .put("running", up)
+      .put("state", if (up) "running" else "down"))
+  }
+
+  @PluginMethod
   fun status(call: PluginCall) {
     val installed = try { Bootstrap.isInstalled(context) } catch (_: Exception) { false }
     val failed = MobileGatewayService.gatewayFailed.value

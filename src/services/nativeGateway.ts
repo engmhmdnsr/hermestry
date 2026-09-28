@@ -12,6 +12,7 @@ interface HermesGatewayPlugin {
   start(): Promise<void>;
   stop(): Promise<void>;
   status(): Promise<NativeGatewayStatus>;
+  health(): Promise<NativeGatewayStatus>;
   setAutostart(options: { enabled: boolean }): Promise<void>;
   addListener(
     event: 'installLog' | 'installProgress' | 'installDone',
@@ -89,6 +90,20 @@ export async function nativeStatus(): Promise<NativeGatewayStatus> {
   const plugin = getPlugin();
   if (!plugin) throw new Error('native bridge unavailable');
   return plugin.status();
+}
+
+// Native HTTP probe of 127.0.0.1:8080/health. Preferred over the WebView
+// fetch on-device: it runs outside the WebView's network stack, so it cannot
+// be blocked by cleartext policy and reports the true gateway state.
+export async function nativeHealth(): Promise<boolean> {
+  const plugin = getPlugin();
+  if (!plugin || typeof plugin.health !== 'function') return false;
+  try {
+    const res = await plugin.health();
+    return res.running === true;
+  } catch {
+    return false;
+  }
 }
 
 export async function nativeSetAutostart(enabled: boolean): Promise<void> {

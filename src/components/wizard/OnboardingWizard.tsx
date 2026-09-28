@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Eye, EyeOff, Check, Sparkles, ArrowRight, ShieldCheck } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import {
@@ -29,6 +29,14 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
   } = useHermes();
 
   const [step, setStep] = useState<number>(install === 'INSTALLED' ? 2 : 0);
+
+  // Keep the newest log line visible: the box has a fixed height, so without
+  // this the user sees the first lines forever and thinks logging stopped.
+  const logBoxRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = logBoxRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [gatewayLogs]);
 
   // Form inputs
   const [provider, setProvider] = useState(settings.provider || 'deepseek');
@@ -150,9 +158,9 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
               <p className="text-xs font-mono text-teal-400">{installProgress}</p>
             )}
 
-            <div className="rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-3.5 h-52 overflow-y-auto overflow-x-hidden font-mono text-xs text-slate-400 space-y-1">
-              {gatewayLogs.slice(-20).map((log, i) => (
-                <div key={i} className="leading-relaxed break-words whitespace-pre-wrap">
+            <div className="rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] p-3.5 h-52 overflow-y-auto overflow-x-hidden font-mono text-xs text-slate-400 space-y-1" ref={logBoxRef}>
+              {gatewayLogs.slice(-200).map((log, i) => (
+                <div key={`${gatewayLogs.length - 200 + i}`} className="leading-relaxed break-words whitespace-pre-wrap">
                   {log}
                 </div>
               ))}

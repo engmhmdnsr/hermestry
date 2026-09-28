@@ -19,6 +19,7 @@ import {
   nativeInstall,
   nativeStart,
   nativeStop,
+  nativeHealth,
   nativeSetAutostart,
 } from '../services/nativeGateway';
 import {
@@ -949,7 +950,9 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const startGateway = async () => {
     addLog('Starting Hermes gateway daemon...');
-    setInstall('RUNNING');
+    // Leave the install state alone on-device: the wizard shows its Continue
+    // button only for INSTALLED, and 'RUNNING' would strand the user there.
+    if (!isNativeGateway()) setInstall('RUNNING');
     setGatewayFailed(false);
     setGatewayFailureReason(null);
     // On-device APK: start the real gateway process via the native runner.
@@ -971,7 +974,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       let nativeHealthy = false;
       for (let i = 0; i < 48; i++) {
         try {
-          if (await gatewayService.health()) {
+          if (await nativeHealth()) {
             nativeHealthy = true;
             break;
           }
@@ -983,13 +986,18 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
       if (nativeHealthy) {
         setConnected(true);
+        setInstall('INSTALLED');
+        setInstallProgress('');
         addLog('Gateway running on 127.0.0.1:8080');
         refreshNow();
       } else {
         setConnected(false);
         setGatewayFailed(true);
+        setInstall('FAILED');
+        setInstallProgress('');
         const reason = 'Gateway start failed: not reachable after 4 minutes, see gateway.log';
         setGatewayFailureReason(reason);
+        setInstallError(reason);
         addLog(reason);
       }
       return;
