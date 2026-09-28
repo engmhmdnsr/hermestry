@@ -15,6 +15,13 @@ import {
 } from '../types/hermes';
 import { GatewayService } from '../services/gateway';
 import {
+  isNativeGateway,
+  nativeInstall,
+  nativeStart,
+  nativeStop,
+  nativeSetAutostart,
+} from '../services/nativeGateway';
+import {
   lockVault,
   unlockVault,
   vaultLocked,
@@ -528,6 +535,11 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (!next.appLockEnabled) setVaultUnlocked(true);
       persistSettings(next);
     }
+    // On-device APK: mirror the autostart switch into the native prefs
+    // that BootReceiver reads, so boot start follows the same toggle.
+    if (next.autostart !== prev.autostart && isNativeGateway()) {
+      nativeSetAutostart(next.autostart).catch(() => {});
+    }
     setSettings(next);
   };
 
@@ -940,6 +952,19 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setInstall('RUNNING');
     setGatewayFailed(false);
     setGatewayFailureReason(null);
+    // On-device APK: start the real gateway process via the native runner.
+    if (isNativeGateway()) {
+      try {
+        await nativeStart();
+      } catch (e) {
+        const reason = e instanceof Error ? e.message : String(e);
+        setConnected(false);
+        setGatewayFailed(true);
+        setGatewayFailureReason(reason);
+        addLog(`Gateway start failed: ${reason}`);
+        return;
+      }
+    }
     let healthy = false;
     try {
       healthy = await gatewayService.health();
@@ -961,6 +986,10 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const stopGateway = () => {
     stopStream();
+    // On-device APK: stop the real gateway process via the native runner.
+    if (isNativeGateway()) {
+      nativeStop().catch(() => {});
+    }
     setInstall('INSTALLED');
     setConnected(false);
     addLog('Gateway process terminated by user');
@@ -981,14 +1010,37 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const installGateway = async () => {
     setInstall('INSTALLING');
-    setInstallProgress('Downloading hermes-image (~305MB)...');
     setInstallError(null);
-    addLog('Download started from repository manifest');
+    // On-device APK: run the real one-shot image install via the native
+    // runner (download + sha256 verify + extract + proot). Logs stream live.
+    if (isNativeGateway()) {
+      setInstallProgress('Downloading hermes-image (~305MB)...');
+      addLog('Download started from repository manifest');
+      const res = await nativeInstall(
+        (line) => addLog(line),
+        (downloaded, total) => {
+          const pct = total > 0 ? Math.round((downloaded / total) * 100) : 0;
+          setInstallProgress(`Installing on-device image (${pct}%)...`);
+        }
+      );
+      if (!res.ok) {
+        setInstall('FAILED');
+        setInstallProgress('');
+        setInstallError(res.error || 'On-device install failed. Press Retry to try again.');
+        setConnected(false);
+        addLog(`Install failed: ${res.error || 'unknown error'}`);
+        return;
+      }
+      setInstallProgress('Verifying gateway health...');
+    } else {
+      setInstallProgress('Downloading hermes-image (~305MB)...');
+      addLog('Download started from repository manifest');
 
-    for (let i = 10; i <= 100; i += 20) {
-      await new Promise((r) => setTimeout(r, 400));
-      setInstallProgress(`Extracting rootfs layers (${i}%)...`);
-      addLog(`Extracted package block #${i / 20}`);
+      for (let i = 10; i <= 100; i += 20) {
+        await new Promise((r) => setTimeout(r, 400));
+        setInstallProgress(`Extracting rootfs layers (${i}%)...`);
+        addLog(`Extracted package block #${i / 20}`);
+      }
     }
 
     // Probe real gateway health before declaring success.
