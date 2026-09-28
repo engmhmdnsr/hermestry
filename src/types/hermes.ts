@@ -41,17 +41,33 @@ export interface ConfiguredProvider {
   id: string;
   provider: string; // e.g. 'deepseek', 'gemini', 'anthropic', 'openai-api', 'ollama-cloud'
   name: string; // custom or display label
-  apiKey: string;
+  /**
+   * @deprecated Plaintext legacy field. Never persisted going forward;
+   * use secretRef (vault-map key) via providerStore instead.
+   */
+  apiKey?: string;
+  /** Vault-map key holding this profile's key. See secretRefs.ts. */
+  secretRef?: string;
   baseUrl?: string;
   defaultModel: string;
   enabled: boolean;
   validated?: boolean;
 }
 
+export type ApprovalRisk = 'low' | 'medium' | 'high';
+
 export interface PendingApproval {
   runId: string;
   sessionId: string;
   summary: string;
+  tool?: string;
+  command?: string;
+  path?: string;
+  args?: string[];
+  risk?: ApprovalRisk | string;
+  cwd?: string;
+  reason?: string;
+  createdAt?: number;
 }
 
 export interface GatewayStatus {

@@ -11,6 +11,15 @@ android {
         versionCode 30
         versionName "1.3.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        ndk {
+            // ABI support note (GATEWAY-02): Hermes on-device runtime is
+            // aarch64-centered. arm64-v8a is the primary shipping ABI.
+            // x86_64 is kept for emulators and x86_64 test devices.
+            // armeabi-v7a (32-bit) is excluded: the gateway native deps
+            // assume a 64-bit runtime, so 32-bit .so files only grow the
+            // APK without a supported runtime path.
+            abiFilters 'arm64-v8a', 'x86_64'
+        }
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
              // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
@@ -18,7 +27,11 @@ android {
         }
     }
     buildTypes {
+        debug {
+            debuggable true
+        }
         release {
+            debuggable false
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

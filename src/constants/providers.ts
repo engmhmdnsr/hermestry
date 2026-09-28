@@ -1,3 +1,19 @@
+// Static catalog. OFFLINE FALLBACK ONLY: the gateway live catalog from
+// GET /api/model/options is the single source of truth and must be queried
+// first. Use these entries only when the gateway is unreachable or returns
+// no models for a configured provider. Do not treat this list as live data
+// and do not add/remove ids here to mirror the server; update the gateway.
+
+export const STATIC_CATALOG_SOURCE = 'offline-fallback' as const;
+
+export type ProviderCatalogSource = 'live' | 'offline-fallback';
+
+export interface StaticProviderEntry {
+  id: string;
+  label: string;
+  source: typeof STATIC_CATALOG_SOURCE;
+}
+
 export const PROVIDER_OPTIONS: Array<[string, string]> = [
   ['openrouter', 'OpenRouter'],
   ['mixture-of-agents', 'Mixture of Agents'],
@@ -163,3 +179,32 @@ export const DEFAULT_MODELS: Record<string, string[]> = {
   actual: ['actual-default-model'],
   'azure-foundry': ['azure-gpt-4o', 'azure-o1'],
 };
+
+// Verified live id for the opencode-go provider. Keep in sync with the
+// gateway only; the static list stays as the offline fallback snapshot.
+export const OPENCODE_GO_VERIFIED_MODELS: readonly string[] = ['deepseek-v4.1-flash'];
+
+// Static catalog entries tagged as offline fallback. UI lists must label
+// these as fallback and must prefer GET /api/model/options (live) first.
+export const STATIC_PROVIDER_ENTRIES: StaticProviderEntry[] = PROVIDER_OPTIONS.map(([id, label]) => ({
+  id,
+  label,
+  source: STATIC_CATALOG_SOURCE,
+}));
+
+// Offline-fallback snapshot of default models. Array copies so callers
+// cannot mutate the shared catalog. Source is always offline-fallback.
+export function staticModelsFor(provider: string): { models: string[]; source: ProviderCatalogSource } {
+  const list = DEFAULT_MODELS[provider];
+  return { models: list ? [...list] : [], source: STATIC_CATALOG_SOURCE };
+}
+
+// Merge helper enforcing gateway-live-first: live models win when the live
+// list is non-empty; the static snapshot is used only as fallback.
+export function resolveModelsLiveFirst(
+  liveModels: string[],
+  provider: string
+): { models: string[]; source: ProviderCatalogSource } {
+  if (liveModels.length > 0) return { models: [...liveModels], source: 'live' };
+  return staticModelsFor(provider);
+}

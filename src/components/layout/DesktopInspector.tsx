@@ -57,8 +57,9 @@ export const DesktopInspector: React.FC<DesktopInspectorProps> = ({ isOpen, onCl
         </div>
         <button
           onClick={onClose}
-          className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.05]"
+          className="w-7 h-7 min-w-[44px] min-h-[44px] rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.05]"
           title="Close Inspector"
+          aria-label="Close Inspector"
         >
           <X className="w-4 h-4" />
         </button>
@@ -77,7 +78,8 @@ export const DesktopInspector: React.FC<DesktopInspectorProps> = ({ isOpen, onCl
             <button
               key={t.id}
               onClick={() => setActiveTab(t.id as any)}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-[11px] font-medium transition cursor-pointer ${
+              aria-pressed={isActive}
+              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 min-h-[44px] rounded-lg text-[11px] font-medium transition cursor-pointer ${
                 isActive
                   ? 'bg-white/[0.08] text-white shadow-xs'
                   : 'text-slate-400 hover:text-white'

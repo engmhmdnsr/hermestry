@@ -2,6 +2,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- Release hardening (SEC-01): android:debuggable is NOT set here on
+         purpose. The merged manifest value comes from android/app/build.gradle
+         (debug debuggable=true, release debuggable=false). Do not add
+         android:debuggable to this file. scripts/release-check.sh rejects any
+         release APK whose merged manifest has debuggable=true. -->
     <application
         android:allowBackup="false"
         android:extractNativeLibs="true"

@@ -102,8 +102,9 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
 
         <button
           onClick={onToggleCollapse}
-          className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.06] transition"
+          className="w-7 h-7 min-w-[44px] min-h-[44px] rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.06] transition"
           title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
           {collapsed ? <SidebarOpen className="w-4 h-4 rtl-flip" /> : <SidebarClose className="w-4 h-4 rtl-flip" />}
         </button>
@@ -188,9 +189,19 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
               {pinnedList.map((s) => (
                 <div
                   key={s.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Open session ${s.title || t('newSession')}`}
                   onClick={() => {
                     selectSession(s.id);
                     onSelectTab(1);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      selectSession(s.id);
+                      onSelectTab(1);
+                    }
                   }}
                   className={`group flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-xs cursor-pointer transition ${
                     s.id === currentSessionId && currentTab === 1
@@ -204,7 +215,9 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
                       e.stopPropagation();
                       togglePin(s.id);
                     }}
-                    className="opacity-0 group-hover:opacity-100 text-amber-400 hover:scale-110 transition"
+                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 focus:opacity-100 min-w-[44px] min-h-[44px] flex items-center justify-center text-amber-400 hover:scale-110 transition"
+                    title={pinnedIds.includes(s.id) ? 'Unpin from favorites' : 'Pin to favorites'}
+                    aria-label={`${pinnedIds.includes(s.id) ? 'Unpin' : 'Pin'} ${s.title || 'Untitled session'}`}
                   >
                     <Star className="w-3 h-3 fill-amber-400" />
                   </button>
@@ -234,9 +247,19 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
               recentList.map((s) => (
                 <div
                   key={s.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Open session ${s.title || t('newSession')}`}
                   onClick={() => {
                     selectSession(s.id);
                     onSelectTab(1);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      selectSession(s.id);
+                      onSelectTab(1);
+                    }
                   }}
                   className={`group flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-xs cursor-pointer transition ${
                     s.id === currentSessionId && currentTab === 1
@@ -250,7 +273,9 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
                       e.stopPropagation();
                       togglePin(s.id);
                     }}
-                    className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-amber-400 transition"
+                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 focus:opacity-100 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-500 hover:text-amber-400 transition"
+                    title={pinnedIds.includes(s.id) ? 'Unpin from favorites' : 'Pin to favorites'}
+                    aria-label={`${pinnedIds.includes(s.id) ? 'Unpin' : 'Pin'} ${s.title || 'Untitled session'}`}
                   >
                     <Star className="w-3 h-3" />
                   </button>

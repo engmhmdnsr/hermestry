@@ -173,7 +173,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
 
           <button
             onClick={onGoChat}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-white/[0.08] hover:bg-white/[0.12] text-white text-xs font-medium border border-white/[0.1] active:scale-95 transition cursor-pointer shrink-0"
+            className="flex items-center gap-1.5 px-3.5 min-h-[44px] py-1.5 rounded-xl bg-white/[0.08] hover:bg-white/[0.12] text-white text-xs font-medium border border-white/[0.1] active:scale-95 transition cursor-pointer shrink-0"
           >
             <span>{t('chat')}</span>
             <ArrowRight className="w-3.5 h-3.5 rtl-flip" />
@@ -213,14 +213,14 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           <div className="flex items-center gap-2 pt-1">
             <button
               onClick={() => startGateway()}
-              className="flex-1 flex items-center justify-center gap-2 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
+              className="flex-1 min-h-[44px] flex items-center justify-center gap-2 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer"
             >
               <RefreshCw className="w-3.5 h-3.5" />
               <span>{t('restartDaemon')}</span>
             </button>
             <button
               onClick={onGoSettings}
-              className="px-4 py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] text-slate-300 text-xs font-medium border border-white/[0.08] transition cursor-pointer"
+              className="px-4 min-h-[44px] py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] text-slate-300 text-xs font-medium border border-white/[0.08] transition cursor-pointer"
             >
               {t('settings')}
             </button>
@@ -326,9 +326,19 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               return (
                 <div
                   key={s.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Open session ${s.title || t('newSession')}`}
                   onClick={() => {
                     selectSession(s.id);
                     onGoChat();
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      selectSession(s.id);
+                      onGoChat();
+                    }
                   }}
                   className={`p-3.5 rounded-2xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
                     isSelected
@@ -378,7 +388,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             </h2>
             <button
               onClick={onGoActivity}
-              className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors font-medium cursor-pointer"
+              className="min-h-[44px] px-2 inline-flex items-center text-xs text-indigo-400 hover:text-indigo-300 transition-colors font-medium cursor-pointer"
             >
               {t('jobs')} ({jobs.length})
             </button>
@@ -388,7 +398,16 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             {jobs.slice(0, 3).map((job) => (
               <div
                 key={job.id}
+                role="button"
+                tabIndex={0}
+                aria-label={`Open job ${job.name}`}
                 onClick={onGoActivity}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onGoActivity();
+                  }
+                }}
                 className="p-3.5 rounded-2xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] hover:border-white/[0.12] flex items-center justify-between gap-3 cursor-pointer transition"
               >
                 <div className="flex items-center gap-3 min-w-0">

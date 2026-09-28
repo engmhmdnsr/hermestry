@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, lazy, Suspense } from 'react';
 import { useHermes } from './context/HermesContext';
 import { Header } from './components/layout/Header';
 import { BottomNav } from './components/layout/BottomNav';
@@ -9,8 +9,22 @@ import { OnboardingWizard } from './components/wizard/OnboardingWizard';
 import { AppLockGate } from './components/security/AppLockGate';
 import { HomeTab } from './components/tabs/HomeTab';
 import { ChatTab } from './components/tabs/ChatTab';
-import { JobsTab } from './components/tabs/JobsTab';
-import { SettingsTab } from './components/tabs/SettingsTab';
+
+// PERF-01: code-split the heavy routes so the initial bundle stays lean.
+// Chat (default tab) and Home stay eager; Jobs (~26KB) and Settings (~67KB,
+// incl. Diagnostics/Skills/Memory/Blueprints sections) load on demand.
+const JobsTab = lazy(() =>
+  import('./components/tabs/JobsTab').then((m) => ({ default: m.JobsTab }))
+);
+const SettingsTab = lazy(() =>
+  import('./components/tabs/SettingsTab').then((m) => ({ default: m.SettingsTab }))
+);
+
+const TabFallback: React.FC = () => (
+  <div className="flex-1 flex items-center justify-center" aria-label="Loading tab">
+    <div className="w-6 h-6 rounded-full border-2 border-slate-600 border-t-indigo-400 animate-spin" />
+  </div>
+);
 
 export const App: React.FC = () => {
   const { settings, updateSettings, selectSession, newSession, vaultUnlocked } = useHermes();
@@ -111,6 +125,8 @@ export const App: React.FC = () => {
 
         {/* Tab Viewport */}
         <main
+          id="main-content"
+          tabIndex={-1}
           className={`flex-1 min-h-0 ${currentTab === 1 ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'}`}
           style={{ backgroundColor: 'var(--app-bg, #090B0E)' }}
         >
@@ -128,8 +144,16 @@ export const App: React.FC = () => {
               isDesktop={isDesktop}
             />
           )}
-          {currentTab === 2 && <JobsTab />}
-          {currentTab === 3 && <SettingsTab />}
+          {currentTab === 2 && (
+            <Suspense fallback={<TabFallback />}>
+              <JobsTab />
+            </Suspense>
+          )}
+          {currentTab === 3 && (
+            <Suspense fallback={<TabFallback />}>
+              <SettingsTab />
+            </Suspense>
+          )}
         </main>
 
         {/* Mobile Navigation fallback when on smaller screens */}

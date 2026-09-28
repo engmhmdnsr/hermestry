@@ -34,6 +34,8 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentTab, onSelectTab })
             <button
               key={tab.label}
               onClick={() => onSelectTab(idx)}
+              aria-label={tab.label}
+              aria-current={isActive ? 'page' : undefined}
               className={`flex-1 flex flex-col items-center justify-center h-full relative cursor-pointer transition-all duration-150 min-h-[44px] min-w-[44px] ${
                 isActive
                   ? 'text-white'

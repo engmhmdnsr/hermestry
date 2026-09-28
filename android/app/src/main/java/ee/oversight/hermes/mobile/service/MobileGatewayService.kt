@@ -31,6 +31,30 @@ import java.net.URL
  * listen line, restarts on crash while the service is alive.
  */
 class MobileGatewayService : Service() {
+  /**
+   * Single gateway lifecycle machine (GATEWAY-03). The web UI derives every
+   * button, spinner and label from this via HermesGatewayPlugin.status() +
+   * gatewayState.ts; nothing else tracks gateway/install booleans.
+   */
+  enum class GatewayMachineState {
+    UNINITIALIZED, CHECKING, NOT_INSTALLED, INSTALLING, INSTALLED,
+    STARTING, RUNNING, STOPPING, STOPPED, DEGRADED, FAILED
+  }
+
+  /** Startup sub-phase for GATEWAY-04 reporting. */
+  enum class StartupPhase {
+    IDLE, RENDER_CONFIG, PROOT_CHECK, LAUNCH, WAIT_LISTEN, HEALTH_PROBE, READY
+  }
+
+  /** Verified-stop probe result (GATEWAY-05). */
+  data class StopVerification(
+    val processExited: Boolean,
+    val portClosed: Boolean,
+    val healthFalse: Boolean
+  ) {
+    val verified: Boolean get() = processExited && portClosed && healthFalse
+  }
+
   private val scope = CoroutineScope(Dispatchers.IO)
   private var watchJob: Job? = null
   private var gatewayProc: Process? = null
@@ -44,8 +68,13 @@ class MobileGatewayService : Service() {
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     if (intent?.action == "STOP") {
       wantRun = false
+      setMachineState(GatewayMachineState.STOPPING)
+      setPhase(StartupPhase.IDLE)
       stopGateway()
       stopForeground(STOP_FOREGROUND_REMOVE)
+      // STOPPED comes from markStoppedVerified() after the plugin verifies
+      // process exit + port closed + health false (GATEWAY-05). onDestroy
+      // settles it if the plugin never confirms.
       stopSelf()
       return START_NOT_STICKY
     }
@@ -62,6 +91,20 @@ class MobileGatewayService : Service() {
     }
     startForegroundInternal()
     if (watchJob == null) {
+      everStarted = true
+      noteStart()
+      setMachineState(GatewayMachineState.CHECKING)
+      setPhase(StartupPhase.RENDER_CONFIG)
+      if (!Bootstrap.isInstalled(this)) {
+        setMachineState(GatewayMachineState.NOT_INSTALLED)
+        startupLastError.value = "not_installed: run install() first"
+        gatewayFailed.value = false
+        gatewayFailureReason.value = null
+        wantRun = false
+        try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) { }
+        stopSelf()
+        return START_NOT_STICKY
+      }
       wantRun = true
       // A FAILED supervisor stops auto-retry; only an explicit user Start
       // clears it and launches a fresh supervise loop.
@@ -88,6 +131,8 @@ class MobileGatewayService : Service() {
   override fun onDestroy() {
     wantRun = false
     stopGateway()
+    if (gatewayState.value == GatewayMachineState.STOPPING)
+      setMachineState(GatewayMachineState.STOPPED)
     watchJob?.cancel()
     watchJob = null
     installJob?.cancel()
@@ -141,14 +186,21 @@ class MobileGatewayService : Service() {
     while (wantRun) {
       ensureWake()
       try {
+        setMachineState(GatewayMachineState.STARTING)
+        setPhase(StartupPhase.RENDER_CONFIG)
         Bootstrap.renderConfig(this@MobileGatewayService)
+        setPhase(StartupPhase.PROOT_CHECK)
         startGateway()
+        setPhase(StartupPhase.WAIT_LISTEN)
         backoff = 5_000L
         // Wait for the listen line, then monitor the process.
+        setPhase(StartupPhase.HEALTH_PROBE)
         val up = waitForListen(90_000L)
         if (!wantRun) break
         if (!up) {
           failures++
+          if (gatewayState.value != GatewayMachineState.FAILED)
+            setMachineState(GatewayMachineState.DEGRADED)
           appendLog("gateway start timeout, see gateway.log (attempt $failures/$MAX_RESTARTS)")
           if (failures >= MAX_RESTARTS) {
             failSupervisor("gateway did not become reachable after $MAX_RESTARTS attempts, see gateway.log")
@@ -157,12 +209,15 @@ class MobileGatewayService : Service() {
         } else {
           appendLog("gateway listening on 127.0.0.1:8080")
           failures = 0
+          setPhase(StartupPhase.READY)
+          setMachineState(GatewayMachineState.RUNNING)
           while (wantRun && gatewayProc?.isAlive == true) {
             ensureWake()
             delay(5_000)
           }
           if (!wantRun) break
           failures++
+          setMachineState(GatewayMachineState.DEGRADED)
           appendLog("gateway exited, restarting... (attempt $failures/$MAX_RESTARTS)")
           if (failures >= MAX_RESTARTS) {
             failSupervisor("gateway process keeps exiting ($MAX_RESTARTS attempts), see gateway.log")
@@ -190,12 +245,17 @@ class MobileGatewayService : Service() {
     stopGateway()
     gatewayFailureReason.value = reason
     gatewayFailed.value = true
+    startupLastError.value = reason
+    setPhase(StartupPhase.IDLE)
+    setMachineState(GatewayMachineState.FAILED)
     appendLog("gateway FAILED: $reason")
     try { wakeLock?.release() } catch (_: Exception) { }
   }
 
   /** One-shot image install. Runs under FGS so screen-off cannot kill it. */
   private suspend fun runInstall() {
+    setMachineState(GatewayMachineState.INSTALLING)
+    noteStart()
     val root = Bootstrap.rootDir(this)
     val log = File(root, "install.log")
     val done = File(root, "install.done")
@@ -214,9 +274,12 @@ class MobileGatewayService : Service() {
         try { log.appendText(line + "\n") } catch (_: Exception) { }
       }
       try { done.writeText("ok") } catch (_: Exception) { }
+      setMachineState(GatewayMachineState.INSTALLED)
     } catch (e: Exception) {
       try { log.appendText("FAILED: ${e.message}\n") } catch (_: Exception) { }
       try { done.writeText("error: ${e.message}") } catch (_: Exception) { }
+      startupLastError.value = e.message
+      setMachineState(GatewayMachineState.NOT_INSTALLED)
     } finally {
       try { if (wifiLock.isHeld) wifiLock.release() } catch (_: Exception) { }
       try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (_: Exception) { }
@@ -289,6 +352,7 @@ class MobileGatewayService : Service() {
     }
     pb.redirectErrorStream(true)
     gatewayProc = pb.start()
+    processAlive = true
     // Drain output to gateway.log off the main IO thread.
     val proc = gatewayProc ?: return
     val log = File(Bootstrap.rootDir(this), "gateway.log")
@@ -352,7 +416,10 @@ class MobileGatewayService : Service() {
   private fun stopGateway() {
     val proc = gatewayProc
     gatewayProc = null
-    if (proc == null) return
+    if (proc == null) {
+      processAlive = false
+      return
+    }
     try {
       // Kill guest descendants first: proot guest processes can outlive the
       // parent and keep holding port 8080 (EADDRINUSE on next start).
@@ -363,6 +430,7 @@ class MobileGatewayService : Service() {
         proc.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
       }
     } catch (_: Exception) { } finally {
+      processAlive = false
       try { proc.inputStream.close() } catch (_: Exception) { }
       try { proc.outputStream.close() } catch (_: Exception) { }
       try { proc.errorStream.close() } catch (_: Exception) { }
@@ -388,6 +456,69 @@ class MobileGatewayService : Service() {
     val gatewayFailed = MutableStateFlow(false)
     /** Human-readable reason for gatewayFailed; null when not failed. */
     val gatewayFailureReason = MutableStateFlow<String?>(null)
+
+    /** Single lifecycle machine (GATEWAY-03): all UI derives from this. */
+    val gatewayState = MutableStateFlow(GatewayMachineState.UNINITIALIZED)
+    /** Startup sub-phase (GATEWAY-04): where a STARTING gateway is. */
+    val startupPhase = MutableStateFlow(StartupPhase.IDLE)
+    /** Uptime basis for phase/elapsed reporting; 0 = never started. */
+    val startupStartedAt = MutableStateFlow(0L)
+    /** Last error for FAILED / failed install; null when healthy. */
+    val startupLastError = MutableStateFlow<String?>(null)
+    /** True once a START intent arrived this boot (INSTALLED vs STOPPED). */
+    @Volatile var everStarted = false
+    /** Mirrors gatewayProc liveness for the verified-stop check (GATEWAY-05). */
+    @Volatile var processAlive = false
+
+    fun setMachineState(s: GatewayMachineState) { gatewayState.value = s }
+    fun setPhase(p: StartupPhase) { startupPhase.value = p }
+    fun noteStart() {
+      startupStartedAt.value = System.currentTimeMillis()
+      startupLastError.value = null
+    }
+    fun elapsedMs(): Long {
+      val t = startupStartedAt.value
+      return if (t == 0L) 0L else System.currentTimeMillis() - t
+    }
+
+    /**
+     * Verified-stop probe (GATEWAY-05): process exit + port closed + health
+     * false. Called by HermesGatewayPlugin after the STOP intent; the UI may
+     * show STOPPED only when [StopVerification.verified] is true.
+     */
+    fun verifyStopped(): StopVerification {
+      val procGone = !processAlive
+      var portClosed = false
+      try {
+        java.net.Socket().use { s ->
+          s.connect(java.net.InetSocketAddress("127.0.0.1", 8080), 1_500)
+        }
+        portClosed = false
+      } catch (_: Exception) {
+        portClosed = true
+      }
+      var healthFalse = false
+      try {
+        val c = java.net.URL("http://127.0.0.1:8080/health").openConnection()
+          as java.net.HttpURLConnection
+        c.connectTimeout = 1_500
+        c.readTimeout = 1_500
+        healthFalse = c.responseCode !in 200..299
+      } catch (_: Exception) {
+        healthFalse = true
+      }
+      return StopVerification(procGone, portClosed, healthFalse)
+    }
+
+    /** Plugin calls this only after verifyStopped() reports verified. */
+    fun markStoppedVerified() {
+      setPhase(StartupPhase.IDLE)
+      setMachineState(GatewayMachineState.STOPPED)
+    }
+
+    fun markStopUnverified() {
+      setMachineState(GatewayMachineState.DEGRADED)
+    }
 
     fun start(ctx: Context) {
       val i = Intent(ctx, MobileGatewayService::class.java).setAction("START")

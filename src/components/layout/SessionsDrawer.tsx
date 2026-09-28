@@ -152,7 +152,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex">
       {drawerToast && (
-        <div className="fixed top-16 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] px-4 py-2 rounded-xl bg-rose-600 text-white text-xs font-semibold shadow-2xl">
+        <div role="status" aria-live="polite" className="fixed top-16 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] px-4 py-2 rounded-xl bg-rose-600 text-white text-xs font-semibold shadow-2xl">
           {drawerToast}
         </div>
       )}
@@ -182,15 +182,17 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                 onSelectSession(newId);
                 onClose();
               }}
-              className="w-7 h-7 rounded-lg flex items-center justify-center text-indigo-400 hover:text-white hover:bg-white/[0.06] transition"
+              className="w-7 h-7 min-w-[44px] min-h-[44px] rounded-lg flex items-center justify-center text-indigo-400 hover:text-white hover:bg-white/[0.06] transition"
               title="New Session"
+              aria-label="New Session"
             >
               <Plus className="w-4 h-4" />
             </button>
             <button
               onClick={onClose}
-              className="w-7 h-7 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.06] transition ms-1"
+              className="w-7 h-7 min-w-[44px] min-h-[44px] rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.06] transition ms-1"
               title="Close"
+              aria-label="Close conversations"
             >
               <X className="w-4 h-4" />
             </button>
@@ -206,6 +208,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search conversations..."
+              aria-label="Search conversations"
               className="w-full ps-9 pe-3 py-1.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
             />
           </div>
@@ -221,7 +224,8 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
               <button
                 key={s.mode}
                 onClick={() => setSortMode(s.mode as any)}
-                className={`px-2 py-0.5 rounded-md transition ${
+                aria-pressed={sortMode === s.mode}
+                className={`px-3 min-h-[44px] py-0.5 rounded-md transition ${
                   sortMode === s.mode
                     ? 'bg-white/[0.08] text-white font-medium'
                     : 'text-slate-400 hover:text-white'
@@ -318,6 +322,9 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       {/* Rename Dialog */}
       {renameTarget && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Rename conversation"
           className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
           onClick={(e) => {
             if (e.target === e.currentTarget) setRenameTarget(null);
@@ -334,6 +341,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
               type="text"
               value={renameTitle}
               onChange={(e) => setRenameTitle(e.target.value)}
+              aria-label="Conversation title"
               className="w-full px-3.5 py-2 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
             />
             {renameError && (
@@ -345,7 +353,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                   setRenameTarget(null);
                   setRenameError('');
                 }}
-                className="px-3.5 py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-white"
+                className="px-4 min-h-[44px] py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-white"
               >
                 Cancel
               </button>
@@ -364,7 +372,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                   }
                 }}
                 disabled={isSavingRename}
-                className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold"
+                className="px-4 min-h-[44px] py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold"
               >
                 {isSavingRename ? 'Saving...' : 'Save'}
               </button>
@@ -376,6 +384,9 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       {/* Delete Dialog */}
       {deleteTarget && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Delete conversation"
           className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
           onClick={(e) => {
             if (e.target === e.currentTarget) setDeleteTarget(null);
@@ -400,7 +411,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                   setDeleteTarget(null);
                   setDeleteError('');
                 }}
-                className="px-3.5 py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-white"
+                className="px-4 min-h-[44px] py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-white"
               >
                 Cancel
               </button>
@@ -418,7 +429,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                   }
                 }}
                 disabled={isDeleting}
-                className="px-4 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-semibold"
+                className="px-4 min-h-[44px] py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-semibold"
               >
                 {isDeleting ? 'Deleting...' : 'Delete'}
               </button>
@@ -473,10 +484,12 @@ const SessionCard: React.FC<SessionCardProps> = ({
             e.stopPropagation();
             onTogglePin();
           }}
-          className={`p-1 rounded-md transition ${
+          className={`min-w-[44px] min-h-[44px] flex items-center justify-center p-1 rounded-md transition ${
             isPinned ? 'text-amber-400' : 'text-slate-500 hover:text-slate-300'
           }`}
           title={isPinned ? 'Unpin' : 'Pin to favorites'}
+          aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${session.title || 'Untitled session'}`}
+          aria-pressed={isPinned}
         >
           <Star className={`w-3.5 h-3.5 ${isPinned ? 'fill-amber-400' : ''}`} />
         </button>

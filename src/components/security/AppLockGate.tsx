@@ -16,6 +16,10 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
   const [attempts, setAttempts] = useState(0);
   const [lockoutLeft, setLockoutLeft] = useState(0);
   const clearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Guards double-submit while an async vault unlock is in flight. The PIN
+  // is cleared from state the moment it is consumed, so without this the
+  // gate would accept overlapping attempts.
+  const busyRef = useRef(false);
 
   const storedPinLen = (() => {
     try {
@@ -71,7 +75,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
   };
 
   const handleDigit = (d: string) => {
-    if (lockedOut) return;
+    if (lockedOut || busyRef.current) return;
     if (pin.length >= expectedLen) return;
     const next = pin + d;
     setPin(next);
@@ -82,7 +86,14 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
       hasVault = !!localStorage.getItem('hermes_vault');
     } catch {}
     if (hasVault) {
-      unlockSecrets(next).then((ok) => {
+      // Consume the PIN immediately so it lives in JS state for the
+      // shortest possible time. The local copy is the only reference
+      // used for the unlock call below.
+      const attempted = next;
+      setPin('');
+      busyRef.current = true;
+      unlockSecrets(attempted).then((ok) => {
+        busyRef.current = false;
         if (ok) {
           onUnlocked();
         } else {
@@ -90,6 +101,8 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
         }
       });
     } else if (next === settings.appLockPin) {
+      // Legacy no-vault setup: clear the PIN before leaving the gate.
+      setPin('');
       onUnlocked();
     } else {
       failAttempt();
@@ -97,7 +110,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
   };
 
   const handleDelete = () => {
-    if (lockedOut) return;
+    if (lockedOut || busyRef.current) return;
     setPin((prev) => prev.slice(0, -1));
     setError(null);
   };
@@ -136,7 +149,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
       </p>
 
       {/* PIN indicator dots */}
-      <div className="flex gap-3 mb-8 flex-wrap justify-center max-w-[240px]">
+      <div className="flex gap-3 mb-8 flex-wrap justify-center max-w-[240px]" aria-hidden="true">
         {Array.from({ length: expectedLen }).map((_, idx) => {
           const filled = idx < pin.length;
           return (
@@ -155,7 +168,7 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
       </div>
 
       {error && (
-        <p className="text-xs text-rose-400 mb-4 animate-shake text-center max-w-[260px]">
+        <p role="alert" className="text-xs text-rose-400 mb-4 animate-shake text-center max-w-[260px]">
           {error}
         </p>
       )}

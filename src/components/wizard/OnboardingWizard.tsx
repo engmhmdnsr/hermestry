@@ -83,7 +83,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
           </span>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2" aria-hidden="true">
           {[0, 1, 2, 3].map((i) => (
             <div
               key={i}
@@ -130,7 +130,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                 className="w-full py-3.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 active:scale-[0.99] text-white font-semibold text-sm transition shadow-sm cursor-pointer flex items-center justify-center gap-2"
               >
                 <span>{t('continue')}</span>
-                <ArrowRight className="w-4 h-4" />
+                <ArrowRight className="w-4 h-4 rtl-flip" />
               </button>
             </div>
           </div>
@@ -193,7 +193,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
               )}
               <button
                 onClick={() => setStep(0)}
-                className="w-full text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
+                className="w-full min-h-[44px] inline-flex items-center justify-center text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
               >
                 {t('back')}
               </button>
@@ -215,13 +215,14 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
             <div className="space-y-3">
               <div>
                 <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs font-medium text-slate-400">
+                  <label htmlFor="ob-provider" className="block text-xs font-medium text-slate-400">
                     {t('providerLabel')}
                   </label>
                   <button
                     type="button"
                     onClick={() => setCustomProvider(!customProvider)}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition cursor-pointer ${
+                    aria-pressed={customProvider}
+                    className={`px-3 min-h-[44px] py-1 rounded-lg text-[11px] font-medium transition cursor-pointer ${
                       customProvider
                         ? 'bg-indigo-600 text-white'
                         : 'bg-white/[0.04] text-slate-400 hover:text-white'
@@ -232,6 +233,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                 </div>
                 {customProvider ? (
                   <input
+                    id="ob-provider"
                     type="text"
                     value={provider}
                     onChange={(e) => setProvider(e.target.value)}
@@ -240,6 +242,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                   />
                 ) : (
                   <select
+                    id="ob-provider"
                     value={provider}
                     onChange={(e) => setProvider(e.target.value)}
                     className="w-full px-3.5 py-2.5 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
@@ -255,21 +258,24 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">
+                <label htmlFor="ob-apikey" className="block text-xs font-medium text-slate-400 mb-1">
                   {t('apiKey')} {isKeyless ? t('optionalLocal') : '*'}
                 </label>
                 <div className="relative">
                   <input
+                    id="ob-apikey"
                     type={showKey ? 'text' : 'password'}
                     value={apiKey}
                     onChange={(e) => setApiKey(e.target.value)}
                     placeholder="sk-..."
-                    className="w-full px-3.5 py-2.5 pr-10 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
+                    className="w-full px-3.5 py-2.5 pe-10 rounded-xl bg-[var(--app-card,#0E1217)] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500 font-mono"
                   />
                   <button
                     type="button"
                     onClick={() => setShowKey(!showKey)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
+                    aria-label={showKey ? 'Hide API key' : 'Show API key'}
+                    aria-pressed={showKey}
+                    className="absolute end-2 top-1/2 -translate-y-1/2 min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-500 hover:text-white"
                   >
                     {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -277,10 +283,11 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">
+                <label htmlFor="ob-baseurl" className="block text-xs font-medium text-slate-400 mb-1">
                   {t('baseUrl')}{(customProvider || !isKnown) ? ' *' : ` ${t('optionalSuffix')}`}
                 </label>
                 <input
+                  id="ob-baseurl"
                   type="text"
                   value={baseUrl}
                   onChange={(e) => setBaseUrl(e.target.value)}
@@ -290,10 +297,11 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">
+                <label htmlFor="ob-model" className="block text-xs font-medium text-slate-400 mb-1">
                   {t('modelLabel')} {t('optionalSuffix')}
                 </label>
                 <input
+                  id="ob-model"
                   type="text"
                   value={modelId}
                   onChange={(e) => setModelId(e.target.value)}
@@ -303,10 +311,11 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">
+                <label htmlFor="ob-tgtoken" className="block text-xs font-medium text-slate-400 mb-1">
                   {t('telegramBridge')} {t('optionalSuffix')}
                 </label>
                 <input
+                  id="ob-tgtoken"
                   type="password"
                   value={tgToken}
                   onChange={(e) => setTgToken(e.target.value)}
@@ -336,7 +345,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
               </button>
               <button
                 onClick={() => setStep(1)}
-                className="w-full text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
+                className="w-full min-h-[44px] inline-flex items-center justify-center text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
               >
                 {t('back')}
               </button>
@@ -363,7 +372,8 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
               <div className="flex gap-2 pt-2">
                 <button
                   onClick={() => setBootRestart(true)}
-                  className={`flex-1 py-2 rounded-xl text-xs font-medium cursor-pointer transition ${
+                  aria-pressed={bootRestart}
+                  className={`flex-1 min-h-[44px] py-2 rounded-xl text-xs font-medium cursor-pointer transition ${
                     bootRestart
                       ? 'bg-indigo-600 text-white font-semibold'
                       : 'bg-white/[0.04] text-slate-400'
@@ -373,7 +383,8 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                 </button>
                 <button
                   onClick={() => setBootRestart(false)}
-                  className={`flex-1 py-2 rounded-xl text-xs font-medium cursor-pointer transition ${
+                  aria-pressed={!bootRestart}
+                  className={`flex-1 min-h-[44px] py-2 rounded-xl text-xs font-medium cursor-pointer transition ${
                     !bootRestart
                       ? 'bg-indigo-600 text-white font-semibold'
                       : 'bg-white/[0.04] text-slate-400'
@@ -402,14 +413,14 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                   updateSettings({ onboarded: true });
                   onDone();
                 }}
-                className="w-full text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
+                className="w-full min-h-[44px] inline-flex items-center justify-center text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
               >
                 {t('skipWorkspace')}
               </button>
 
               <button
                 onClick={() => setStep(2)}
-                className="w-full text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
+                className="w-full min-h-[44px] inline-flex items-center justify-center text-center text-xs text-slate-400 hover:text-white py-2 cursor-pointer transition"
               >
                 {t('back')}
               </button>

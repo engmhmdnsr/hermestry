@@ -2,6 +2,7 @@ package ee.oversight.hermes.mobile.install
 
 import android.content.Context
 import android.os.Build
+import android.os.StatFs
 import ee.oversight.hermes.mobile.normProvider
 import ee.oversight.hermes.mobile.security.SecurePrefs
 import kotlinx.coroutines.Dispatchers
@@ -189,10 +190,156 @@ object Bootstrap {
 
   fun rootfsSha(): String? = if (arch() == "aarch64") ROOTFS_AARCH64_SHA else null
 
+  // INSTALL-01: app/gateway/protocol compatibility metadata. The plugin
+  // exposes this via preflight()/status() and the web UI gates Start on it.
+  const val APP_VERSION = "1.3.0"
+  const val GATEWAY_VERSION = "0.21.5"
+  const val PROTOCOL_VERSION = 1
+  const val IMAGE_VERSION = "v1.0.0-image"
+
+  data class CompatInfo(
+    val appVersion: String,
+    val gatewayVersion: String,
+    val protocolVersion: Int,
+    val imageVersion: String,
+    val compatible: Boolean,
+    val error: String?
+  )
+
+  fun compatInfo(): CompatInfo = CompatInfo(
+    appVersion = APP_VERSION,
+    gatewayVersion = GATEWAY_VERSION,
+    protocolVersion = PROTOCOL_VERSION,
+    imageVersion = IMAGE_VERSION,
+    compatible = true,
+    error = null
+  )
+
+  /** True when the on-disk image marker matches the image this app runs. */
+  fun isImageCompatible(app: Context): Boolean = try {
+    val marker = File(rootfsDir(app), ".image_ok")
+      .takeIf { it.exists() }?.readText()?.trim().orEmpty()
+    marker == IMAGE_VERSION
+  } catch (_: Exception) { false }
+
+  // INSTALL-04: pre-install storage calculation. Archive (~305MB) + extracted
+  // tree (~900MB) + config/logs margin: refuse early with numbers instead of
+  // dying mid-extract with ENOSPC.
+  const val IMAGE_ARCHIVE_BYTES = 305L * 1024L * 1024L
+  const val IMAGE_EXTRACTED_BYTES = 900L * 1024L * 1024L
+  fun requiredBytes(): Long = IMAGE_ARCHIVE_BYTES + IMAGE_EXTRACTED_BYTES
+
+  data class StoragePreflight(
+    val freeBytes: Long,
+    val neededBytes: Long,
+    val enough: Boolean
+  ) {
+    val freeMb: Long get() = freeBytes / (1024L * 1024L)
+    val neededMb: Long get() = neededBytes / (1024L * 1024L)
+  }
+
+  fun storagePreflight(app: Context): StoragePreflight {
+    val needed = requiredBytes()
+    val free = try {
+      StatFs(app.filesDir.absolutePath).availableBytes
+    } catch (_: Exception) { -1L }
+    return StoragePreflight(freeBytes = free, neededBytes = needed, enough = free < 0L || free >= needed)
+  }
+
+  fun requireStorage(app: Context, onStep: (String) -> Unit = {}) {
+    val pre = storagePreflight(app)
+    onStep("storage: ${pre.freeMb}MB free, ${pre.neededMb}MB required")
+    if (!pre.enough) throw RuntimeException(
+      "needs_space: ${pre.freeMb}MB free, ${pre.neededMb}MB required. Free space, then retry."
+    )
+  }
+
+  // INSTALL-03: real install progress phases. installPhaseForLine maps a raw
+  // log line to its phase so the plugin can emit installPhase events; the web
+  // UI (gatewayState.ts) mirrors the same mapping for fallback parsing.
+  enum class InstallPhase {
+    CHECK_STORAGE, DOWNLOAD, VERIFY, EXTRACT, CONFIGURE, DONE
+  }
+
+  fun installPhaseForLine(line: String): InstallPhase? {
+    val t = line.lowercase()
+    return when {
+      "storage:" in t || "needs_space" in t || "no space left" in t -> InstallPhase.CHECK_STORAGE
+      "downloading" in t -> InstallPhase.DOWNLOAD
+      "checksum" in t || "verifying" in t -> InstallPhase.VERIFY
+      "extracting" in t || "linking" in t || "clearing previous rootfs" in t -> InstallPhase.EXTRACT
+      "writing gateway config" in t || "proot" in t || "dns fixed" in t ||
+        "installing hermes-agent" in t || "debian rootfs ready" in t ||
+        "prebuilt image ready" in t || "proot ready" in t -> InstallPhase.CONFIGURE
+      line.trim() == "done" || "already installed" in t -> InstallPhase.DONE
+      else -> null
+    }
+  }
+
+  // INSTALL-02: signed image manifest preference. The manifest lists the
+  // current image asset; when it carries entries, the SIGNED entry (non-blank
+  // signature) wins. A manifest sha that disagrees with the compiled pin
+  // fails closed (no download). Null = manifest unreachable, use pins.
+  const val IMAGE_MANIFEST_URL =
+    "https://github.com/engmhmdnsr/HERMES-MOBILE/releases/download/v1.0.0-image/hermes-image.manifest.json"
+
+  data class ImageManifest(val url: String, val sha256: String, val signature: String)
+
+  fun fetchImageManifest(): ImageManifest? {
+    return try {
+      val c = (URL(IMAGE_MANIFEST_URL).openConnection() as HttpURLConnection).apply {
+        connectTimeout = 15_000; readTimeout = 30_000; instanceFollowRedirects = true
+      }
+      c.connect()
+      if (c.responseCode !in 200..299) return null
+      parseImageManifest(c.inputStream.bufferedReader().readText())
+    } catch (_: Exception) { null }
+  }
+
+  /**
+   * Picks the signed entry from a manifest blob. Pure function, no network.
+   * Shape: {"images":[{"url":...,"sha256":...,"signature":...}]}.
+   */
+  fun parseImageManifest(text: String): ImageManifest? {
+    return try {
+      val objs = Regex("\\{[^{}]*\"url\"[^{}]*\\}").findAll(text)
+      var unsigned: ImageManifest? = null
+      for (m in objs) {
+        val b = m.value
+        fun field(name: String): String =
+          Regex("\"" + name + "\"\\s*:\\s*\"([^\"]*)\"").find(b)?.groupValues?.get(1).orEmpty()
+        val e = ImageManifest(field("url"), field("sha256"), field("signature"))
+        if (e.url.isBlank() || e.sha256.isBlank()) continue
+        if (e.signature.isNotBlank()) return e
+        if (unsigned == null) unsigned = e
+      }
+      unsigned
+    } catch (_: Exception) { null }
+  }
+
+  /**
+   * Resolves the image asset to download: signed manifest entry wins, but its
+   * sha must still agree with the compiled pin (fail closed on rotation).
+   * Returns (url, sha); falls back to the pins when unreachable.
+   */
+  fun resolveImageAsset(): Pair<String, String> {
+    val m = fetchImageManifest()
+    if (m != null) {
+      if (!m.sha256.equals(IMAGE_AARCH64_SHA, ignoreCase = true)) throw ChecksumException(
+        "image manifest sha ${m.sha256} disagrees with pinned build $IMAGE_AARCH64_SHA. " +
+          "Upstream rotated the image, update the pin."
+      )
+      if (m.url.isNotBlank()) return Pair(m.url, IMAGE_AARCH64_SHA)
+    }
+    return Pair(IMAGE_AARCH64_URL, IMAGE_AARCH64_SHA)
+  }
+
   suspend fun install(app: Context, onStep: (String) -> Unit) = withContext(Dispatchers.IO) {
     val root = rootDir(app)
     root.mkdirs()
     hermesHome(app).mkdirs()
+    // INSTALL-04: refuse before any bytes move when storage is short.
+    requireStorage(app, onStep)
 
     // SkipMarker: full success leaves .installed; partial installs redo only missing parts.
     if (isInstalled(app)) {
@@ -327,6 +474,8 @@ object Bootstrap {
     val root = rootDir(app)
     root.mkdirs()
     hermesHome(app).mkdirs()
+    // INSTALL-04: refuse before the ~305MB download when storage is short.
+    requireStorage(app, onStep)
 
     // proot must come bundled (exec-safe); the .deb fallback stays legacy-only.
     val proot = prootFile(app)
@@ -346,9 +495,12 @@ object Bootstrap {
       val tmp = File(root, "hermes-image.tar.gz")
       try {
         onStep("downloading prebuilt image (~305MB, one time)...")
-        // Pinned here so downloadTo enforces it; the live .sha256 fetch below
-        // stays as a second cross-check (pinned vs live must agree).
-        downloadTo(IMAGE_AARCH64_URL, tmp, IMAGE_AARCH64_SHA,
+        // INSTALL-02: signed manifest wins; pin disagreement fails closed.
+        // downloadTo still enforces the pin; the live .sha256 cross-check
+        // below stays as the second gate (pinned vs live must agree).
+        val (imageUrl, imageSha) = resolveImageAsset()
+        if (imageUrl != IMAGE_AARCH64_URL) onStep("image: using signed manifest asset")
+        downloadTo(imageUrl, tmp, imageSha,
           { pct -> onStep("downloading image... $pct%") },
           { msg -> onStep("image: $msg") },
           fallback = null)

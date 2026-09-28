@@ -51,6 +51,16 @@ class HermesGatewayPlugin : Plugin() {
         wifiLock.acquire()
       } catch (_: Exception) { }
       try {
+        // INSTALL-04: fail fast before the ~305MB download when storage is short.
+        val pre = try { Bootstrap.storagePreflight(context) } catch (_: Exception) { null }
+        if (pre != null && !pre.enough) {
+          val msg = "needs_space: ${pre.freeMb}MB free, ${pre.neededMb}MB required"
+          notifyListeners("installDone", JSObject()
+            .put("ok", false)
+            .put("error", msg), true)
+          call.reject(msg)
+          return@launch
+        }
         // The install itself runs inside the foreground service, which the
         // OS must keep alive with the screen off. Here we only tail its log.
         try {
@@ -74,6 +84,12 @@ class HermesGatewayPlugin : Plugin() {
                 val line = lines[offset.toInt()]
                 offset++
                 notifyListeners("installLog", JSObject().put("line", line), true)
+                // INSTALL-03: real progress phases alongside the percent lines.
+                try {
+                  Bootstrap.installPhaseForLine(line)?.let { ph ->
+                    notifyListeners("installPhase", JSObject().put("phase", ph.name), true)
+                  }
+                } catch (_: Exception) { }
                 pctRe.find(line)?.let { m ->
                   val pct = m.groupValues[1].toIntOrNull()?.coerceIn(0, 100) ?: return@let
                   notifyListeners("installProgress", JSObject()
@@ -125,13 +141,39 @@ class HermesGatewayPlugin : Plugin() {
     }
   }
 
+  /**
+   * Verified stop (GATEWAY-05): the STOP intent only asks the service to halt;
+   * this polls process exit + port closed + health false and resolves
+   * verified=true only when all three hold. The web UI may show STOPPED only
+   * on verified=true (see gatewayState.ts).
+   */
   @PluginMethod
   fun stop(call: PluginCall) {
     try {
       MobileGatewayService.stop(context)
-      call.resolve(JSObject().put("ok", true))
     } catch (e: Exception) {
       call.reject(e.message ?: "stop failed")
+      return
+    }
+    scope.launch {
+      var v = MobileGatewayService.verifyStopped()
+      // The kill + socket close race needs a moment; poll up to ~10s.
+      var waited = 0
+      while (!v.verified && waited < 10_000) {
+        kotlinx.coroutines.delay(500)
+        waited += 500
+        v = MobileGatewayService.verifyStopped()
+      }
+      if (v.verified) MobileGatewayService.markStoppedVerified()
+      else MobileGatewayService.markStopUnverified()
+      try {
+        call.resolve(JSObject()
+          .put("ok", true)
+          .put("verified", v.verified)
+          .put("processExited", v.processExited)
+          .put("portClosed", v.portClosed)
+          .put("healthFalse", v.healthFalse))
+      } catch (_: Exception) { }
     }
   }
 
@@ -143,21 +185,87 @@ class HermesGatewayPlugin : Plugin() {
       .put("state", if (up) "running" else "down"))
   }
 
+  /**
+   * Single-machine status (GATEWAY-03/04): state is one of UNINITIALIZED,
+   * CHECKING, NOT_INSTALLED, INSTALLING, INSTALLED, STARTING, RUNNING,
+   * STOPPING, STOPPED, DEGRADED, FAILED. Legacy web strings
+   * (running/installed_stopped/not_installed/failed...) are mapped in
+   * gatewayState.ts; prefer the machine value. running stays for back-compat.
+   */
   @PluginMethod
   fun status(call: PluginCall) {
     val installed = try { Bootstrap.isInstalled(context) } catch (_: Exception) { false }
     val failed = MobileGatewayService.gatewayFailed.value
     val reason = MobileGatewayService.gatewayFailureReason.value
+      ?: MobileGatewayService.startupLastError.value
     val up = healthOk()
+    val machine = MobileGatewayService.gatewayState.value
     val state = when {
-      failed -> "failed" + (if (!reason.isNullOrBlank()) ": $reason" else "")
-      up -> "running"
-      installed -> "installed_stopped"
-      else -> "not_installed"
+      failed || machine == MobileGatewayService.GatewayMachineState.FAILED -> "FAILED"
+      up -> "RUNNING"
+      machine == MobileGatewayService.GatewayMachineState.INSTALLING -> "INSTALLING"
+      machine == MobileGatewayService.GatewayMachineState.STARTING -> "STARTING"
+      machine == MobileGatewayService.GatewayMachineState.CHECKING -> "CHECKING"
+      machine == MobileGatewayService.GatewayMachineState.STOPPING -> "STOPPING"
+      machine == MobileGatewayService.GatewayMachineState.STOPPED -> "STOPPED"
+      machine == MobileGatewayService.GatewayMachineState.DEGRADED -> "DEGRADED"
+      !installed -> "NOT_INSTALLED"
+      MobileGatewayService.everStarted -> "STOPPED"
+      else -> "INSTALLED"
     }
+    val compat = try { Bootstrap.compatInfo() } catch (_: Exception) { null }
     call.resolve(JSObject()
       .put("running", up)
-      .put("state", state))
+      .put("state", state)
+      .put("phase", MobileGatewayService.startupPhase.value.name)
+      .put("elapsedMs", MobileGatewayService.elapsedMs())
+      .put("lastError", reason ?: "")
+      .put("logPath", java.io.File(Bootstrap.rootDir(context), "gateway.log").absolutePath)
+      .put("retryable", state == "FAILED" || state == "DEGRADED" || state == "STOPPED")
+      .put("installed", installed)
+      .put("appVersion", compat?.appVersion ?: "")
+      .put("gatewayVersion", compat?.gatewayVersion ?: "")
+      .put("protocolVersion", compat?.protocolVersion ?: 0)
+      .put("imageVersion", compat?.imageVersion ?: ""))
+  }
+
+  /** Startup phase detail (GATEWAY-04) without a full status round-trip. */
+  @PluginMethod
+  fun startupInfo(call: PluginCall) {
+    val reason = MobileGatewayService.gatewayFailureReason.value
+      ?: MobileGatewayService.startupLastError.value
+    call.resolve(JSObject()
+      .put("phase", MobileGatewayService.startupPhase.value.name)
+      .put("elapsedMs", MobileGatewayService.elapsedMs())
+      .put("lastError", reason ?: "")
+      .put("logPath", java.io.File(Bootstrap.rootDir(context), "gateway.log").absolutePath)
+      .put("retryable", MobileGatewayService.gatewayState.value ==
+        MobileGatewayService.GatewayMachineState.FAILED))
+  }
+
+  /**
+   * Install preflight (INSTALL-01/04): storage headroom + app/gateway/
+   * protocol compatibility metadata. The web UI calls this before install()
+   * and refuses with the numbers when enough=false.
+   */
+  @PluginMethod
+  fun preflight(call: PluginCall) {
+    try {
+      val pre = Bootstrap.storagePreflight(context)
+      val compat = Bootstrap.compatInfo()
+      call.resolve(JSObject()
+        .put("freeBytes", pre.freeBytes)
+        .put("neededBytes", pre.neededBytes)
+        .put("enough", pre.enough)
+        .put("appVersion", compat.appVersion)
+        .put("gatewayVersion", compat.gatewayVersion)
+        .put("protocolVersion", compat.protocolVersion)
+        .put("imageVersion", compat.imageVersion)
+        .put("compatible", compat.compatible)
+        .put("compatError", compat.error ?: ""))
+    } catch (e: Exception) {
+      call.reject(e.message ?: "preflight failed")
+    }
   }
 
   @PluginMethod

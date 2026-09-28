@@ -60,7 +60,7 @@ export const Header: React.FC<HeaderProps> = ({
         {!isDesktop ? (
           <button
             onClick={onOpenDrawer}
-            className="w-8 h-8 rounded-xl flex items-center justify-center text-slate-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] active:scale-95 transition-all border border-white/[0.06] shrink-0"
+            className="w-8 h-8 min-w-[44px] min-h-[44px] rounded-xl flex items-center justify-center text-slate-300 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] active:scale-95 transition-all border border-white/[0.06] shrink-0"
             title="Open Conversations"
             aria-label="Open Conversations"
           >
@@ -69,7 +69,7 @@ export const Header: React.FC<HeaderProps> = ({
         ) : (
           <button
             onClick={onToggleSidebar}
-            className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.05] transition"
+            className="w-8 h-8 min-w-[44px] min-h-[44px] rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/[0.05] transition"
             title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           >
@@ -143,12 +143,14 @@ export const Header: React.FC<HeaderProps> = ({
         {isDesktop && onToggleInspector && (
           <button
             onClick={onToggleInspector}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition cursor-pointer border ${
+            className={`flex items-center gap-1.5 px-2.5 py-1 min-h-[44px] rounded-lg text-xs font-medium transition cursor-pointer border ${
               inspectorOpen
                 ? 'bg-indigo-600/20 text-indigo-300 border-indigo-500/40'
                 : 'text-slate-400 hover:text-white bg-white/[0.04] hover:bg-white/[0.08] border-white/[0.06]'
             }`}
             title="Toggle Right Inspector & Tools Panel"
+            aria-label="Toggle Right Inspector & Tools Panel"
+            aria-expanded={inspectorOpen}
           >
             {inspectorOpen ? <PanelRightClose className="w-3.5 h-3.5" /> : <PanelRightOpen className="w-3.5 h-3.5" />}
             <span className="text-[11px] hidden md:inline">{t('inspector') || 'Inspector'}</span>

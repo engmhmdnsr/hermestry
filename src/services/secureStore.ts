@@ -192,3 +192,140 @@ export async function vaultDecryptSecrets(
   }
   return parsed as Record<string, string>;
 }
+
+// ---------------------------------------------------------------------------
+// Secret separation (SEC-02): the vault payload holds ONLY secrets as a
+// flat Record<string,string> and NEVER the provider list or any metadata.
+// Provider keys live under "provider.<profileId>.apiKey"; global secrets
+// (serverKey, tgToken, discordToken, appLockPin) under "global.<name>".
+// Plaintext settings (localStorage hermes_settings) carry secretRef values
+// only. Use sanitizeForPersist() before writing settings to localStorage.
+// ---------------------------------------------------------------------------
+
+/** Storage keys owned by the vault layer. No provider list here by design. */
+export const VAULT_CIPHER_KEY = "hermes_vault";
+export const SETTINGS_PLAINTEXT_KEY = "hermes_settings";
+
+/** Vault-map keys for global (non-provider) secrets. */
+export const VAULT_GLOBAL_KEYS = {
+  serverKey: "global.serverKey",
+  tgToken: "global.tgToken",
+  discordToken: "global.discordToken",
+  appLockPin: "global.appLockPin",
+} as const;
+
+const PROVIDER_KEY_RE = /^provider\.[A-Za-z0-9_-]{1,64}\.apiKey$/;
+
+/** True for any key allowed inside the vault payload. */
+export function isVaultPayloadKey(key: string): boolean {
+  if (PROVIDER_KEY_RE.test(key)) return true;
+  return (Object.values(VAULT_GLOBAL_KEYS) as string[]).includes(key);
+}
+
+/**
+ * Drop anything that is not a string secret under an allowed key.
+ * Guards the encrypt path so metadata (e.g. a provider list) can never
+ * be sealed into the vault envelope.
+ */
+export function sanitizeVaultPayload(input: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(input)) {
+    if (typeof v !== "string") continue;
+    if (k.startsWith("provider.") && PROVIDER_KEY_RE.test(k)) out[k] = v;
+    else if ((Object.values(VAULT_GLOBAL_KEYS) as string[]).includes(k)) out[k] = v;
+  }
+  return out;
+}
+
+const SETTINGS_SECRET_FIELDS = ["apiKey", "serverKey", "tgToken", "discordToken", "appLockPin"];
+
+/**
+ * Return a persistable copy of a settings-like object: secret fields
+ * blanked, provider entries reduced to secretRef (no apiKey), provider
+ * list itself preserved (it is metadata and lives in plaintext).
+ */
+export function sanitizeForPersist<T extends Record<string, unknown>>(settings: T): T {
+  const pub: Record<string, unknown> = { ...settings };
+  for (const field of SETTINGS_SECRET_FIELDS) {
+    if (field in pub) pub[field] = "";
+  }
+  if (Array.isArray(pub.providers)) {
+    pub.providers = (pub.providers as Array<Record<string, unknown>>).map((p) => {
+      const clean: Record<string, unknown> = { ...p };
+      delete clean.apiKey;
+      return clean;
+    });
+  }
+  return pub as T;
+}
+
+export interface LegacySettingsMigration {
+  settings: Record<string, unknown>;
+  secrets: Record<string, string>;
+}
+
+/**
+ * One-time migration for legacy hermes_settings payloads: pulls flat
+ * secrets (apiKey/serverKey/tgToken/discordToken/appLockPin) and per
+ * provider apiKey entries into a vault secrets map, rewrites providers
+ * to secretRef entries, and returns sanitized settings. Never writes
+ * to storage itself; the caller seals `secrets` with vaultEncryptSecrets
+ * and persists `settings` with sanitizeForPersist applied.
+ */
+export function migrateLegacySettings(settings: Record<string, unknown>): LegacySettingsMigration {
+  const secrets: Record<string, string> = {};
+  const next: Record<string, unknown> = { ...settings };
+
+  const takeGlobal = (field: string, vaultKey: string) => {
+    const v = next[field];
+    if (typeof v === "string" && v.trim()) secrets[vaultKey] = v;
+    next[field] = "";
+  };
+  takeGlobal("serverKey", VAULT_GLOBAL_KEYS.serverKey);
+  takeGlobal("tgToken", VAULT_GLOBAL_KEYS.tgToken);
+  takeGlobal("discordToken", VAULT_GLOBAL_KEYS.discordToken);
+  takeGlobal("appLockPin", VAULT_GLOBAL_KEYS.appLockPin);
+  // Legacy flat provider/key pair folds into a provider entry below.
+  const flatProvider = typeof next.provider === "string" ? (next.provider as string) : "";
+  const flatKey = typeof next.apiKey === "string" ? (next.apiKey as string) : "";
+  const flatModel = typeof next.modelId === "string" ? (next.modelId as string) : "";
+  const flatBase = typeof next.baseUrl === "string" ? (next.baseUrl as string) : "";
+  next.apiKey = "";
+
+  if (Array.isArray(next.providers)) {
+    next.providers = (next.providers as Array<Record<string, unknown>>).map((p, index) => {
+      const clean: Record<string, unknown> = { ...p };
+      const id =
+        (typeof clean.id === "string" && clean.id.trim()) ||
+        `prov_${String(clean.provider || "custom")}_legacy_${index}`;
+      clean.id = id;
+      const ref = `provider.${id}.apiKey`;
+      clean.secretRef = ref;
+      const key = clean.apiKey;
+      if (typeof key === "string" && key.trim()) secrets[ref] = key;
+      delete clean.apiKey;
+      return clean;
+    });
+  }
+  if (flatProvider || flatKey) {
+    const list = Array.isArray(next.providers) ? [...(next.providers as Array<Record<string, unknown>>)] : [];
+    const slug = flatProvider.trim() || "custom";
+    const id = `prov_${slug}`;
+    const ref = `provider.${id}.apiKey`;
+    if (!list.some((p) => p.id === id)) {
+      list.push({
+        id,
+        provider: slug,
+        name: slug.toUpperCase(),
+        secretRef: ref,
+        baseUrl: flatBase,
+        defaultModel: flatModel,
+        enabled: true,
+        validated: true,
+      });
+    }
+    if (flatKey.trim()) secrets[ref] = flatKey;
+    next.providers = list;
+  }
+  return { settings: sanitizeForPersist(next), secrets: sanitizeVaultPayload(secrets) };
+}

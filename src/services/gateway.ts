@@ -15,6 +15,24 @@ import {
   SkillInfo,
   UsageAnalytics,
 } from '../types/hermes';
+import type { ListSyncResult, PagedResult } from './syncState';
+import {
+  DEFAULT_MESSAGES_PAGE_SIZE,
+  DEFAULT_SESSIONS_PAGE_SIZE,
+  MAX_MESSAGES_PAGE_SIZE,
+  MAX_SESSIONS_PAGE_SIZE,
+  MESSAGE_RETENTION_CAP,
+  buildPageQuery,
+  capMessages,
+  clampPage,
+  liveMeta,
+  pickArray,
+  readSyncedAt,
+  staleMeta,
+  toPagedResult,
+  writeSyncedAt,
+  type PageParams,
+} from './pagination';
 
 export interface StreamChatCallbacks {
   onRunId?: (runId: string) => void;
@@ -45,49 +63,8 @@ const REQUEST_TIMEOUT_MS = 15000;
 const HEALTH_TIMEOUT_MS = 5000;
 const JOB_ACTIONS = new Set(['pause', 'resume', 'run', 'delete']);
 
-export const REDACTED = '***REDACTED***';
-
-const SENSITIVE_KEY_PARTS = [
-  'apikey',
-  'api_key',
-  'serverkey',
-  'server_key',
-  'tgtoken',
-  'tg_token',
-  'discordtoken',
-  'discord_token',
-  'applockpin',
-  'app_lock_pin',
-  'token',
-  'secret',
-  'password',
-  'passwd',
-  'authorization',
-  'pin',
-];
-
-const isSensitiveKey = (key: string): boolean => {
-  const norm = key.toLowerCase().replace(/[^a-z0-9]/g, '');
-  if (norm === 'pin' || norm.endsWith('pin')) return true;
-  return SENSITIVE_KEY_PARTS.some((part) => part !== 'pin' && norm.includes(part));
-};
-
-// Deep-clone a value with plaintext secrets replaced by ***REDACTED***.
-// Used before archiving or uploading diagnostics so snapshots and debug
-// bundles never carry live credentials.
-export const redactSecrets = <T>(value: T): T => {
-  if (Array.isArray(value)) {
-    return value.map((item) => redactSecrets(item)) as unknown as T;
-  }
-  if (value && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = isSensitiveKey(k) && typeof v === 'string' && v ? REDACTED : redactSecrets(v);
-    }
-    return out as unknown as T;
-  }
-  return value;
-};
+import { redactSecrets } from './redaction';
+export { REDACTED } from './redaction';
 
 export class GatewayService {
   private baseUrl: string;
@@ -234,27 +211,96 @@ export class GatewayService {
     }
   }
 
-  async fetchSessions(callerSignal?: AbortSignal): Promise<MobileSession[]> {
+  // Sync-state storage keys for lastSyncedAt (DATA-03).
+  private static readonly SYNC_KEYS = {
+    sessions: 'hermes_sessions_synced_at',
+    jobs: 'hermes_jobs_synced_at',
+    skills: 'hermes_skills_synced_at',
+    blueprints: 'hermes_blueprints_synced_at',
+    runs: 'hermes_runs_synced_at',
+    logs: 'hermes_logs_synced_at',
+    messages: (id: string) => `hermes_messages_${id}_synced_at`,
+  };
+
+  private normalizeSession(s: any): MobileSession {
+    return {
+      id: String(s.id),
+      title: s.title || 'untitled',
+      model: s.model || '',
+      messageCount: s.message_count || 0,
+      lastActiveAt: s.last_active ? s.last_active * 1000 : Date.now(),
+      costUsd: s.actual_cost_usd || s.estimated_cost_usd || 0.0,
+      source: s.source || '',
+    };
+  }
+
+  private normalizeMessage(m: any, sessionId: string, idx: number): ChatMessage {
+    return {
+      id: m.id || `${sessionId}-msg-${idx}`,
+      sender: m.role === 'assistant' ? 'hermes' : 'you',
+      content: m.content || '',
+      thinking: m.thinking || '',
+      thinkingDone: true,
+      tools: m.tools || [],
+      timestamp: m.created_at ? m.created_at * 1000 : Date.now(),
+    };
+  }
+
+  private normalizeJob(j: any): CronJob {
+    return {
+      id: String(j.id),
+      name: j.name || 'job',
+      scheduleDisplay: j.schedule_display || j.schedule?.display || '',
+      prompt: j.prompt || '',
+      enabled: j.enabled !== false && j.state !== 'paused',
+      state: j.state || 'active',
+      nextRunAt: j.next_run_at || '',
+      lastStatus: j.last_status || '',
+      lastError: j.last_error || j.last_run?.error || '',
+    };
+  }
+
+  /**
+   * Paginated sessions (DATA-01/03). Default page 50, max 100.
+   * Failure returns cached slice with stale=true + lastSyncedAt + error,
+   * never a bare list masquerading as live.
+   */
+  async fetchSessionsPage(
+    params?: PageParams,
+    callerSignal?: AbortSignal
+  ): Promise<PagedResult<MobileSession>> {
+    const page = clampPage(params, DEFAULT_SESSIONS_PAGE_SIZE, MAX_SESSIONS_PAGE_SIZE);
     try {
-      const res = await fetch(`${this.baseUrl}/api/sessions?limit=100&offset=0`, {
+      const res = await fetch(`${this.baseUrl}/api/sessions${buildPageQuery(page)}`, {
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
-      if (!res.ok) return this.loadLocalSessions();
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      const arr = data.data || data.sessions || [];
-      return arr.map((s: any) => ({
-        id: String(s.id),
-        title: s.title || 'untitled',
-        model: s.model || '',
-        messageCount: s.message_count || 0,
-        lastActiveAt: s.last_active ? s.last_active * 1000 : Date.now(),
-        costUsd: s.actual_cost_usd || s.estimated_cost_usd || 0.0,
-        source: s.source || '',
-      }));
-    } catch {
-      return this.loadLocalSessions();
+      const { arr, total } = pickArray(data, ['data', 'sessions']);
+      const items = arr.map((s: any) => this.normalizeSession(s));
+      const now = Date.now();
+      if (page.offset === 0 && !page.cursor) {
+        this.saveLocalSessions(items);
+        writeSyncedAt(GatewayService.SYNC_KEYS.sessions, now);
+      }
+      return toPagedResult(items, liveMeta(now), page, total);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'gateway unreachable';
+      const cached = this.loadLocalSessions();
+      const slice = page.cursor ? cached.slice(0, page.limit) : cached.slice(page.offset, page.offset + page.limit);
+      return toPagedResult(
+        slice,
+        staleMeta(readSyncedAt(GatewayService.SYNC_KEYS.sessions), `Sessions unavailable: ${msg}`, cached.length > 0),
+        page
+      );
     }
+  }
+
+  /** Compat wrapper: first 100 sessions as a bare list (existing callers). */
+  async fetchSessions(callerSignal?: AbortSignal): Promise<MobileSession[]> {
+    const page = await this.fetchSessionsPage({ limit: 100, offset: 0 }, callerSignal);
+    return page.items;
   }
 
   async createSession(model: string, title?: string, callerSignal?: AbortSignal): Promise<string> {
@@ -320,32 +366,59 @@ export class GatewayService {
     }
   }
 
-  async sessionMessages(sessionId: string, callerSignal?: AbortSignal): Promise<ChatMessage[]> {
+  /**
+   * Paginated messages (DATA-02/03). Latest-50 first (offset 0), older-50
+   * via offset 50/100... Local cache retains newest MESSAGE_RETENTION_CAP.
+   */
+  async sessionMessagesPage(
+    sessionId: string,
+    params?: PageParams,
+    callerSignal?: AbortSignal
+  ): Promise<PagedResult<ChatMessage>> {
+    const page = clampPage(params, DEFAULT_MESSAGES_PAGE_SIZE, MAX_MESSAGES_PAGE_SIZE);
+    const syncKey = GatewayService.SYNC_KEYS.messages(sessionId);
     try {
       const res = await fetch(
-        `${this.baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages?limit=200`,
+        `${this.baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages${buildPageQuery(page)}`,
         {
           signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
           headers: this.getHeaders(),
         }
       );
-      if (!res.ok) return this.loadLocalMessages(sessionId);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      const arr = data.data || [];
-      return arr
+      const { arr, total } = pickArray(data, ['data', 'messages']);
+      const items = arr
         .filter((m: any) => m.role !== 'system')
-        .map((m: any, idx: number) => ({
-          id: m.id || `${sessionId}-msg-${idx}`,
-          sender: m.role === 'assistant' ? 'hermes' : 'you',
-          content: m.content || '',
-          thinking: m.thinking || '',
-          thinkingDone: true,
-          tools: m.tools || [],
-          timestamp: m.created_at ? m.created_at * 1000 : Date.now(),
-        }));
-    } catch {
-      return this.loadLocalMessages(sessionId);
+        .map((m: any, idx: number) => this.normalizeMessage(m, sessionId, page.offset + idx));
+      const now = Date.now();
+      if (page.offset === 0 && !page.cursor) {
+        this.saveLocalMessages(sessionId, items);
+        writeSyncedAt(syncKey, now);
+      }
+      return toPagedResult(items, liveMeta(now), page, total);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'gateway unreachable';
+      const cached = this.loadLocalMessages(sessionId);
+      const slice = page.cursor
+        ? cached.slice(0, page.limit)
+        : cached.slice(page.offset, page.offset + page.limit);
+      return toPagedResult(
+        slice,
+        staleMeta(readSyncedAt(syncKey), `Messages unavailable: ${msg}`, cached.length > 0),
+        page
+      );
     }
+  }
+
+  /** Compat wrapper: latest messages as a bare list (existing callers). */
+  async sessionMessages(sessionId: string, callerSignal?: AbortSignal): Promise<ChatMessage[]> {
+    const page = await this.sessionMessagesPage(
+      sessionId,
+      { limit: MESSAGE_RETENTION_CAP, offset: 0 },
+      callerSignal
+    );
+    return page.items;
   }
 
   async stopRun(runId: string, callerSignal?: AbortSignal): Promise<boolean> {
@@ -360,6 +433,46 @@ export class GatewayService {
     } catch {
       return false;
     }
+  }
+
+  async listPendingApprovals(callerSignal?: AbortSignal): Promise<PendingApproval[]> {
+    const paths = ['/v1/runs/pending', '/api/runs/pending', '/v1/approvals/pending'];
+    for (const p of paths) {
+      try {
+        const res = await fetch(`${this.baseUrl}${p}`, {
+          signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+          headers: this.getHeaders(),
+        });
+        if (!res.ok) continue;
+        const data = await res.json();
+        const arr = data.approvals || data.pending || data.runs || data.data || [];
+        if (Array.isArray(arr)) return arr.map((a: any) => this.normalizeApproval(a));
+      } catch {
+        // Try the next candidate path.
+      }
+    }
+    return [];
+  }
+
+  normalizeApproval(raw: any, fallbackSessionId: string = ''): PendingApproval {
+    const args = Array.isArray(raw.args)
+      ? raw.args.map((a: unknown) => String(a))
+      : typeof raw.args === 'string' && raw.args
+        ? [raw.args]
+        : undefined;
+    return {
+      runId: String(raw.run_id || raw.runId || raw.id || ''),
+      sessionId: String(raw.session_id || raw.sessionId || fallbackSessionId || ''),
+      summary: String(raw.description || raw.summary || raw.command || 'Approval requested for action'),
+      tool: raw.tool_name || raw.tool ? String(raw.tool_name || raw.tool) : undefined,
+      command: raw.command ? String(raw.command) : undefined,
+      path: raw.path ? String(raw.path) : undefined,
+      args,
+      risk: raw.risk ? String(raw.risk) : undefined,
+      cwd: raw.cwd ? String(raw.cwd) : undefined,
+      reason: raw.reason ? String(raw.reason) : undefined,
+      createdAt: typeof raw.created_at === 'number' ? raw.created_at : Date.now(),
+    };
   }
 
   async resolveApproval(
@@ -489,6 +602,16 @@ export class GatewayService {
                       runId: String(ev.run_id),
                       sessionId,
                       summary: ev.description || ev.command || 'Approval requested for action',
+                      tool: ev.tool_name || ev.tool ? String(ev.tool_name || ev.tool) : undefined,
+                      command: ev.command ? String(ev.command) : undefined,
+                      path: ev.path ? String(ev.path) : undefined,
+                      args: Array.isArray(ev.args)
+                        ? ev.args.map((a: unknown) => String(a))
+                        : undefined,
+                      risk: ev.risk ? String(ev.risk) : undefined,
+                      cwd: ev.cwd ? String(ev.cwd) : undefined,
+                      reason: ev.reason ? String(ev.reason) : undefined,
+                      createdAt: Date.now(),
                     });
                   }
                 } else if (ev.usage) {
@@ -537,30 +660,35 @@ export class GatewayService {
     }
   }
 
-  // Jobs CRUD
-  async jobs(callerSignal?: AbortSignal): Promise<CronJob[]> {
+  // Jobs CRUD (DATA-04: envelope distinguishes empty vs stale vs error)
+  async jobsWithState(callerSignal?: AbortSignal): Promise<ListSyncResult<CronJob>> {
     try {
       const res = await fetch(`${this.baseUrl}/api/jobs`, {
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
-      if (!res.ok) return [];
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      const arr = data.jobs || [];
-      return arr.map((j: any) => ({
-        id: String(j.id),
-        name: j.name || 'job',
-        scheduleDisplay: j.schedule_display || j.schedule?.display || '',
-        prompt: j.prompt || '',
-        enabled: j.enabled !== false && j.state !== 'paused',
-        state: j.state || 'active',
-        nextRunAt: j.next_run_at || '',
-        lastStatus: j.last_status || '',
-        lastError: j.last_error || j.last_run?.error || '',
-      }));
-    } catch {
-      return [];
+      const { arr } = pickArray(data, ['jobs', 'data']);
+      const items = arr.map((j: any) => this.normalizeJob(j));
+      const now = Date.now();
+      this.saveLocalJobs(items);
+      writeSyncedAt(GatewayService.SYNC_KEYS.jobs, now);
+      return { items, ...liveMeta(now) };
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'gateway unreachable';
+      const cached = this.loadLocalJobs();
+      return {
+        items: cached,
+        ...staleMeta(readSyncedAt(GatewayService.SYNC_KEYS.jobs), `Jobs unavailable: ${msg}`, cached.length > 0),
+      };
     }
+  }
+
+  /** Compat wrapper: bare job list (existing callers). Prefer jobsWithState. */
+  async jobs(callerSignal?: AbortSignal): Promise<CronJob[]> {
+    const r = await this.jobsWithState(callerSignal);
+    return r.items;
   }
 
   async createJob(
@@ -623,43 +751,77 @@ export class GatewayService {
     }
   }
 
-  async cronRuns(jobId: string, callerSignal?: AbortSignal): Promise<LiveList<CronRun>> {
+  // Run history with sync envelope (DATA-05: empty vs stale vs error).
+  async cronRunsPage(
+    jobId: string,
+    params?: PageParams,
+    callerSignal?: AbortSignal
+  ): Promise<PagedResult<CronRun>> {
+    const page = clampPage(params, DEFAULT_SESSIONS_PAGE_SIZE, MAX_SESSIONS_PAGE_SIZE);
     try {
-      const res = await fetch(`${this.baseUrl}/api/jobs/${encodeURIComponent(jobId)}/runs`, {
-        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
-        headers: this.getHeaders(),
-      });
-      if (!res.ok) return this.flagList([], false);
+      const res = await fetch(
+        `${this.baseUrl}/api/jobs/${encodeURIComponent(jobId)}/runs${buildPageQuery(page)}`,
+        {
+          signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+          headers: this.getHeaders(),
+        }
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      const arr = data.runs || data.data || [];
+      const { arr, total } = pickArray(data, ['runs', 'data']);
       const runs: CronRun[] = arr.map((r: any, idx: number) => ({
-        id: String(r.id || `${jobId}-run-${idx}`),
+        id: String(r.id || `${jobId}-run-${page.offset + idx}`),
         jobId,
         status: r.status || r.state || 'success',
         startedAt: r.started_at || '',
         finishedAt: r.finished_at || '',
         error: r.error || '',
       }));
-      return this.flagList(runs, true);
-    } catch {
-      return this.flagList([], false);
+      const now = Date.now();
+      writeSyncedAt(GatewayService.SYNC_KEYS.runs, now);
+      return toPagedResult(runs, liveMeta(now), page, total);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'gateway unreachable';
+      return toPagedResult<CronRun>(
+        [],
+        staleMeta(readSyncedAt(GatewayService.SYNC_KEYS.runs), `Run history unavailable: ${msg}`, false),
+        page
+      );
     }
   }
 
-  // Skills
-  async skillsList(callerSignal?: AbortSignal): Promise<LiveList<SkillInfo>> {
+  /** Compat wrapper: bare run list with legacy live/stale flags. */
+  async cronRuns(jobId: string, callerSignal?: AbortSignal): Promise<LiveList<CronRun>> {
+    const r = await this.cronRunsPage(jobId, undefined, callerSignal);
+    return this.flagList(r.items, r.live);
+  }
+
+  // Skills with sync envelope (DATA-05).
+  async skillsWithState(callerSignal?: AbortSignal): Promise<ListSyncResult<SkillInfo>> {
     try {
       const res = await fetch(`${this.baseUrl}/api/skills`, {
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
-      if (!res.ok) return this.flagList([], false);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      const skills: SkillInfo[] = data.skills || [];
-      return this.flagList(skills, true);
-    } catch {
-      return this.flagList([], false);
+      const { arr } = pickArray(data, ['skills', 'data']);
+      const now = Date.now();
+      writeSyncedAt(GatewayService.SYNC_KEYS.skills, now);
+      return { items: arr as SkillInfo[], ...liveMeta(now) };
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'gateway unreachable';
+      return {
+        items: [],
+        ...staleMeta(readSyncedAt(GatewayService.SYNC_KEYS.skills), `Skills unavailable: ${msg}`, false),
+      };
     }
+  }
+
+  /** Compat wrapper: skills with legacy live/stale flags. Prefer skillsWithState. */
+  async skillsList(callerSignal?: AbortSignal): Promise<LiveList<SkillInfo>> {
+    const r = await this.skillsWithState(callerSignal);
+    return this.flagList(r.items, r.live);
   }
 
   async skillToggle(id: string, enabled: boolean, callerSignal?: AbortSignal): Promise<boolean> {
@@ -717,19 +879,32 @@ export class GatewayService {
     }
   }
 
-  // Blueprints
-  async blueprints(callerSignal?: AbortSignal): Promise<Blueprint[]> {
+  // Blueprints with sync envelope (DATA-05).
+  async blueprintsWithState(callerSignal?: AbortSignal): Promise<ListSyncResult<Blueprint>> {
     try {
       const res = await fetch(`${this.baseUrl}/api/blueprints`, {
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
-      if (!res.ok) return [];
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      return data.blueprints || [];
-    } catch {
-      return [];
+      const { arr } = pickArray(data, ['blueprints', 'data']);
+      const now = Date.now();
+      writeSyncedAt(GatewayService.SYNC_KEYS.blueprints, now);
+      return { items: arr as Blueprint[], ...liveMeta(now) };
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'gateway unreachable';
+      return {
+        items: [],
+        ...staleMeta(readSyncedAt(GatewayService.SYNC_KEYS.blueprints), `Blueprints unavailable: ${msg}`, false),
+      };
     }
+  }
+
+  // Blueprints (compat)
+  async blueprints(callerSignal?: AbortSignal): Promise<Blueprint[]> {
+    const r = await this.blueprintsWithState(callerSignal);
+    return r.items;
   }
 
   async instantiateBlueprint(
@@ -821,6 +996,38 @@ export class GatewayService {
         urls: [],
         summary: e instanceof Error ? `Debug share failed: ${e.message}` : 'Debug share failed: gateway unreachable',
       };
+    }
+  }
+
+  // Diagnostics log history with sync envelope (DATA-05).
+  async serverLogsPage(
+    level: string = '',
+    query: string = '',
+    params?: PageParams,
+    callerSignal?: AbortSignal
+  ): Promise<PagedResult<LogLine>> {
+    const page = clampPage(params, DEFAULT_SESSIONS_PAGE_SIZE, MAX_SESSIONS_PAGE_SIZE);
+    try {
+      const res = await fetch(
+        `${this.baseUrl}/api/logs?level=${encodeURIComponent(level)}&query=${encodeURIComponent(query)}&limit=${page.limit}&offset=${page.offset}`,
+        {
+          signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+          headers: this.getHeaders(),
+        }
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const { arr, total } = pickArray(data, ['logs', 'data']);
+      const now = Date.now();
+      writeSyncedAt(GatewayService.SYNC_KEYS.logs, now);
+      return toPagedResult(arr as LogLine[], liveMeta(now), page, total);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'gateway unreachable';
+      return toPagedResult<LogLine>(
+        [],
+        staleMeta(readSyncedAt(GatewayService.SYNC_KEYS.logs), `Logs unavailable: ${msg}`, false),
+        page
+      );
     }
   }
 
@@ -928,8 +1135,9 @@ export class GatewayService {
 
   saveLocalMessages(sessionId: string, messages: ChatMessage[]): void {
     try {
-      // Cap per-session history so a long session cannot exhaust quota.
-      const capped = messages.length > 200 ? messages.slice(-200) : messages;
+      // Retention: keep the newest MESSAGE_RETENTION_CAP so a long session
+      // cannot exhaust quota. Older history stays on the gateway (DATA-02).
+      const capped = capMessages(messages, MESSAGE_RETENTION_CAP);
       localStorage.setItem(`hermes_messages_${sessionId}`, JSON.stringify(capped));
     } catch {
       // Ignored

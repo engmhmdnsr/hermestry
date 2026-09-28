@@ -210,6 +210,37 @@
 }
 
 /* ==========================================================================
+   ACCESSIBILITY: VISIBLE KEYBOARD FOCUS SYSTEM (A11Y-02)
+   Many controls use focus:outline-none for pointer aesthetics. This layer
+   restores a 2px accent ring for keyboard focus only, so :focus-visible
+   is always perceivable. It sits after the Tailwind import, so it wins
+   over focus:outline-none for keyboard users while mouse/touch users
+   keep the border-highlight treatment.
+   ========================================================================== */
+:where(a, button, input, select, textarea, [role="button"], [tabindex]):focus-visible {
+  outline: 2px solid var(--app-accent, #6366F1) !important;
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Text fields keep the indigo border AND gain the ring on keyboard focus. */
+:where(input, select, textarea):focus-visible {
+  border-color: var(--app-accent, #6366F1) !important;
+  box-shadow: 0 0 0 2px var(--app-accent-subtle, rgba(99, 102, 241, 0.35));
+}
+
+/* Credential / token fields stay LTR under RTL so typed secrets,
+   placeholders and mono alignment behave (Arabic UI test case). */
+[dir="rtl"] :where(input[type="password"], input[type="email"], input[type="url"], input[type="tel"]) {
+  direction: ltr;
+  text-align: left;
+}
+[dir="rtl"] :where(input[type="password"], input[type="email"], input[type="url"], input[type="tel"])::placeholder {
+  direction: ltr;
+  text-align: left;
+}
+
+/* ==========================================================================
    RTL LANGUAGE SUPPORT (Arabic)
    ========================================================================== */
 [dir="rtl"] {
