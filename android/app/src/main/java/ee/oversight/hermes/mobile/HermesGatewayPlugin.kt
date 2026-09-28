@@ -50,24 +50,54 @@ class HermesGatewayPlugin : Plugin() {
         wifiLock.acquire()
       } catch (_: Exception) { }
       try {
-        Bootstrap.install(context, onStep = { line ->
-          val log = JSObject().put("line", line)
-          notifyListeners("installLog", log, true)
-          pctRe.find(line)?.let { m ->
-            val pct = m.groupValues[1].toIntOrNull()?.coerceIn(0, 100) ?: return@let
-            notifyListeners("installProgress", JSObject()
-              .put("downloaded", pct)
-              .put("total", 100), true)
-          }
-        })
-        notifyListeners("installDone", JSObject().put("ok", true), true)
-        call.resolve(JSObject().put("ok", true))
-      } catch (e: Exception) {
-        val msg = e.message ?: "install failed"
-        notifyListeners("installDone", JSObject()
-          .put("ok", false)
-          .put("error", msg), true)
-        call.reject(msg)
+        // The install itself runs inside the foreground service, which the
+        // OS must keep alive with the screen off. Here we only tail its log.
+        try {
+          MobileGatewayService.install(context)
+        } catch (e: Exception) {
+          notifyListeners("installDone", JSObject()
+            .put("ok", false)
+            .put("error", e.message ?: "could not start installer"), true)
+          call.reject(e.message ?: "could not start installer")
+          return@launch
+        }
+        val root = Bootstrap.rootDir(context)
+        val log = java.io.File(root, "install.log")
+        val done = java.io.File(root, "install.done")
+        var offset = 0L
+        while (true) {
+          try {
+            if (log.exists()) {
+              val lines = log.readLines()
+              while (offset < lines.size) {
+                val line = lines[offset.toInt()]
+                offset++
+                notifyListeners("installLog", JSObject().put("line", line), true)
+                pctRe.find(line)?.let { m ->
+                  val pct = m.groupValues[1].toIntOrNull()?.coerceIn(0, 100) ?: return@let
+                  notifyListeners("installProgress", JSObject()
+                    .put("downloaded", pct)
+                    .put("total", 100), true)
+                }
+              }
+            }
+            if (done.exists()) {
+              val verdict = try { done.readText().trim() } catch (_: Exception) { "" }
+              if (verdict == "ok") {
+                notifyListeners("installDone", JSObject().put("ok", true), true)
+                call.resolve(JSObject().put("ok", true))
+              } else {
+                val msg = verdict.removePrefix("error:").trim().ifEmpty { "install failed" }
+                notifyListeners("installDone", JSObject()
+                  .put("ok", false)
+                  .put("error", msg), true)
+                call.reject(msg)
+              }
+              return@launch
+            }
+          } catch (_: Exception) { }
+          kotlinx.coroutines.delay(700)
+        }
       } finally {
         try {
           if (wakeLock.isHeld) wakeLock.release()

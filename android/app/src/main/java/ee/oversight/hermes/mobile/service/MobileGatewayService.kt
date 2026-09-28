@@ -3,6 +3,7 @@ package ee.oversight.hermes.mobile.service
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.net.wifi.WifiManager
 import ee.oversight.hermes.mobile.normProvider
 import android.app.Service
 import android.content.Context
@@ -35,6 +36,7 @@ class MobileGatewayService : Service() {
   private var gatewayProc: Process? = null
   private var logOut: java.io.OutputStream? = null
   private var wakeLock: PowerManager.WakeLock? = null
+  private var installJob: Job? = null
   @Volatile private var wantRun = false
 
   override fun onBind(intent: Intent?): IBinder? = null
@@ -46,6 +48,17 @@ class MobileGatewayService : Service() {
       stopForeground(STOP_FOREGROUND_REMOVE)
       stopSelf()
       return START_NOT_STICKY
+    }
+    if (intent?.action == "INSTALL") {
+      // One-shot image install inside the foreground service: FGS state
+      // exempts the process from Doze/freezer kills when the screen sleeps.
+      startForegroundInternal("Installing Hermes image", "downloading, do not close the app")
+      if (installJob == null) {
+        installJob = scope.launch {
+          try { runInstall() } finally { installJob = null }
+        }
+      }
+      return START_STICKY
     }
     startForegroundInternal()
     if (watchJob == null) {
@@ -77,12 +90,17 @@ class MobileGatewayService : Service() {
     stopGateway()
     watchJob?.cancel()
     watchJob = null
+    installJob?.cancel()
+    installJob = null
     try { wakeLock?.release() } catch (_: Exception) { }
     wakeLock = null
     super.onDestroy()
   }
 
-  private fun startForegroundInternal() {
+  private fun startForegroundInternal(
+    title: String = "Hermes Mobile running",
+    text: String = "on-phone gateway on localhost:8080"
+  ) {
     // The Capacitor app has no custom Application class, so the service owns
     // its own notify channel (idempotent). No notification permission needed
     // for the FGS notification itself.
@@ -95,8 +113,8 @@ class MobileGatewayService : Service() {
       } catch (_: Exception) { }
     }
     val n: Notification = NotificationCompat.Builder(this, "gateway")
-      .setContentTitle("Hermes Mobile running")
-      .setContentText("on-phone gateway on localhost:8080")
+      .setContentTitle(title)
+      .setContentText(text)
       .setSmallIcon(android.R.drawable.stat_sys_upload_done)
       .build()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -174,6 +192,38 @@ class MobileGatewayService : Service() {
     gatewayFailed.value = true
     appendLog("gateway FAILED: $reason")
     try { wakeLock?.release() } catch (_: Exception) { }
+  }
+
+  /** One-shot image install. Runs under FGS so screen-off cannot kill it. */
+  private suspend fun runInstall() {
+    val root = Bootstrap.rootDir(this)
+    val log = File(root, "install.log")
+    val done = File(root, "install.done")
+    try { done.delete() } catch (_: Exception) { }
+    try { log.delete() } catch (_: Exception) { }
+    val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+    val wifiLock = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "hermes:install")
+    try { wifiLock.acquire() } catch (_: Exception) { }
+    if (wakeLock == null) {
+      wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
+        .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "hermes:install")
+    }
+    try { wakeLock?.acquire(45 * 60 * 1000L) } catch (_: Exception) { }
+    try {
+      Bootstrap.install(this@MobileGatewayService) { line ->
+        try { log.appendText(line + "\n") } catch (_: Exception) { }
+      }
+      try { done.writeText("ok") } catch (_: Exception) { }
+    } catch (e: Exception) {
+      try { log.appendText("FAILED: ${e.message}\n") } catch (_: Exception) { }
+      try { done.writeText("error: ${e.message}") } catch (_: Exception) { }
+    } finally {
+      try { if (wifiLock.isHeld) wifiLock.release() } catch (_: Exception) { }
+      try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (_: Exception) { }
+      // Back to a plain background state; an explicit Start re-enters FGS.
+      try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) { }
+      try { stopSelf() } catch (_: Exception) { }
+    }
   }
 
   private fun startGateway() {
@@ -336,6 +386,12 @@ class MobileGatewayService : Service() {
 
     fun start(ctx: Context) {
       val i = Intent(ctx, MobileGatewayService::class.java).setAction("START")
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i)
+      else ctx.startService(i)
+    }
+
+    fun install(ctx: Context) {
+      val i = Intent(ctx, MobileGatewayService::class.java).setAction("INSTALL")
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i)
       else ctx.startService(i)
     }
