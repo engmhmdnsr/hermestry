@@ -1,6 +1,8 @@
 package ee.oversight.hermes.mobile
 
 import android.content.Context
+import android.net.wifi.WifiManager
+import android.os.PowerManager
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -33,6 +35,20 @@ class HermesGatewayPlugin : Plugin() {
   fun install(call: PluginCall) {
     call.setKeepAlive(true)
     scope.launch {
+      // Screen-off survival: a partial wake lock keeps the CPU running and
+      // a high-perf wifi lock keeps the radio awake, so Doze cannot stall
+      // the ~305MB image download when the display sleeps. Released below.
+      val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+      val wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "hermes:install")
+      val wifi = context.applicationContext
+        .getSystemService(Context.WIFI_SERVICE) as WifiManager
+      val wifiLock = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "hermes:install")
+      try {
+        wakeLock.acquire(30 * 60 * 1000L)
+      } catch (_: Exception) { }
+      try {
+        wifiLock.acquire()
+      } catch (_: Exception) { }
       try {
         Bootstrap.install(context, onStep = { line ->
           val log = JSObject().put("line", line)
@@ -52,6 +68,13 @@ class HermesGatewayPlugin : Plugin() {
           .put("ok", false)
           .put("error", msg), true)
         call.reject(msg)
+      } finally {
+        try {
+          if (wakeLock.isHeld) wakeLock.release()
+        } catch (_: Exception) { }
+        try {
+          if (wifiLock.isHeld) wifiLock.release()
+        } catch (_: Exception) { }
       }
     }
   }
