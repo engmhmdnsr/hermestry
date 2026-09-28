@@ -31,6 +31,7 @@ import {
 import { THEME_PALETTES, ThemeMode } from '../../constants/themes';
 import { LANGUAGES } from '../../constants/languages';
 import { toAppError, localizedMessage } from '../../services/appErrors';
+import { isNativeGateway } from '../../services/nativeGateway';
 import {
   Blueprint,
   DoctorReport,
@@ -2151,7 +2152,7 @@ export const SettingsTab: React.FC = () => {
               </button>
               <button
                 disabled={!keysValid(newProvType, newProvKey, newProvBaseUrl)}
-                onClick={() => {
+                onClick={async () => {
                   const cleanedKey = newProvKey.trim();
                   const targetModel = newProvModel.trim() || DEFAULT_MODELS[newProvType]?.[0] || `${newProvType}/default`;
                   const label = newProvName.trim() || PROVIDER_OPTIONS.find(([id]) => id === newProvType)?.[1] || newProvType;
@@ -2187,6 +2188,14 @@ export const SettingsTab: React.FC = () => {
                       });
                     }
                     showToast(`${t('updatedItem')} ${label}`);
+                    // On-device the running gateway keeps its rendered config
+                    // until it restarts, so an edit of the active profile
+                    // restarts a running gateway to apply the new values.
+                    if (isCurrentlyActive && isNativeGateway() && connected) {
+                      showToast(tx('providerRestarting', 'Restarting gateway to apply the new provider...'));
+                      await stopGateway();
+                      await startGateway();
+                    }
                   } else {
                     const newId = addConfiguredProvider({
                       provider: newProvType,
@@ -2202,6 +2211,11 @@ export const SettingsTab: React.FC = () => {
                     if (activateNewProvider) {
                       activateProvider(newId);
                       showToast(`${t('addedActivated')} ${label}`);
+                      if (isNativeGateway() && connected) {
+                        showToast(tx('providerRestarting', 'Restarting gateway to apply the new provider...'));
+                        await stopGateway();
+                        await startGateway();
+                      }
                     } else {
                       showToast(`${tx('addedInactive', 'Added (inactive)')} ${label}`);
                     }

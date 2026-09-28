@@ -471,6 +471,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     testAuth: 'Test key',
     activateAfterSave: 'Activate this profile after saving. New profiles stay inactive unless you opt in.',
     addedInactive: 'Added (inactive)',
+    providerRestarting: 'Restarting gateway to apply the new provider...',
     weakKey: 'Weak key: generate a fresh one.',
     providersOfflineNote: 'Gateway is offline. Provider profiles are stored locally and can still be edited.',
 
@@ -916,6 +917,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     testAuth: 'اختبار المفتاح',
     activateAfterSave: 'فعّل هذا الملف بعد الحفظ. الملفات الجديدة تبقى غير مفعّلة ما لم تختر ذلك.',
     addedInactive: 'تمت الإضافة (غير مفعّل)',
+    providerRestarting: 'جارٍ إعادة تشغيل البوابة لتطبيق المزود الجديد...',
     weakKey: 'المفتاح ضعيف: أنشئ واحدًا جديدًا.',
     providersOfflineNote: 'البوابة غير متصلة. ملفات المزودات محفوظة محليًا ويمكن تعديلها.',
 
