@@ -294,12 +294,6 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           <h2 className="text-xs font-semibold text-slate-400 tracking-wider uppercase">
             {t('recentSessions')}
           </h2>
-          <button
-            onClick={onGoChat}
-            className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors font-medium cursor-pointer"
-          >
-            {t('recentSessions')}
-          </button>
         </div>
 
         {recentSessions.length === 0 ? (

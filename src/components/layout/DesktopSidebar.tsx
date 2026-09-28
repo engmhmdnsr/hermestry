@@ -41,6 +41,7 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
   } = useHermes();
 
   const [sessionSearch, setSessionSearch] = useState('');
+  const [showAllRecent, setShowAllRecent] = useState(false);
 
   const navItems = [
     { id: 0, label: t('home') || 'Overview', icon: LayoutGrid },
@@ -56,7 +57,8 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
   );
 
   const pinnedList = filteredSessions.filter(s => pinnedIds.includes(s.id));
-  const recentList = filteredSessions.filter(s => !pinnedIds.includes(s.id)).slice(0, 10);
+  const unpinnedSessions = filteredSessions.filter(s => !pinnedIds.includes(s.id));
+  const recentList = showAllRecent ? unpinnedSessions : unpinnedSessions.slice(0, 10);
 
   return (
     <aside
@@ -92,7 +94,7 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
                 </span>
               </div>
               <p className="text-[10px] text-slate-500 truncate leading-none mt-0.5">
-                127.0.0.1:8080
+                {settings.baseUrl || '127.0.0.1:8080'}
               </p>
             </div>
           )}
@@ -181,7 +183,7 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
             <div className="space-y-1">
               <div className="flex items-center gap-1.5 px-2 text-[10px] font-semibold text-amber-400 uppercase tracking-wider">
                 <Star className="w-2.5 h-2.5 fill-amber-400" />
-                <span>{t('recentSessions')}</span>
+                <span>Favorites</span>
               </div>
               {pinnedList.map((s) => (
                 <div
@@ -213,8 +215,18 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
 
           {/* Recent Sessions */}
           <div className="space-y-1">
-            <div className="px-2 text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
-              {t('recentSessions')}
+            <div className="px-2 flex items-center justify-between">
+              <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
+                {t('recentSessions')}
+              </span>
+              {unpinnedSessions.length > 10 && (
+                <button
+                  onClick={() => setShowAllRecent((v) => !v)}
+                  className="text-[10px] text-indigo-400 hover:text-indigo-300 font-medium cursor-pointer"
+                >
+                  {showAllRecent ? 'Show less' : `View all (${unpinnedSessions.length})`}
+                </button>
+              )}
             </div>
             {recentList.length === 0 ? (
               <p className="px-2 text-[11px] text-slate-600">{t('noSessionsYet')}</p>

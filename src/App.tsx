@@ -13,26 +13,47 @@ import { JobsTab } from './components/tabs/JobsTab';
 import { SettingsTab } from './components/tabs/SettingsTab';
 
 export const App: React.FC = () => {
-  const { settings, updateSettings, selectSession, newSession } = useHermes();
+  const { settings, updateSettings, selectSession, newSession, vaultUnlocked } = useHermes();
   const [currentTab, setCurrentTab] = useState<number>(1); // Default to chat like Hermes Desktop
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
   const [isUnlocked, setIsUnlocked] = useState<boolean>(false);
 
-  // Desktop layout controls
-  const [isDesktop, setIsDesktop] = useState<boolean>(window.innerWidth >= 1024);
+  // Background relock: when the vault relocks (AppLock on), drop the
+  // unlocked flag so the PIN gate shows again. Legacy no-vault setups
+  // keep the previous session-unlock behavior.
+  useEffect(() => {
+    if (!settings.appLockEnabled || vaultUnlocked) return;
+    let hasVault = false;
+    try {
+      hasVault = !!localStorage.getItem('hermes_vault');
+    } catch {}
+    if (hasVault) setIsUnlocked(false);
+  }, [vaultUnlocked, settings.appLockEnabled]);
+
+  // Desktop layout controls (matchMedia with change listeners, no resize polling)
+  const [isDesktop, setIsDesktop] = useState<boolean>(
+    () => typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches
+  );
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
-  const [inspectorOpen, setInspectorOpen] = useState<boolean>(window.innerWidth >= 1280);
+  const [inspectorOpen, setInspectorOpen] = useState<boolean>(
+    () => typeof window !== 'undefined' && window.matchMedia('(min-width: 1280px)').matches
+  );
 
   useEffect(() => {
-    const handleResize = () => {
-      const desktop = window.innerWidth >= 1024;
-      setIsDesktop(desktop);
-      if (window.innerWidth < 1280) {
-        setInspectorOpen(false);
-      }
+    const desktopQuery = window.matchMedia('(min-width: 1024px)');
+    const wideQuery = window.matchMedia('(min-width: 1280px)');
+    const handleDesktopChange = (e: MediaQueryListEvent) => {
+      setIsDesktop(e.matches);
     };
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    const handleWideChange = (e: MediaQueryListEvent) => {
+      if (!e.matches) setInspectorOpen(false);
+    };
+    desktopQuery.addEventListener('change', handleDesktopChange);
+    wideQuery.addEventListener('change', handleWideChange);
+    return () => {
+      desktopQuery.removeEventListener('change', handleDesktopChange);
+      wideQuery.removeEventListener('change', handleWideChange);
+    };
   }, []);
 
   // 1. First run wizard
@@ -52,8 +73,7 @@ export const App: React.FC = () => {
   }
 
   const handleOpenNewChat = async () => {
-    const id = await newSession();
-    selectSession(id);
+    await newSession();
     setCurrentTab(1);
   };
 

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   X,
   Plus,
@@ -53,14 +53,34 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
   const [exportTarget, setExportTarget] = useState<MobileSession | null>(null);
   const [copied, setCopied] = useState(false);
   const [drawerToast, setDrawerToast] = useState<string | null>(null);
+  const [renameError, setRenameError] = useState('');
+  const [deleteError, setDeleteError] = useState('');
+  const [isSavingRename, setIsSavingRename] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+    };
+  }, []);
 
   const showDrawerToast = (msg: string) => {
     setDrawerToast(msg);
-    setTimeout(() => setDrawerToast(null), 2500);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setDrawerToast(null), 2500);
+  };
+
+  // Canonical session source is 'web'. Legacy values ('', 'system') map to it at read time.
+  const normalizeSource = (source: string | undefined): string => {
+    if (!source || source === 'system') return 'web';
+    return source;
   };
 
   const presentSources = useMemo(() => {
-    return Array.from(new Set(sessions.map((s) => s.source || 'web'))).sort();
+    return Array.from(new Set(sessions.map((s) => normalizeSource(s.source)))).sort();
   }, [sessions]);
 
   const visibleSessions = useMemo(() => {
@@ -71,7 +91,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
         s.title.toLowerCase().includes(q) ||
         s.id.toLowerCase().includes(q);
       const matchesSource =
-        sourceFilter === 'ALL' || (s.source || 'web') === sourceFilter;
+        sourceFilter === 'ALL' || normalizeSource(s.source) === sourceFilter;
       return matchesQuery && matchesSource;
     });
 
@@ -120,7 +140,8 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     try {
       await navigator.clipboard.writeText(md);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (copiedTimer.current) clearTimeout(copiedTimer.current);
+      copiedTimer.current = setTimeout(() => setCopied(false), 2000);
     } catch {
       showDrawerToast('Copy failed: clipboard unavailable');
     }
@@ -315,23 +336,37 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
               onChange={(e) => setRenameTitle(e.target.value)}
               className="w-full px-3.5 py-2 rounded-xl bg-[#141920] border border-white/[0.08] text-xs text-white focus:outline-none focus:border-indigo-500"
             />
+            {renameError && (
+              <p className="text-xs text-rose-400">{renameError}</p>
+            )}
             <div className="flex justify-end gap-2 pt-1">
               <button
-                onClick={() => setRenameTarget(null)}
+                onClick={() => {
+                  setRenameTarget(null);
+                  setRenameError('');
+                }}
                 className="px-3.5 py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-white"
               >
                 Cancel
               </button>
               <button
-                onClick={() => {
-                  if (renameTitle.trim()) {
-                    renameSession(renameTarget.id, renameTitle.trim());
+                onClick={async () => {
+                  if (!renameTitle.trim()) return;
+                  setRenameError('');
+                  setIsSavingRename(true);
+                  try {
+                    await renameSession(renameTarget.id, renameTitle.trim());
+                    setRenameTarget(null);
+                  } catch {
+                    setRenameError('Rename failed. The conversation was not renamed.');
+                  } finally {
+                    setIsSavingRename(false);
                   }
-                  setRenameTarget(null);
                 }}
-                className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold"
+                disabled={isSavingRename}
+                className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-semibold"
               >
-                Save
+                {isSavingRename ? 'Saving...' : 'Save'}
               </button>
             </div>
           </div>
@@ -356,21 +391,36 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
             <p className="text-xs text-slate-400">
               Are you sure you want to delete "{deleteTarget.title}"?
             </p>
+            {deleteError && (
+              <p className="text-xs text-rose-400">{deleteError}</p>
+            )}
             <div className="flex justify-end gap-2 pt-2">
               <button
-                onClick={() => setDeleteTarget(null)}
+                onClick={() => {
+                  setDeleteTarget(null);
+                  setDeleteError('');
+                }}
                 className="px-3.5 py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-white"
               >
                 Cancel
               </button>
               <button
-                onClick={() => {
-                  deleteSession(deleteTarget.id);
-                  setDeleteTarget(null);
+                onClick={async () => {
+                  setDeleteError('');
+                  setIsDeleting(true);
+                  try {
+                    await deleteSession(deleteTarget.id);
+                    setDeleteTarget(null);
+                  } catch {
+                    setDeleteError('Delete failed. The conversation was not deleted.');
+                  } finally {
+                    setIsDeleting(false);
+                  }
                 }}
-                className="px-4 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold"
+                disabled={isDeleting}
+                className="px-4 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-semibold"
               >
-                Delete
+                {isDeleting ? 'Deleting...' : 'Delete'}
               </button>
             </div>
           </div>

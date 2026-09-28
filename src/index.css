@@ -30,7 +30,7 @@
   body {
     background-color: var(--app-bg, #090B14);
     color: var(--app-text, #F8FAFC);
-    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: 'Plus Jakarta Sans', 'Segoe UI', Tahoma, 'Noto Kufi Arabic', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
     letter-spacing: -0.011em;
     min-height: 100vh;
     min-height: 100dvh;
@@ -215,7 +215,7 @@
 [dir="rtl"] {
   direction: rtl;
   text-align: right;
-  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Cairo", "Tajawal", sans-serif;
+  font-family: 'Plus Jakarta Sans', 'Segoe UI', Tahoma, 'Noto Kufi Arabic', system-ui, -apple-system, BlinkMacSystemFont, Roboto, "Cairo", "Tajawal", sans-serif;
 }
 
 [dir="rtl"] .text-left {

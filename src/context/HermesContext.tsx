@@ -22,8 +22,28 @@ import {
   vaultDecryptSecrets,
 } from '../services/secureStore';
 import { normProvider, DEFAULT_MODELS, PROVIDER_OPTIONS } from '../constants/providers';
-import { ThemeMode, applyThemeToDom, watchSystemThemePreference } from '../constants/themes';
+import { ThemeMode, THEME_PALETTES, applyThemeToDom, watchSystemThemePreference } from '../constants/themes';
 import { LANGUAGES, getTranslation } from '../constants/languages';
+import { version as APP_VERSION } from '../../package.json';
+
+const VALID_THEME_MODES: ThemeMode[] = ['light', 'dark', 'system'];
+const VALID_EFFORTS = ['none', 'low', 'medium', 'high'];
+const VALID_APPROVAL_SCOPES = ['once', 'session'];
+
+// Unique ids without Math.random. Prefers crypto.randomUUID, falls back
+// to a monotonic counter so ids stay unique within the session.
+let fallbackIdCounter = 0;
+const newId = (prefix: string): string => {
+  try {
+    const uuid =
+      typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? crypto.randomUUID()
+        : null;
+    if (uuid) return `${prefix}_${uuid.slice(0, 8)}`;
+  } catch {}
+  fallbackIdCounter += 1;
+  return `${prefix}_${Date.now().toString(36)}_${fallbackIdCounter}`;
+};
 
 interface HermesSettings {
   provider: string;
@@ -37,10 +57,12 @@ interface HermesSettings {
   onboarded: boolean;
   appLockEnabled: boolean;
   appLockPin: string;
-  fontScale: number; // 0.8 to 1.4
+  fontScale: number; // 0.8 to 1.3
   reasoningEffort: string; // 'none' | 'low' | 'medium' | 'high'
   autoApproveGlobal: boolean;
+  approvalScope: string; // 'once' | 'session'
   providers: ConfiguredProvider[];
+  activeProviderId: string;
   themePalette: string;
   themeMode: ThemeMode;
   language: string;
@@ -117,6 +139,7 @@ interface HermesContextType {
   vaultUnlocked: boolean;
   unlockSecrets: (pin: string) => Promise<boolean>;
   lockSecrets: () => void;
+  lockNow: () => void;
   retryLast: () => boolean;
 
   // Drafts
@@ -167,7 +190,9 @@ const DEFAULT_SETTINGS: HermesSettings = {
   fontScale: 1.0,
   reasoningEffort: 'medium',
   autoApproveGlobal: false,
+  approvalScope: 'once',
   providers: DEFAULT_PROVIDERS,
+  activeProviderId: 'prov_deepseek_default',
   themePalette: 'midnight',
   themeMode: 'dark',
   language: 'en',
@@ -202,6 +227,15 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           ];
         }
         const merged = { ...DEFAULT_SETTINGS, ...parsed };
+        if (!VALID_APPROVAL_SCOPES.includes(merged.approvalScope)) {
+          merged.approvalScope = 'once';
+        }
+        if (!merged.activeProviderId && Array.isArray(merged.providers) && merged.providers.length > 0) {
+          const match =
+            merged.providers.find((p: ConfiguredProvider) => p.provider === merged.provider) ||
+            merged.providers[0];
+          merged.activeProviderId = match.id;
+        }
         try {
           if (merged.appLockEnabled && localStorage.getItem('hermes_vault')) {
             merged.apiKey = '';
@@ -270,8 +304,8 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   });
   const [installProgress, setInstallProgress] = useState<string>('');
   const [installError, setInstallError] = useState<string | null>(null);
-  const [gatewayLogs, setGatewayLogs] = useState<string[]>([
-    'Hermes Mobile client initialized',
+  const [gatewayLogs, setGatewayLogs] = useState<string[]>(() => [
+    `Hermes Mobile v${APP_VERSION} started at ${new Date().toLocaleString()}`,
   ]);
   const [connected, setConnected] = useState<boolean>(false);
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>({
@@ -390,7 +424,23 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const addLog = (msg: string) => {
     const timestamp = new Date().toLocaleTimeString();
-    setGatewayLogs((prev) => [...prev, `[${timestamp}] ${msg}`].slice(-400));
+    // Scrub live secret values so logs never leak credentials.
+    let safe = msg;
+    try {
+      const secrets = [
+        secretsRef.current.apiKey,
+        secretsRef.current.serverKey,
+        secretsRef.current.tgToken,
+        secretsRef.current.discordToken,
+        secretsRef.current.appLockPin,
+      ];
+      for (const s of secrets) {
+        if (s && s.length >= 4 && safe.includes(s)) {
+          safe = safe.split(s).join('***REDACTED***');
+        }
+      }
+    } catch {}
+    setGatewayLogs((prev) => [...prev, `[${timestamp}] ${safe}`].slice(-400));
   };
 
   const persistSettings = (next: HermesSettings) => {
@@ -441,6 +491,27 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const updateSettings = (newSettings: Partial<HermesSettings>) => {
     const prev = settingsRef.current;
     const next = { ...prev, ...newSettings };
+    // Clamp and validate user-facing preferences so stored settings stay sane.
+    if (typeof next.fontScale === 'number' && Number.isFinite(next.fontScale)) {
+      next.fontScale = Math.min(1.3, Math.max(0.8, next.fontScale));
+    } else {
+      next.fontScale = 1.0;
+    }
+    if (!THEME_PALETTES.some((th) => th.id === next.themePalette)) {
+      next.themePalette = 'midnight';
+    }
+    if (!LANGUAGES.some((l) => l.id === next.language)) {
+      next.language = 'en';
+    }
+    if (!VALID_THEME_MODES.includes(next.themeMode)) {
+      next.themeMode = 'dark';
+    }
+    if (!VALID_EFFORTS.includes(next.reasoningEffort)) {
+      next.reasoningEffort = 'medium';
+    }
+    if (!VALID_APPROVAL_SCOPES.includes(next.approvalScope)) {
+      next.approvalScope = 'once';
+    }
     if (newSettings.appLockEnabled && !prev.appLockEnabled && next.appLockPin) {
       try {
         localStorage.setItem('hermes_pinlen', String(next.appLockPin.length));
@@ -495,6 +566,27 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setSettings((prev) => ({ ...prev, apiKey: '', serverKey: '', tgToken: '', discordToken: '', appLockPin: '' }));
   };
 
+  const vaultUnlockedRef = useRef(vaultUnlocked);
+  vaultUnlockedRef.current = vaultUnlocked;
+
+  // Immediate relock entry point for backgrounding or manual lock buttons.
+  const lockNow = () => {
+    if (!settingsRef.current.appLockEnabled) return;
+    lockSecrets();
+    addLog('App locked');
+  };
+
+  // Relock when the app goes to the background while AppLock is enabled.
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.hidden && settingsRef.current.appLockEnabled && vaultUnlockedRef.current) {
+        lockSecrets();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
+
   const saveKeys = (
     provider: string,
     key: string,
@@ -514,6 +606,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const currentList = settings.providers || [];
     let updatedList: ConfiguredProvider[] = [];
     const existingIndex = currentList.findIndex((p) => p.provider === normed);
+    let activeId = '';
 
     if (existingIndex >= 0) {
       updatedList = currentList.map((p, idx) =>
@@ -528,12 +621,15 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             }
           : p
       );
+      activeId = updatedList[existingIndex].id;
     } else {
       const pName = PROVIDER_OPTIONS.find(([id]) => id === normed)?.[1] || normed.toUpperCase();
+      const createdId = newId('prov_' + normed);
+      activeId = createdId;
       updatedList = [
         ...currentList,
         {
-          id: 'prov_' + normed + '_' + Date.now().toString(36),
+          id: createdId,
           provider: normed,
           name: pName,
           apiKey: activeKey,
@@ -555,13 +651,14 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       serverKey: clean(serverKey),
       autostart,
       providers: updatedList,
+      activeProviderId: activeId,
     });
     addLog(`Active provider set to ${normed} with ${updatedList.length} provider(s) stored.`);
   };
 
   // Multi-Provider CRUD methods
   const addConfiguredProvider = (prov: Omit<ConfiguredProvider, 'id'>): string => {
-    const id = 'prov_' + prov.provider + '_' + Math.random().toString(36).substring(2, 9);
+    const id = newId('prov_' + prov.provider);
     const newProv: ConfiguredProvider = {
       ...prov,
       id,
@@ -575,13 +672,17 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const updateConfiguredProvider = (id: string, updates: Partial<ConfiguredProvider>) => {
     const nextList = (settings.providers || []).map((p) => (p.id === id ? { ...p, ...updates } : p));
     const target = nextList.find((p) => p.id === id);
-    // If updating currently active provider, sync settings
-    if (target && target.provider === settings.provider) {
+    // Sync settings only when the edited profile is the active one,
+    // matched by id so duplicate profiles of the same slug do not bleed.
+    const activeId = settingsRef.current.activeProviderId;
+    const isActiveById = activeId ? target?.id === activeId : target?.provider === settingsRef.current.provider;
+    if (target && isActiveById) {
+      const cur = settingsRef.current;
       updateSettings({
         providers: nextList,
-        apiKey: updates.apiKey !== undefined ? updates.apiKey : settings.apiKey,
-        baseUrl: updates.baseUrl !== undefined ? (updates.baseUrl || '') : settings.baseUrl,
-        modelId: updates.defaultModel !== undefined ? updates.defaultModel : settings.modelId,
+        apiKey: updates.apiKey !== undefined ? updates.apiKey : cur.apiKey,
+        baseUrl: updates.baseUrl !== undefined ? (updates.baseUrl || '') : cur.baseUrl,
+        modelId: updates.defaultModel !== undefined ? updates.defaultModel : cur.modelId,
       });
     } else {
       updateSettings({ providers: nextList });
@@ -591,14 +692,18 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const removeConfiguredProvider = (id: string) => {
     const target = (settings.providers || []).find((p) => p.id === id);
     const nextList = (settings.providers || []).filter((p) => p.id !== id);
-    
-    // If deleting the active provider, switch to another enabled one
-    if (target && target.provider === settings.provider && nextList.length > 0) {
+
+    // If deleting the active provider, switch to another enabled one.
+    // Active is matched by id so same-slug duplicates do not bleed.
+    const activeId = settingsRef.current.activeProviderId;
+    const isActive = activeId ? target?.id === activeId : target?.provider === settingsRef.current.provider;
+    if (target && isActive && nextList.length > 0) {
       const fallback = nextList[0];
       updateSettings({
         providers: nextList,
+        activeProviderId: fallback.id,
         provider: fallback.provider,
-        apiKey: fallback.apiKey,
+        apiKey: fallback.apiKey || '',
         baseUrl: fallback.baseUrl || '',
         modelId: fallback.defaultModel,
       });
@@ -618,6 +723,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     const keep = (keepModelId || '').trim();
     updateSettings({
+      activeProviderId: target.id,
       provider: target.provider,
       apiKey: target.apiKey || '',
       baseUrl: target.baseUrl || '',
@@ -668,12 +774,28 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     });
   };
 
-  // Initial data load & models aggregation
+  // Initial data load once on boot. The models list below aggregates every
+  // configured provider, so it must not refetch when the active provider
+  // or model selection changes.
   useEffect(() => {
     refreshNow();
-    // Load models ONLY for the active provider and actually configured providers
-    const activeProvider = settings.provider || 'deepseek';
-    const configuredList = settings.providers || [];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Stable key over the configured provider set. Editing unrelated settings
+  // (active provider, model, theme) keeps this key identical, so switching
+  // providers does not refetch the whole model catalog.
+  const providersKey = (settings.providers || [])
+    .map((p) => `${p.id}:${p.provider}:${p.enabled !== false}:${p.defaultModel}`)
+    .join('|');
+
+  useEffect(() => {
+    // Load models ONLY for the active provider and actually configured providers.
+    // Provider and model are read from the ref so selecting them does not
+    // retrigger this effect.
+    const activeProvider = settingsRef.current.provider || 'deepseek';
+    const configuredList = settingsRef.current.providers || [];
+    const selectedModel = settingsRef.current.modelId;
 
     const loadAllModels = async () => {
       const modelMap = new Map<string, AiModelInfo>();
@@ -739,17 +861,17 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
 
       // 3. Ensure current selected model is present in the list
-      if (settings.modelId && !modelMap.has(settings.modelId)) {
-        const parts = settings.modelId.split('/');
+      if (selectedModel && !modelMap.has(selectedModel)) {
+        const parts = selectedModel.split('/');
         const rawName = parts.length > 1 ? parts[1] : parts[0];
         const clean = rawName
           .replace(/[-_]/g, ' ')
           .replace(/\b([a-z])/g, (c) => c.toUpperCase());
 
-        modelMap.set(settings.modelId, {
-          id: settings.modelId,
+        modelMap.set(selectedModel, {
+          id: selectedModel,
           displayName: clean,
-          provider: settings.provider,
+          provider: activeProvider,
         });
       }
 
@@ -757,7 +879,8 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     };
 
     loadAllModels();
-  }, [gatewayService, settings.provider, settings.providers, settings.modelId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gatewayService, providersKey]);
 
   // Streaming elapsed timer
   useEffect(() => {
@@ -842,6 +965,19 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setConnected(false);
     addLog('Gateway process terminated by user');
   };
+
+  // Autostart the gateway once on boot when the setting is enabled.
+  // The ref guard keeps StrictMode double-effects and re-renders
+  // from starting it more than once.
+  const autostartedRef = useRef(false);
+  useEffect(() => {
+    if (autostartedRef.current) return;
+    if (!settingsRef.current.autostart || !settingsRef.current.onboarded) return;
+    autostartedRef.current = true;
+    addLog('Autostart enabled, starting gateway...');
+    startGateway();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const installGateway = async () => {
     setInstall('INSTALLING');
@@ -995,7 +1131,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     let targetSid = currentSessionIdRef.current;
     if (!targetSid) {
       // Auto create a session if none active
-      targetSid = 'sess_' + Math.random().toString(36).substring(2, 9);
+      targetSid = newId('sess');
       const newSess: MobileSession = {
         id: targetSid,
         title: trimmed.slice(0, 30) || 'New Conversation',
@@ -1018,8 +1154,8 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
 
     const sid = targetSid;
-    const userMsgId = 'msg_' + Math.random().toString(36).substring(2, 9);
-    const agentMsgId = 'msg_' + Math.random().toString(36).substring(2, 9);
+    const userMsgId = newId('msg');
+    const agentMsgId = newId('msg');
 
     const userMessage: ChatMessage = {
       id: userMsgId,
@@ -1135,14 +1271,14 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         },
         onApproval: (req) => {
           if (autoApprove) {
-            resolveApproval(req, true, 'session');
+            resolveApproval(req, true, settingsRef.current.approvalScope || 'once');
           } else {
             setApprovals((prev) => (prev.some((a) => a.runId === req.runId) ? prev : [...prev, req]));
           }
         },
         onError: (message: string) => {
           const errBubble: ChatMessage = {
-            id: 'msg_' + Math.random().toString(36).substring(2, 9),
+            id: newId('msg'),
             sender: 'hermes',
             content: `Stream error: ${message || 'the gateway closed the stream unexpectedly'}`,
             thinkingDone: true,
@@ -1291,7 +1427,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       addLog(`Approval ${allow ? 'grant' : 'deny'} failed: gateway did not confirm. Keeping the pending approval.`);
       if (currentSessionIdRef.current === approval.sessionId) {
         const errBubble: ChatMessage = {
-          id: 'msg_' + Math.random().toString(36).substring(2, 9),
+          id: newId('msg'),
           sender: 'hermes',
           content: `Approval ${allow ? 'grant' : 'deny'} failed: the gateway did not confirm. The approval is still pending.`,
           thinkingDone: true,
@@ -1402,6 +1538,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         vaultUnlocked,
         unlockSecrets,
         lockSecrets,
+        lockNow,
         retryLast,
         getDraft,
         setDraft,

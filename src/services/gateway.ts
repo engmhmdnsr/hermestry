@@ -45,6 +45,50 @@ const REQUEST_TIMEOUT_MS = 15000;
 const HEALTH_TIMEOUT_MS = 5000;
 const JOB_ACTIONS = new Set(['pause', 'resume', 'run', 'delete']);
 
+export const REDACTED = '***REDACTED***';
+
+const SENSITIVE_KEY_PARTS = [
+  'apikey',
+  'api_key',
+  'serverkey',
+  'server_key',
+  'tgtoken',
+  'tg_token',
+  'discordtoken',
+  'discord_token',
+  'applockpin',
+  'app_lock_pin',
+  'token',
+  'secret',
+  'password',
+  'passwd',
+  'authorization',
+  'pin',
+];
+
+const isSensitiveKey = (key: string): boolean => {
+  const norm = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (norm === 'pin' || norm.endsWith('pin')) return true;
+  return SENSITIVE_KEY_PARTS.some((part) => part !== 'pin' && norm.includes(part));
+};
+
+// Deep-clone a value with plaintext secrets replaced by ***REDACTED***.
+// Used before archiving or uploading diagnostics so snapshots and debug
+// bundles never carry live credentials.
+export const redactSecrets = <T>(value: T): T => {
+  if (Array.isArray(value)) {
+    return value.map((item) => redactSecrets(item)) as unknown as T;
+  }
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = isSensitiveKey(k) && typeof v === 'string' && v ? REDACTED : redactSecrets(v);
+    }
+    return out as unknown as T;
+  }
+  return value;
+};
+
 export class GatewayService {
   private baseUrl: string;
   private apiKey: () => string;
@@ -559,12 +603,20 @@ export class GatewayService {
   async jobAction(id: string, action: string, callerSignal?: AbortSignal): Promise<boolean> {
     if (!JOB_ACTIONS.has(action)) return false;
     try {
-      const res = await fetch(`${this.baseUrl}/api/jobs/${encodeURIComponent(id)}/${encodeURIComponent(action)}`, {
-        method: action === 'delete' ? 'DELETE' : 'POST',
-        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
-        headers: this.getHeaders(),
-        body: action === 'delete' ? undefined : JSON.stringify({}),
-      });
+      // Delete follows REST: DELETE /api/jobs/{id}. Other actions POST
+      // to /api/jobs/{id}/{action}.
+      const isDelete = action === 'delete';
+      const res = await fetch(
+        isDelete
+          ? `${this.baseUrl}/api/jobs/${encodeURIComponent(id)}`
+          : `${this.baseUrl}/api/jobs/${encodeURIComponent(id)}/${encodeURIComponent(action)}`,
+        {
+          method: isDelete ? 'DELETE' : 'POST',
+          signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+          headers: this.getHeaders(),
+          body: isDelete ? undefined : JSON.stringify({}),
+        }
+      );
       return res.ok;
     } catch {
       return false;
@@ -738,7 +790,8 @@ export class GatewayService {
           message: `Backup failed: HTTP ${res.status}`,
         };
       }
-      return await res.json();
+      // Redact before the archive result is stored or shown anywhere.
+      return redactSecrets(await res.json());
     } catch (e: unknown) {
       return {
         ok: false,
@@ -761,7 +814,8 @@ export class GatewayService {
           summary: `Debug share failed: HTTP ${res.status}`,
         };
       }
-      return await res.json();
+      // Redact before the bundle result is stored or uploaded anywhere.
+      return redactSecrets(await res.json());
     } catch (e: unknown) {
       return {
         urls: [],
@@ -874,7 +928,9 @@ export class GatewayService {
 
   saveLocalMessages(sessionId: string, messages: ChatMessage[]): void {
     try {
-      localStorage.setItem(`hermes_messages_${sessionId}`, JSON.stringify(messages));
+      // Cap per-session history so a long session cannot exhaust quota.
+      const capped = messages.length > 200 ? messages.slice(-200) : messages;
+      localStorage.setItem(`hermes_messages_${sessionId}`, JSON.stringify(capped));
     } catch {
       // Ignored
     }

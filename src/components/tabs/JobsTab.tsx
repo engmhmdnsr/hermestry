@@ -1,18 +1,12 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   Play,
   Pause,
   Trash2,
   History,
-  AlertCircle,
   Plus,
   Search,
-  CheckCircle2,
   Clock,
-  ChevronDown,
-  ChevronUp,
-  Sliders,
-  Calendar,
   Pencil,
   X,
 } from 'lucide-react';
@@ -76,6 +70,13 @@ export const JobsTab: React.FC = () => {
   const [historyForId, setHistoryForId] = useState<string | null>(null);
   const [pendingDeleteJob, setPendingDeleteJob] = useState<CronJob | null>(null);
   const [expandedPrompts, setExpandedPrompts] = useState<Record<string, boolean>>({});
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+    };
+  }, []);
 
   const presets = [
     { label: 'Run Once', val: 'once' },
@@ -88,7 +89,8 @@ export const JobsTab: React.FC = () => {
 
   const showToast = (msg: string) => {
     setToast(msg);
-    setTimeout(() => setToast(null), 3000);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 3000);
   };
 
   const handleCreate = async () => {

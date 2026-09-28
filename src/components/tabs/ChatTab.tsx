@@ -24,6 +24,7 @@ import {
   Terminal,
   Paperclip,
   Code2,
+  MoreHorizontal,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import { ChatMessage, PendingApproval } from '../../types/hermes';
@@ -75,10 +76,49 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   const [actionToast, setActionToast] = useState<string | null>(null);
   const [modelPillExpanded, setModelPillExpanded] = useState(false);
 
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const recognitionRef = useRef<any>(null);
+  const fileReadersRef = useRef<FileReader[]>([]);
+  const toastTimerRef = useRef<number | null>(null);
+  const getDraftRef = useRef(getDraft);
+  getDraftRef.current = getDraft;
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+
   const showActionToast = (msg: string) => {
     setActionToast(msg);
-    setTimeout(() => setActionToast(null), 2500);
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => {
+      setActionToast(null);
+      toastTimerRef.current = null;
+    }, 2500);
   };
+
+  // Abort in-flight speech recognition, file reads, and timers on unmount
+  useEffect(() => {
+    return () => {
+      try {
+        recognitionRef.current?.abort?.();
+      } catch {
+        /* ignore */
+      }
+      fileReadersRef.current.forEach((r) => {
+        try {
+          if (r.readyState === FileReader.LOADING) r.abort();
+        } catch {
+          /* ignore */
+        }
+      });
+      fileReadersRef.current = [];
+      if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+      if (window.speechSynthesis) window.speechSynthesis.cancel();
+    };
+  }, []);
+
+  useEffect(() => {
+    setText(getDraftRef.current(currentSessionId));
+  }, [currentSessionId]);
 
   // Model selection modal search & category filters
   const [modelSearchQuery, setModelSearchQuery] = useState('');
@@ -166,15 +206,6 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     return result;
   }, [models, modelFilterProvider, modelSearchQuery]);
 
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const recognitionRef = useRef<any>(null);
-
-  useEffect(() => {
-    setText(getDraft(currentSessionId));
-  }, [currentSessionId]);
-
   const adjustTextareaHeight = () => {
     if (!textareaRef.current) return;
     textareaRef.current.style.height = 'auto';
@@ -221,21 +252,58 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     }
   };
 
+  const MAX_TEXT_FILE_CHARS = 20000;
+
   const handleImageAttach = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    for (let i = 0; i < Math.min(files.length, 4 - attachedImages.length); i++) {
+    // Abort any in-flight reads from a rapid reselect before starting new ones
+    fileReadersRef.current.forEach((r) => {
+      try {
+        if (r.readyState === FileReader.LOADING) r.abort();
+      } catch {
+        /* ignore */
+      }
+    });
+    fileReadersRef.current = [];
+
+    for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      if (!file.type.startsWith('image/')) continue;
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        if (event.target?.result) {
-          setAttachedImages((prev) => [...prev, event.target!.result as string].slice(0, 4));
-        }
-      };
-      reader.readAsDataURL(file);
+      if (!file) continue;
+      if (file.type.startsWith('image/')) {
+        if (attachedImages.length + fileReadersRef.current.filter((r) => (r as unknown as { __kind?: string }).__kind === 'image').length >= 4) continue;
+        const reader = new FileReader();
+        (reader as unknown as { __kind?: string }).__kind = 'image';
+        fileReadersRef.current.push(reader);
+        reader.onload = (event) => {
+          if (event.target?.result) {
+            setAttachedImages((prev) => [...prev, event.target!.result as string].slice(0, 4));
+          }
+        };
+        reader.readAsDataURL(file);
+      } else if (/\.(txt|md|markdown|csv|json)$/i.test(file.name) || file.type.startsWith('text/') || file.type === 'application/json') {
+        const reader = new FileReader();
+        (reader as unknown as { __kind?: string }).__kind = 'text';
+        fileReadersRef.current.push(reader);
+        reader.onload = (event) => {
+          const raw = typeof event.target?.result === 'string' ? event.target.result : '';
+          if (!raw) return;
+          const block = `--- ${file.name} ---\n${raw.slice(0, MAX_TEXT_FILE_CHARS)}${raw.length > MAX_TEXT_FILE_CHARS ? '\n[truncated]' : ''}`;
+          // Functional update avoids stale composer text when several files resolve async
+          setText((prev) => {
+            const next = prev ? `${prev}\n\n${block}` : block;
+            setDraft(currentSessionId, next);
+            return next;
+          });
+        };
+        reader.readAsText(file);
+      } else {
+        showActionToast(`Unsupported file type: ${file.name} (images and .txt/.md/.csv/.json only)`);
+      }
     }
+    // Allow reselecting the same file
+    e.target.value = '';
   };
 
   const toggleVoice = () => {
@@ -275,6 +343,18 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     }
   };
 
+  const MAX_SPEECH_CHARS = 1500;
+
+  // Strip content that should never be vocalized: fenced code blocks,
+  // inline code, and URLs (may contain secrets or tokens)
+  const sanitizeForSpeech = (content: string) => {
+    let out = content.replace(/```[\s\S]*?```/g, ' code omitted ');
+    out = out.replace(/`[^`]*`/g, '');
+    out = out.replace(/https?:\/\/\S+/g, ' link omitted ');
+    out = out.replace(/[*#_>\-|]/g, '');
+    return out.replace(/\s+/g, ' ').trim();
+  };
+
   const handleSpeak = (msgId: string, content: string) => {
     if (!window.speechSynthesis) return;
 
@@ -285,11 +365,16 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     }
 
     window.speechSynthesis.cancel();
-    const cleanText = content.replace(/[*#`_>-]/g, '');
-    const utter = new SpeechSynthesisUtterance(cleanText);
+    const cleanText = sanitizeForSpeech(content);
+    if (!cleanText) return;
+    const truncated = cleanText.length > MAX_SPEECH_CHARS;
+    const utter = new SpeechSynthesisUtterance(
+      truncated ? cleanText.slice(0, MAX_SPEECH_CHARS) : cleanText
+    );
     utter.onend = () => setSpeakingMsgId(null);
     utter.onerror = () => setSpeakingMsgId(null);
     setSpeakingMsgId(msgId);
+    if (truncated) showActionToast('Message truncated for read-aloud');
     window.speechSynthesis.speak(utter);
   };
 
@@ -483,7 +568,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
 
                   {/* Message Body */}
                   {msg.content ? (
-                    <div className="prose prose-invert max-w-none text-sm leading-relaxed whitespace-pre-wrap select-text font-sans">
+                    <div className="prose dark:prose-invert max-w-none text-sm leading-relaxed whitespace-pre-wrap select-text font-sans">
                       {msg.content}
                       {isLiveTail && !isUser && (
                         <span className="inline-block w-1.5 h-4 ms-1 bg-indigo-400 animate-pulse align-middle" />
@@ -496,43 +581,61 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                     </div>
                   ) : null}
 
-                  {/* Message Actions */}
-                  <div className="flex items-center justify-end gap-3 mt-3 pt-2 border-t border-white/[0.06] text-xs">
-                    {isUser ? (
-                      <div className="flex items-center gap-3 text-white/70">
+                  {/* Message Actions: Regenerate stays visible, rest behind overflow menu */}
+                  <div className="relative flex items-center justify-end gap-3 mt-3 pt-2 border-t border-white/[0.06] text-xs">
+                    {isUser && (
+                      <button
+                        onClick={() => sendMessage(msg.content)}
+                        className="hover:text-white cursor-pointer flex items-center gap-1 transition text-white/70"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                        <span>Regenerate</span>
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setOpenMenuId(openMenuId === msg.id ? null : msg.id)}
+                      className="text-slate-400 hover:text-white flex items-center transition cursor-pointer"
+                      title="More actions"
+                      aria-label="More message actions"
+                      aria-expanded={openMenuId === msg.id}
+                    >
+                      <MoreHorizontal className="w-4 h-4" />
+                    </button>
+                    {openMenuId === msg.id && (
+                      <div className="absolute bottom-full end-0 mb-1.5 min-w-[140px] rounded-xl bg-[#1A2230] border border-white/[0.1] shadow-2xl py-1 z-20">
+                        {isUser && (
+                          <button
+                            onClick={() => {
+                              if (currentSessionId) forkSession(currentSessionId);
+                              setOpenMenuId(null);
+                            }}
+                            className="w-full px-3 py-2 flex items-center gap-2 text-start text-slate-300 hover:text-white hover:bg-white/[0.06] transition cursor-pointer"
+                          >
+                            <GitFork className="w-3.5 h-3.5" />
+                            <span>Branch</span>
+                          </button>
+                        )}
                         <button
-                          onClick={() => sendMessage(msg.content)}
-                          className="hover:text-white cursor-pointer flex items-center gap-1 transition"
+                          onClick={() => {
+                            handleSpeak(msg.id, msg.content);
+                            setOpenMenuId(null);
+                          }}
+                          className="w-full px-3 py-2 flex items-center gap-2 text-start text-slate-300 hover:text-white hover:bg-white/[0.06] transition cursor-pointer"
+                          title={speakingMsgId === msg.id ? 'Stop audio playback' : 'Read aloud'}
                         >
-                          <RefreshCw className="w-3 h-3" />
-                          <span>Regenerate</span>
-                        </button>
-                        <button
-                          onClick={() => currentSessionId && forkSession(currentSessionId)}
-                          className="hover:text-white cursor-pointer flex items-center gap-1 transition"
-                        >
-                          <GitFork className="w-3 h-3" />
-                          <span>Branch</span>
+                          {speakingMsgId === msg.id ? (
+                            <>
+                              <VolumeX className="w-3.5 h-3.5 text-rose-400" />
+                              <span className="text-rose-400 font-medium">Stop</span>
+                            </>
+                          ) : (
+                            <>
+                              <Volume2 className="w-3.5 h-3.5" />
+                              <span>Read aloud</span>
+                            </>
+                          )}
                         </button>
                       </div>
-                    ) : (
-                      <button
-                        onClick={() => handleSpeak(msg.id, msg.content)}
-                        className="text-slate-400 hover:text-white flex items-center gap-1.5 transition cursor-pointer"
-                        title={speakingMsgId === msg.id ? 'Stop audio playback' : 'Read aloud'}
-                      >
-                        {speakingMsgId === msg.id ? (
-                          <>
-                            <VolumeX className="w-3.5 h-3.5 text-rose-400" />
-                            <span className="text-rose-400 font-medium">Stop</span>
-                          </>
-                        ) : (
-                          <>
-                            <Volume2 className="w-3.5 h-3.5" />
-                            <span>Read</span>
-                          </>
-                        )}
-                      </button>
                     )}
                   </div>
                 </div>
@@ -676,7 +779,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
               type="file"
               ref={fileInputRef}
               onChange={handleImageAttach}
-              accept="image/*,.pdf,.txt,.md,.json,.csv"
+              accept="image/*,.txt,.md,.markdown,.csv,.json"
               multiple
               className="hidden"
             />
@@ -684,7 +787,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
               type="button"
               onClick={() => fileInputRef.current?.click()}
               className="w-7.5 h-7.5 rounded-full flex items-center justify-center text-slate-300 hover:text-white bg-[#1A2230] hover:bg-[#232D3F] active:scale-95 transition-all border border-white/[0.08] cursor-pointer shrink-0 shadow-xs"
-              title="Attach File, Document or Image"
+              title="Attach image or text file (.txt/.md/.csv/.json)"
             >
               <Plus className="w-4 h-4 stroke-[2.2]" />
             </button>
@@ -901,16 +1004,21 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                     <button
                       key={m.id}
                       onClick={() => {
-                        updateSettings({ modelId: m.id });
-                        if (m.provider && normProvider(m.provider) !== normProvider(settings.provider)) {
-                          const matchingProv = configuredProviders.find(
-                            (p) => normProvider(p.provider) === normProvider(m.provider!)
-                          );
-                          if (matchingProv) {
-                            (activateProvider as (id: string, keepModelId?: string) => void)(matchingProv.id, m.id);
-                          } else {
-                            updateSettings({ provider: m.provider });
-                          }
+                        const providerDiffers =
+                          !!m.provider && normProvider(m.provider) !== normProvider(settings.provider);
+                        const matchingProv = providerDiffers
+                          ? configuredProviders.find(
+                              (p) => normProvider(p.provider) === normProvider(m.provider!)
+                            )
+                          : undefined;
+                        // Single settings write: merge model + provider together
+                        updateSettings(
+                          providerDiffers && !matchingProv
+                            ? { modelId: m.id, provider: m.provider }
+                            : { modelId: m.id }
+                        );
+                        if (matchingProv) {
+                          (activateProvider as (id: string, keepModelId?: string) => void)(matchingProv.id, m.id);
                         }
                         setShowModelsSheet(false);
                       }}

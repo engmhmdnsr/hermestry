@@ -65,10 +65,13 @@ export const SettingsTab: React.FC = () => {
   const [newProvModel, setNewProvModel] = useState('');
   const [showNewKey, setShowNewKey] = useState(false);
 
-  // Key testing state
+  // Key testing state. testedKey records which exact key produced keyOk,
+  // so a save only marks the profile validated after a real successful
+  // validation of the key being saved.
   const [testingKey, setTestingKey] = useState(false);
   const [keyResult, setKeyResult] = useState<string | null>(null);
   const [keyOk, setKeyOk] = useState<boolean | null>(null);
+  const [testedKey, setTestedKey] = useState('');
 
   // External bot bridges state
   const [tgToken, setTgToken] = useState(settings.tgToken || '');
@@ -125,10 +128,29 @@ export const SettingsTab: React.FC = () => {
   const [themeSearch, setThemeSearch] = useState('');
   const [langSearch, setLangSearch] = useState('');
 
-  // Expose chat font scale as a CSS var so chrome text scales via index.css
+  // Font scale slider commits through a 150ms debounce so per-tick
+  // dragging does not re-render the full tree on every tick.
+  const [fontScaleLocal, setFontScaleLocal] = useState(settings.fontScale || 1);
+  const updateSettingsRef = React.useRef(updateSettings);
+  updateSettingsRef.current = updateSettings;
+  const settingsFontScaleRef = React.useRef(settings.fontScale || 1);
+  settingsFontScaleRef.current = settings.fontScale || 1;
+
   useEffect(() => {
+    setFontScaleLocal(settings.fontScale || 1);
+    // Expose chat font scale as a CSS var so chrome text scales via index.css
     document.documentElement.style.setProperty('--font-scale', String(settings.fontScale || 1));
   }, [settings.fontScale]);
+
+  useEffect(() => {
+    if (fontScaleLocal === settingsFontScaleRef.current) return;
+    const id = setTimeout(() => {
+      if (fontScaleLocal !== settingsFontScaleRef.current) {
+        updateSettingsRef.current({ fontScale: fontScaleLocal });
+      }
+    }, 150);
+    return () => clearTimeout(id);
+  }, [fontScaleLocal]);
 
   const EFFORT_LEVELS = [
     { id: 'none', label: t('effortNone') },
@@ -155,9 +177,12 @@ export const SettingsTab: React.FC = () => {
   };
 
   useEffect(() => {
-    service.skillsList().then(setSkills);
-    service.memoryGet().then(setMemory);
-    service.blueprints().then(setBlueprints);
+    const ctrl = new AbortController();
+    const { signal } = ctrl;
+    service.skillsList(signal).then(setSkills).catch(() => {});
+    service.memoryGet(signal).then(setMemory).catch(() => {});
+    service.blueprints(signal).then(setBlueprints).catch(() => {});
+    return () => ctrl.abort();
   }, [service]);
 
   const handleTestKey = async () => {
@@ -165,10 +190,12 @@ export const SettingsTab: React.FC = () => {
     setTestingKey(true);
     setKeyResult(null);
     setKeyOk(null);
+    setTestedKey('');
 
     const norm = normProvider(newProvType);
     const valid = await service.providersValidate(norm, 'HERMES_API_KEY', newProvKey.trim());
     setTestingKey(false);
+    setTestedKey(newProvKey.trim());
     if (valid === true) {
       setKeyOk(true);
       setKeyResult(t('keyValid'));
@@ -176,6 +203,8 @@ export const SettingsTab: React.FC = () => {
       setKeyOk(false);
       setKeyResult(t('keyInvalid'));
     } else {
+      // null means the gateway could not be reached, so validity is
+      // genuinely unknown. Keep the amber state for that real outcome.
       setKeyOk(null);
       setKeyResult(t('keyPattern'));
     }
@@ -189,6 +218,9 @@ export const SettingsTab: React.FC = () => {
   };
 
   const handleRunBackup = async () => {
+    if (!window.confirm('Create a local snapshot? It saves workspace sessions, cron schedules, and settings.')) {
+      return;
+    }
     setRunningBackup(true);
     const res = await service.backup();
     setBackupResult(res);
@@ -196,6 +228,9 @@ export const SettingsTab: React.FC = () => {
   };
 
   const handleShareDebug = async () => {
+    if (!window.confirm('Generate a debug bundle? It collects diagnostics for sharing. Secrets are redacted before upload.')) {
+      return;
+    }
     setSharingDebug(true);
     const res = await service.debugShare();
     setDebugResult(res);
@@ -273,6 +308,7 @@ export const SettingsTab: React.FC = () => {
                   setNewProvModel(DEFAULT_MODELS['deepseek']?.[0] || 'deepseek/deepseek-chat');
                   setKeyResult(null);
                   setKeyOk(null);
+                  setTestedKey('');
                   setShowAddModal(true);
                 }}
                 className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer shrink-0"
@@ -289,7 +325,11 @@ export const SettingsTab: React.FC = () => {
                 </p>
               )}
               {configuredProviders.map((prov) => {
-                const isActive = prov.provider === settings.provider;
+                // Active is matched by id so same-slug duplicate profiles
+                // do not all light up. Falls back to slug for legacy state.
+                const isActive = settings.activeProviderId
+                  ? prov.id === settings.activeProviderId
+                  : prov.provider === settings.provider;
                 return (
                   <div
                     key={prov.id}
@@ -354,6 +394,7 @@ export const SettingsTab: React.FC = () => {
                           setNewProvModel(prov.defaultModel || '');
                           setKeyResult(null);
                           setKeyOk(null);
+                          setTestedKey('');
                           setShowAddModal(true);
                         }}
                         className="px-2.5 py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-white hover:bg-white/[0.06] transition cursor-pointer"
@@ -726,15 +767,15 @@ export const SettingsTab: React.FC = () => {
             <div className="space-y-1.5">
               <div className="flex justify-between text-xs text-slate-300">
                 <span className="font-medium">{t('fontScale')}</span>
-                <span className="font-mono text-slate-400">{Math.round(settings.fontScale * 100)}%</span>
+                <span className="font-mono text-slate-400">{Math.round(fontScaleLocal * 100)}%</span>
               </div>
               <input
                 type="range"
                 min="0.8"
-                max="1.4"
+                max="1.3"
                 step="0.05"
-                value={settings.fontScale}
-                onChange={(e) => updateSettings({ fontScale: parseFloat(e.target.value) })}
+                value={fontScaleLocal}
+                onChange={(e) => setFontScaleLocal(parseFloat(e.target.value))}
                 aria-label={t('fontScale')}
                 className="w-full accent-indigo-500"
               />
@@ -784,6 +825,35 @@ export const SettingsTab: React.FC = () => {
                 >
                   {settings.autoApproveGlobal ? t('active') : t('disabled')}
                 </button>
+              </div>
+
+              {/* Approval scope: one-tap allow applies once or for the session */}
+              <div className="flex items-center justify-between p-3 rounded-2xl bg-[#141920] border border-white/[0.06]">
+                <div>
+                  <p className="text-xs font-medium text-white">Approval Scope</p>
+                  <p className="text-[11px] text-slate-400">How long an auto-approval lasts once granted.</p>
+                </div>
+                <div className="flex items-center gap-1 p-1 bg-[#0E1217] border border-white/[0.08] rounded-xl shrink-0">
+                  {[
+                    { id: 'once', label: 'Once' },
+                    { id: 'session', label: 'Session' },
+                  ].map((scope) => (
+                    <button
+                      key={scope.id}
+                      onClick={() => {
+                        updateSettings({ approvalScope: scope.id });
+                        showToast(`Approval Scope: ${scope.label}`);
+                      }}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer ${
+                        (settings.approvalScope || 'once') === scope.id
+                          ? 'bg-white/[0.12] text-white shadow-xs font-semibold'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {scope.label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               {/* App Lock PIN */}
@@ -1289,16 +1359,28 @@ export const SettingsTab: React.FC = () => {
                   const cleanedKey = newProvKey.trim();
                   const targetModel = newProvModel.trim() || DEFAULT_MODELS[newProvType]?.[0] || `${newProvType}/default`;
                   const label = newProvName.trim() || PROVIDER_OPTIONS.find(([id]) => id === newProvType)?.[1] || newProvType;
+                  // Only mark validated after a real successful validation of
+                  // the exact key being saved. Untested or failed keys stay
+                  // unvalidated; edits keep their prior flag when the key
+                  // was not retested.
+                  const existing = editingProviderId
+                    ? configuredProviders.find((p) => p.id === editingProviderId)
+                    : undefined;
+                  const freshlyValidated = testedKey === cleanedKey && keyOk === true;
+                  const validated = freshlyValidated || (!!editingProviderId && cleanedKey === (existing?.apiKey || '') && !!existing?.validated);
 
                   if (editingProviderId) {
                     const targetProv = configuredProviders.find((p) => p.id === editingProviderId);
-                    const isCurrentlyActive = targetProv?.provider === settings.provider;
+                    const isCurrentlyActive = settings.activeProviderId
+                      ? targetProv?.id === settings.activeProviderId
+                      : targetProv?.provider === settings.provider;
                     updateConfiguredProvider(editingProviderId, {
                       provider: newProvType,
                       name: label,
                       apiKey: cleanedKey,
                       baseUrl: newProvBaseUrl.trim(),
                       defaultModel: targetModel,
+                      validated,
                     });
                     if (isCurrentlyActive) {
                       updateSettings({
@@ -1317,7 +1399,7 @@ export const SettingsTab: React.FC = () => {
                       baseUrl: newProvBaseUrl.trim(),
                       defaultModel: targetModel,
                       enabled: true,
-                      validated: true,
+                      validated,
                     });
                     // Automatically activate if requested or first
                     activateProvider(newId);
