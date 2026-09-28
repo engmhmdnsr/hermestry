@@ -964,6 +964,35 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         addLog(`Gateway start failed: ${reason}`);
         return;
       }
+      // First boot prepares the runtime inside proot (minutes). Poll health
+      // instead of probing once, or the UI reports failure while boot is
+      // still in progress.
+      addLog('Gateway process starting, waiting for health...');
+      let nativeHealthy = false;
+      for (let i = 0; i < 48; i++) {
+        try {
+          if (await gatewayService.health()) {
+            nativeHealthy = true;
+            break;
+          }
+        } catch {
+          /* not up yet */
+        }
+        if (i % 6 === 5) addLog(`Still waiting for gateway (${(i + 1) * 5}s)...`);
+        await new Promise((r) => setTimeout(r, 5000));
+      }
+      if (nativeHealthy) {
+        setConnected(true);
+        addLog('Gateway running on 127.0.0.1:8080');
+        refreshNow();
+      } else {
+        setConnected(false);
+        setGatewayFailed(true);
+        const reason = 'Gateway start failed: not reachable after 4 minutes, see gateway.log';
+        setGatewayFailureReason(reason);
+        addLog(reason);
+      }
+      return;
     }
     let healthy = false;
     try {
