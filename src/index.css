@@ -580,3 +580,88 @@
     -webkit-backdrop-filter: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Shared mobile utilities (added for the P1 usability pass).
+
+   .hm-tab-bottom replaces the per-tab magic numbers (HomeTab used pb-20 and
+   SettingsTab pb-28) with one inset that always clears the bottom navigation
+   plus the gesture bar.
+
+   .hm-rail is a horizontal chip/action strip that actually reads as
+   scrollable: snap points, momentum, a hidden scrollbar and an inset shadow
+   at the edges so nothing looks clipped.
+   --------------------------------------------------------------------------- */
+
+html,
+body {
+  -webkit-tap-highlight-color: transparent;
+}
+
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --bottom-nav-height: 4rem;
+}
+
+.hm-tab-bottom {
+  padding-bottom: calc(var(--bottom-nav-height) + 1.5rem + var(--safe-bottom));
+}
+
+.hm-rail {
+  display: flex;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 12px,
+    #000 calc(100% - 20px),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    transparent 0,
+    #000 12px,
+    #000 calc(100% - 20px),
+    transparent 100%
+  );
+}
+
+.hm-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.hm-rail > * {
+  scroll-snap-align: start;
+  flex: 0 0 auto;
+}
+
+/* Visible scrollbar on pointer-capable devices only. */
+@media (hover: hover) and (pointer: fine) {
+  .hm-rail {
+    -webkit-mask-image: none;
+    mask-image: none;
+    scrollbar-width: thin;
+  }
+
+  .hm-rail::-webkit-scrollbar {
+    display: initial;
+    height: 6px;
+  }
+}
+
+/* Tap target that looks small but is still comfortably hittable. */
+.hm-hit {
+  position: relative;
+}
+
+.hm-hit::after {
+  content: '';
+  position: absolute;
+  inset: -8px;
+}
+

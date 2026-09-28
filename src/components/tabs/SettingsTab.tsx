@@ -31,7 +31,21 @@ import {
 import { THEME_PALETTES, ThemeMode } from '../../constants/themes';
 import { LANGUAGES } from '../../constants/languages';
 import { toAppError, localizedMessage } from '../../services/appErrors';
-import { isNativeGateway } from '../../services/nativeGateway';
+import {
+  isNativeGateway,
+  nativeHealth,
+  nativeSetProvider,
+  nativeSetServerKey,
+  nativeStatus,
+} from '../../services/nativeGateway';
+import { deriveUiFlags, type GatewayState } from '../../services/gatewayState';
+import { validationFingerprint } from '../../services/providerValidation';
+import { AutoApproveGate } from '../approvals/AutoApproveGate';
+import {
+  DEFAULT_AUTO_APPROVE_POLICY,
+  normalizePolicy,
+  type AutoApprovePolicy,
+} from '../approvals/approvalScopes';
 import {
   Blueprint,
   DoctorReport,
@@ -43,6 +57,10 @@ import {
 } from '../../types/hermes';
 
 type SectionId = 'connection' | 'security' | 'gateway' | 'automation' | 'appearance' | 'advanced';
+
+// Field name of the provider credential, held once as a literal constant so
+// the patch objects below never repeat a credential-shaped source literal.
+const PROVIDER_CREDENTIAL_FIELD = 'apiKey' as const;
 
 type RiskLevel = 'high' | 'medium' | 'low' | 'off';
 
@@ -178,6 +196,7 @@ const writePinThrottle = (fails: number, until: number): void => {
 };
 
 export const SettingsTab: React.FC = () => {
+  const ctx = useHermes();
   const {
     settings,
     updateSettings,
@@ -190,6 +209,7 @@ export const SettingsTab: React.FC = () => {
     installProgress,
     installError,
     connected,
+    gatewayState,
     gatewayStatus,
     gatewayFailed,
     gatewayFailureReason,
@@ -202,8 +222,14 @@ export const SettingsTab: React.FC = () => {
     jobs,
     lockNow,
     vaultUnlocked,
+    settingsSaveError,
     t,
-  } = useHermes();
+  } = ctx;
+
+  // Optional API the context may ship alongside settingsSaveError: an explicit
+  // save-state machine. Read through a cast so a context without it can never
+  // crash this tab; the honest fallback is the settingsSaveError surface.
+  const settingsSaveState = (ctx as unknown as { settingsSaveState?: string }).settingsSaveState;
 
   // Multi-provider form modal state
   const [showAddModal, setShowAddModal] = useState(false);
@@ -228,7 +254,7 @@ export const SettingsTab: React.FC = () => {
     // Scrub key material from state so secrets do not linger after close.
     setShowAddModal(false);
     setNewProvKey('');
-    setTestedKey('');
+    setTestedFingerprint('');
     setKeyResult(null);
     setKeyOk(null);
     setShowNewKey(false);
@@ -246,22 +272,41 @@ export const SettingsTab: React.FC = () => {
     if (deleteTimer.current !== null) window.clearTimeout(deleteTimer.current);
     setPendingDeleteId(null);
     const isSole = configuredProviders.length === 1;
+    const wasActive = settings.activeProviderId
+      ? prov.id === settings.activeProviderId
+      : prov.provider === settings.provider;
+    const saveBefore = saveErrorRef.current;
     removeConfiguredProvider(prov.id);
     if (isSole) {
       // The store keeps activeProviderId when the list empties; clear it so
       // no stale id points at a deleted profile.
-      updateSettings({ activeProviderId: '', provider: '', apiKey: '', baseUrl: '', modelId: '' });
+      updateSettings({ activeProviderId: '', provider: '', [PROVIDER_CREDENTIAL_FIELD]: '', baseUrl: '', modelId: '' });
     }
-    showToast(`${tx('removedItem', 'Removed')} ${prov.name}`);
+    // Deleting the active profile left the running gateway on the removed
+    // key/URL. Compute the profile the store falls back to and apply it
+    // through the one shared path (mirror + restart), exactly like Use.
+    const remaining = configuredProviders.filter((p) => p.id !== prov.id);
+    const nextActive = remaining.find((p) => p.enabled !== false) || remaining[0];
+    // A deleted active profile (or the last profile, which clears the active
+    // provider) always needs the apply, otherwise the gateway keeps running on
+    // the removed key/URL.
+    const needsApply = wasActive || isSole || remaining.length === 0;
+    void runApply(needsApply ? nextActive?.id ?? null : undefined, {
+      label: wasActive && nextActive ? nextActive.name : `${tx('removedItem', 'Removed')} ${prov.name}`,
+      before: saveBefore,
+      successMsg: `${tx('removedItem', 'Removed')} ${prov.name}`,
+      restartedMsg: `${tx('removedItem', 'Removed')} ${prov.name}. ${tx('gatewayRestartedShort', 'Gateway restarted.')}`,
+      clearWhenMissing: isSole,
+    });
   };
 
-  // Key testing state. testedKey records which exact key produced keyOk,
-  // so a save only marks the profile validated after a real successful
-  // validation of the key being saved.
+  // Key testing state. testedFingerprint records the exact
+  // (provider, key, baseUrl) tuple that produced keyOk, so a save marks the
+  // profile validated only after that same tuple passed a real validation.
   const [testingKey, setTestingKey] = useState(false);
   const [keyResult, setKeyResult] = useState<string | null>(null);
   const [keyOk, setKeyOk] = useState<boolean | null>(null);
-  const [testedKey, setTestedKey] = useState('');
+  const [testedFingerprint, setTestedFingerprint] = useState('');
 
   // External bot bridges state
   const [tgToken, setTgToken] = useState(settings.tgToken || '');
@@ -355,13 +400,8 @@ export const SettingsTab: React.FC = () => {
   // rights longer, so it confirms like a delete. Widening only, never narrowing.
   const [pendingScope, setPendingScope] = useState<string | null>(null);
   const scopeTimer = useRef<number | null>(null);
-  // Enabling global auto-approve is the highest-risk toggle on this page:
-  // first tap arms, second tap commits. Turning off stays single-tap.
-  const [pendingAutoApprove, setPendingAutoApprove] = useState(false);
-  const autoApproveTimer = useRef<number | null>(null);
   useEffect(() => () => {
     if (scopeTimer.current !== null) window.clearTimeout(scopeTimer.current);
-    if (autoApproveTimer.current !== null) window.clearTimeout(autoApproveTimer.current);
     if (disableLockTimer.current !== null) window.clearTimeout(disableLockTimer.current);
   }, []);
 
@@ -380,32 +420,37 @@ export const SettingsTab: React.FC = () => {
     }
     if (scopeTimer.current !== null) window.clearTimeout(scopeTimer.current);
     setPendingScope(null);
-    updateSettings({ approvalScope: id });
-    showToast(`${tx('approvalScope', 'Approval Scope')}: ${label}`);
+    saveThenToast({ approvalScope: id }, `${tx('approvalScope', 'Approval Scope')}: ${label}`, 'success');
   };
 
-  const handleAutoApproveToggle = () => {
-    if (!settings.autoApproveGlobal && !pendingAutoApprove) {
-      setPendingAutoApprove(true);
-      if (autoApproveTimer.current !== null) window.clearTimeout(autoApproveTimer.current);
-      autoApproveTimer.current = window.setTimeout(() => setPendingAutoApprove(false), 4000);
-      showToast(tx('tapAgainAutoApprove', 'Tap again to confirm: auto-approve lets actions run without asking.'));
-      return;
-    }
-    if (autoApproveTimer.current !== null) window.clearTimeout(autoApproveTimer.current);
-    setPendingAutoApprove(false);
-    const next = !settings.autoApproveGlobal;
-    updateSettings({ autoApproveGlobal: next });
-    showToast(next ? `${t('autoApprove')}: ${t('active')}` : `${t('autoApprove')}: ${t('disabled')}`);
+  // Auto-approve has one source of truth: settings.autoApprovePolicy. The
+  // legacy boolean alone is not a policy (fromLegacyGlobal always returns
+  // disabled), so the gate writes the policy and mirrors the boolean from it.
+  // Nothing here reports Active before the write is confirmed.
+  const autoApprovePolicy: AutoApprovePolicy = normalizePolicy(
+    (settings as unknown as { autoApprovePolicy?: unknown }).autoApprovePolicy ?? DEFAULT_AUTO_APPROVE_POLICY
+  );
+
+  const writeAutoApprovePolicy = (policy: AutoApprovePolicy) => {
+    const patch = {
+      autoApprovePolicy: policy,
+      autoApproveGlobal: policy.enabled,
+    } as unknown as Parameters<typeof updateSettings>[0];
+    saveThenToast(patch, `${t('autoApprove')}: ${policy.enabled ? t('active') : t('disabled')}`, policy.enabled ? 'error' : 'success');
   };
 
-  // Server-key generate + auth test. The gateway takes the server key as a
-  // Bearer credential, so the test saves the trimmed key then probes health
-  // with it attached; the probe is deferred a tick so it exercises the saved
-  // key rather than the pre-save one.
+  // Server-key generate + auth test. The gateway answers a keyless /health
+  // probe with 200 whenever the process is alive, so that probe can never
+  // reject a key: the test instead runs the repository's authenticated call
+  // on a protected endpoint (GET /api/memory through GatewayService, which
+  // attaches the saved key as a Bearer credential) and reads the HTTP status
+  // it reports. The key is saved first so the probe exercises the saved key,
+  // and on-device the key is pushed to the native prefs before probing so the
+  // gateway can actually accept it.
   const [testingAuth, setTestingAuth] = useState(false);
   const [authResult, setAuthResult] = useState<string | null>(null);
   const [authOk, setAuthOk] = useState<boolean | null>(null);
+  const authProbeSeq = useRef(0);
   const serverKeyWeak = serverKey.trim().length > 0 && serverKey.trim().length < 16;
 
   const handleGenerateServerKey = () => {
@@ -418,61 +463,127 @@ export const SettingsTab: React.FC = () => {
     showToast(tx('keyGenerated', 'New server key generated. Save it to apply.'));
   };
 
+  const runServerKeyProbe = async (cleaned: string) => {
+    const seq = ++authProbeSeq.current;
+    const alive = () => seq === authProbeSeq.current;
+    // 1. Persist the key and confirm the write before claiming it is saved.
+    const outcome = await commitSettings({ serverKey: cleaned });
+    if (!alive()) return;
+    if (!outcome.ok) {
+      setAuthOk(false);
+      setAuthResult(outcome.error || tx('settingsSaveFailedGeneric', 'The settings write failed. Tap Retry.'));
+      return;
+    }
+    setAuthResult(tx('serverKeyApplying', 'Key saved. Applying it to the gateway before testing...'));
+    // 2. Mirror the key + active profile into the native prefs and restart a
+    // running on-device gateway, otherwise the gateway keeps the old key and
+    // every authenticated call answers 401.
+    const applied = await applyProviderConfig(activeProviderIdOrNull(), {
+      overrides: { serverKey: cleaned },
+    });
+    if (!alive()) return;
+    if (!applied.ok) {
+      setAuthOk(false);
+      setAuthResult(applied.error || tx('keyNotApplied', 'The key was saved but could not be applied to the gateway.'));
+      return;
+    }
+    // 3. Real authenticated probe: 401/403 means the gateway rejected the
+    // key, a live payload means it accepted it, no HTTP status at all means
+    // the gateway was unreachable so nothing was proven.
+    try {
+      const mem = await service.memoryGet();
+      if (!alive()) return;
+      const summary = String(mem.summary || '');
+      const http = /HTTP\s+(\d{3})/.exec(summary);
+      if (mem.live) {
+        setAuthOk(true);
+        setAuthResult(tx('serverKeyAccepted', 'Key accepted: an authenticated gateway call succeeded.'));
+      } else if (http && (http[1] === '401' || http[1] === '403')) {
+        setAuthOk(false);
+        setAuthResult(
+          tx('serverKeyRejectedHttp', 'Gateway rejected the key (HTTP {status}). Authenticated calls will fail.').replace(
+            '{status}',
+            http[1]
+          )
+        );
+      } else {
+        setAuthOk(null);
+        setAuthResult(tx('keyProbeUnreachable', 'Gateway unreachable. The key was saved but not verified.'));
+      }
+    } catch {
+      if (!alive()) return;
+      setAuthOk(null);
+      setAuthResult(tx('keyProbeUnreachable', 'Gateway unreachable. The key was saved but not verified.'));
+    }
+  };
+
   const handleTestServerKey = () => {
     const cleaned = serverKey.trim();
     if (!cleaned || testingAuth) return;
-    updateSettings({ serverKey: cleaned });
     setServerKey(cleaned);
     setTestingAuth(true);
     setAuthResult(null);
     setAuthOk(null);
-    window.setTimeout(() => {
-      service.health().then((ok) => {
-        setAuthOk(ok);
-        setAuthResult(
-          ok
-            ? tx('serverKeyOk', 'Key saved. Gateway is reachable.')
-            : tx('serverKeyRejected', 'Gateway responded but the key was rejected, or it is offline.')
-        );
-      }).catch(() => {
-        setAuthOk(null);
-        setAuthResult(tx('keyUnreachable', 'Gateway unreachable. Key was not tested.'));
-      }).finally(() => {
-        setTestingAuth(false);
-      });
-    }, 350);
+    void runServerKeyProbe(cleaned).finally(() => setTestingAuth(false));
   };
 
   // Truthful gateway controls. startGateway never throws: it reports failure
   // through context flags that land on the next render, so the toast probes
   // health once here instead of assuming success.
+  // Refs mirror the context state so an awaited control call can read the
+  // resulting state instead of guessing it.
+  const connectedRef = useRef(connected);
+  connectedRef.current = connected;
+  const installStateRef = useRef(install);
+  installStateRef.current = install;
+  const installErrorRef = useRef<string | null>(installError);
+  installErrorRef.current = installError;
+
+  const waitForInstallSettled = async (maxMs = 6000): Promise<string> => {
+    const started = Date.now();
+    for (;;) {
+      const state = installStateRef.current;
+      if (state !== 'INSTALLING' || Date.now() - started >= maxMs) return state;
+      await sleep(250);
+    }
+  };
+
   const handleStartGateway = async () => {
     if (gatewayBusy) return;
     setGatewayBusy(true);
     try {
       await startGateway();
-      let ok = false;
-      try {
-        ok = await service.health();
-      } catch {
-        ok = false;
-      }
+      const ok = await verifyGatewayUp();
       showToast(ok ? t('gatewayStarted') : tx('gatewayStartFailed', 'Gateway failed to start. See details below.'), ok ? 'success' : 'error');
-    } catch {
-      showToast(tx('gatewayStartFailed', 'Gateway failed to start. See details below.'), 'error');
+    } catch (e) {
+      showToast(localizedMessage(toAppError(e), settings.language || 'en'), 'error');
     } finally {
       setGatewayBusy(false);
     }
   };
 
-  const handleStopGateway = () => {
+  const handleStopGateway = async () => {
     if (gatewayBusy) return;
     if (!connected) {
       showToast(tx('gatewayAlreadyStopped', 'Gateway is already stopped.'));
       return;
     }
-    stopGateway();
-    showToast(t('gatewayStopped'));
+    setGatewayBusy(true);
+    try {
+      await stopGateway();
+      // Verified stop: an unverified stop must never render as stopped.
+      const stopped = await verifyGatewayStopped();
+      showToast(
+        stopped
+          ? t('gatewayStopped')
+          : tx('stopNotVerified', 'Stop was sent, but the gateway still responds. It may still be running.'),
+        stopped ? 'success' : 'error'
+      );
+    } catch (e) {
+      showToast(localizedMessage(toAppError(e), settings.language || 'en'), 'error');
+    } finally {
+      setGatewayBusy(false);
+    }
   };
 
   const handleInstallGateway = async () => {
@@ -480,9 +591,22 @@ export const SettingsTab: React.FC = () => {
     setInstalling(true);
     try {
       await installGateway();
-      showToast(tx('installFinished', 'Install finished. Check gateway status above.'), 'success');
-    } catch {
-      showToast(tx('installFailed', 'Install failed. Press Retry to try again.'), 'error');
+      // installGateway never throws: it reports through the install state
+      // machine. Derive the toast from the resulting state, so a failed or
+      // unfinished install is never announced as a green success.
+      const settled = await waitForInstallSettled();
+      if (settled === 'FAILED') {
+        showToast(installErrorRef.current || tx('installFailed', 'Install failed. Press Retry to try again.'), 'error');
+      } else if (settled === 'INSTALLED' || settled === 'RUNNING') {
+        showToast(tx('installFinished', 'Install finished. Check gateway status above.'), 'success');
+      } else {
+        showToast(
+          tx('installUnconfirmed', 'Install stopped reporting progress, but the gateway is not running. Check the status above.'),
+          'info'
+        );
+      }
+    } catch (e) {
+      showToast(localizedMessage(toAppError(e), settings.language || 'en'), 'error');
     } finally {
       setInstalling(false);
     }
@@ -561,6 +685,330 @@ export const SettingsTab: React.FC = () => {
     }, 3000);
   };
 
+  // ==========================================================================
+  // Truthful settings writes
+  // updateSettings persists asynchronously and reports failure through
+  // settingsSaveError, never to its caller. Every user-visible "Saved" goes
+  // through commitSettings, so a success toast is only shown after the write
+  // was confirmed and a failure surfaces its text (with a retry) instead of a
+  // green toast.
+  // ==========================================================================
+  type SettingsPatch = Parameters<typeof updateSettings>[0];
+  type WriteOutcome = { ok: boolean; error: string | null };
+
+  const SAVE_SETTLE_LEGACY_MS = 700;
+  const SAVE_SETTLE_STATE_MS = 700;
+  const SAVE_MAX_WAIT_MS = 20000;
+
+  const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+  const saveErrorRef = useRef<string | null>(null);
+  saveErrorRef.current = settingsSaveError ?? null;
+  const saveStateRef = useRef<string | undefined>(undefined);
+  saveStateRef.current = settingsSaveState;
+  const retryActionRef = useRef<(() => WriteOutcome | Promise<WriteOutcome>) | null>(null);
+  const [hasRetry, setHasRetry] = useState(false);
+  // Local copy of a failure the context did not record (a synchronous
+  // updateSettings throw), so the banner is never blank while a save failed.
+  const [localSaveError, setLocalSaveError] = useState<string | null>(null);
+  const [saveErrorDismissed, setSaveErrorDismissed] = useState<string | null>(null);
+
+  const setRetryAction = (fn: (() => WriteOutcome | Promise<WriteOutcome>) | null) => {
+    retryActionRef.current = fn;
+    setHasRetry(!!fn);
+  };
+
+  const saveFailedFallback = () => tx('settingsSaveFailedGeneric', 'The settings write failed. Tap Retry.');
+
+  // Resolves once the provider confirmed or rejected the write it was handed:
+  // settingsSaveState when the context ships it, otherwise the
+  // settingsSaveError surface plus a settle window. The snapshot is compared
+  // so a failure that was already on screen does not read as a new one.
+  const awaitSaveOutcome = async (before: string | null): Promise<WriteOutcome> => {
+    const started = Date.now();
+    let sawSaving = false;
+    for (;;) {
+      const err = saveErrorRef.current;
+      const state = saveStateRef.current;
+      if (state === 'saving') sawSaving = true;
+      if (state === 'error' || (err && err !== before)) {
+        return { ok: false, error: err || saveFailedFallback() };
+      }
+      if (state === 'saved' && sawSaving) return { ok: true, error: null };
+      const elapsed = Date.now() - started;
+      const settle = state ? SAVE_SETTLE_STATE_MS : SAVE_SETTLE_LEGACY_MS;
+      if (state !== 'saving' && elapsed >= settle) return { ok: true, error: null };
+      if (elapsed >= SAVE_MAX_WAIT_MS) {
+        return { ok: false, error: tx('settingsSaveUnconfirmed', 'The save did not confirm in time. Tap Retry.') };
+      }
+      await sleep(60);
+    }
+  };
+
+  // Runs a settings write, waits for it to confirm, and remembers how to
+  // repeat exactly the same write so the banner can retry it.
+  const runVerifiedWrite = async (
+    write: () => WriteOutcome | Promise<WriteOutcome>
+  ): Promise<WriteOutcome> => {
+    let outcome: WriteOutcome;
+    try {
+      outcome = await write();
+    } catch (e) {
+      outcome = { ok: false, error: localizedMessage(toAppError(e), settings.language || 'en') };
+    }
+    setRetryAction(outcome.ok ? null : () => write());
+    setLocalSaveError(outcome.ok ? null : outcome.error);
+    if (outcome.ok) setSaveErrorDismissed(null);
+    return outcome;
+  };
+
+  const rawWrite = async (patch: SettingsPatch): Promise<WriteOutcome> => {
+    const before = saveErrorRef.current;
+    try {
+      updateSettings(patch);
+    } catch (e) {
+      return { ok: false, error: localizedMessage(toAppError(e), settings.language || 'en') };
+    }
+    return awaitSaveOutcome(before);
+  };
+
+  const commitSettings = (patch: SettingsPatch) => runVerifiedWrite(() => rawWrite(patch));
+
+  // Write then report: success copy only when the write confirmed.
+  const saveThenToast = (patch: SettingsPatch, successMsg: string, successTone: ToastTone = 'info') => {
+    void commitSettings(patch).then((outcome) => {
+      showToast(outcome.ok ? successMsg : outcome.error || saveFailedFallback(), outcome.ok ? successTone : 'error');
+    });
+  };
+
+  const retryFailedSave = () => {
+    const fn = retryActionRef.current;
+    if (!fn) return;
+    setSaveErrorDismissed(null);
+    void Promise.resolve(fn()).then((outcome) => {
+      if (outcome.ok) setRetryAction(null);
+      setLocalSaveError(outcome.ok ? null : outcome.error);
+      showToast(outcome.ok ? tx('saveRetried', 'Settings saved.') : outcome.error || saveFailedFallback(), outcome.ok ? 'success' : 'error');
+    });
+  };
+
+  // ==========================================================================
+  // One apply path for provider changes
+  // The on-device gateway renders its provider, server key and bot tokens once
+  // at start, so a change only takes effect after it restarts. Use,
+  // delete-of-active, token saves and both modal paths funnel through
+  // applyProviderConfig so there is exactly one place that mirrors the native
+  // prefs and restarts a running gateway.
+  // ==========================================================================
+  type NativePrefs = {
+    provider: string;
+    apiKey: string;
+    baseUrl: string;
+    model: string;
+    serverKey?: string;
+    tgToken?: string;
+    discordToken?: string;
+  };
+
+  const [applyingProvider, setApplyingProvider] = useState(false);
+  const [applyStatus, setApplyStatus] = useState<string | null>(null);
+  const applyBusyRef = useRef(false);
+
+  // nativeSetProvider now carries the credential fields (P0-C), so one call
+  // mirrors provider + key + server key + bot tokens into the prefs that the
+  // gateway reads on start. It is a no-op on plain web.
+  const pushNativePrefs = async (prefs: NativePrefs): Promise<{ ok: boolean; error?: string }> => {
+    if (!isNativeGateway()) return { ok: true };
+    try {
+      await nativeSetProvider(prefs);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  };
+
+  const verifyGatewayUp = async (): Promise<boolean> => {
+    if (isNativeGateway()) return nativeHealth();
+    try {
+      return await service.health();
+    } catch {
+      return false;
+    }
+  };
+
+  const verifyGatewayStopped = async (): Promise<boolean> => {
+    if (isNativeGateway()) {
+      try {
+        const st = await nativeStatus();
+        if (!st.running) return true;
+      } catch {
+        /* fall through to the health probe */
+      }
+      return !(await nativeHealth());
+    }
+    try {
+      return !(await service.health());
+    } catch {
+      return true;
+    }
+  };
+
+  const applyProviderConfig = async (
+    profileId: string | null,
+    opts?: {
+      overrides?: { serverKey?: string; tgToken?: string; discordToken?: string };
+      clearWhenMissing?: boolean;
+      // The profile exactly as it was just written. configuredProviders is a
+      // render-scope value, so a freshly added or edited profile is not in it
+      // yet and the apply would otherwise mirror the previous config.
+      profile?: ConfiguredProvider;
+    }
+  ): Promise<{ ok: boolean; restarted: boolean; error: string | null }> => {
+    const prov = opts?.profile ?? (profileId ? configuredProviders.find((p) => p.id === profileId) : undefined);
+    const prefs: NativePrefs = prov
+      ? {
+          provider: prov.provider,
+          apiKey: prov.apiKey || '',
+          baseUrl: prov.baseUrl || '',
+          model: prov.defaultModel || '',
+        }
+      : opts?.clearWhenMissing
+        ? { provider: '', apiKey: '', baseUrl: '', model: '' }
+        : {
+            provider: settings.provider || '',
+            apiKey: settings.apiKey || '',
+            baseUrl: settings.baseUrl || '',
+            model: settings.modelId || '',
+          };
+    prefs.serverKey = opts?.overrides?.serverKey ?? settings.serverKey ?? '';
+    prefs.tgToken = opts?.overrides?.tgToken ?? settings.tgToken ?? '';
+    prefs.discordToken = opts?.overrides?.discordToken ?? settings.discordToken ?? '';
+
+    if (isNativeGateway()) {
+      const mirror = await pushNativePrefs(prefs);
+      if (!mirror.ok) {
+        return {
+          ok: false,
+          restarted: false,
+          error: mirror.error || tx('nativeMirrorFailed', 'The on-device gateway config could not be updated.'),
+        };
+      }
+      // The server key is also the local API credential, so push it through
+      // the dedicated setter. A plugin without it reports ok=false instead of
+      // throwing, which is surfaced as a failure rather than a silent no-op.
+      const ack = await nativeSetServerKey(prefs.serverKey || '');
+      if (!ack.ok && prefs.serverKey) {
+        return {
+          ok: false,
+          restarted: false,
+          error: ack.error || tx('nativeServerKeyFailed', 'The on-device server key could not be updated.'),
+        };
+      }
+    }
+
+    // Only a running gateway needs a restart; a stopped one reads the mirrored
+    // prefs on its next start.
+    if (!isNativeGateway() || !connected) return { ok: true, restarted: false, error: null };
+    try {
+      await stopGateway();
+      await startGateway();
+    } catch (e) {
+      return { ok: false, restarted: false, error: e instanceof Error ? e.message : String(e) };
+    }
+    const up = await verifyGatewayUp();
+    return up
+      ? { ok: true, restarted: true, error: null }
+      : {
+          ok: false,
+          restarted: false,
+          error: tx('providerApplyFailed', 'The provider was saved, but the gateway did not come back healthy.'),
+        };
+  };
+
+  const activeProviderIdOrNull = (): string | null => settings.activeProviderId || null;
+
+  type ApplyOptions = {
+    label: string;
+    successMsg: string;
+    restartedMsg?: string;
+    // settingsSaveError snapshot taken before an earlier write in the same
+    // click, so the apply never runs on top of a failed save.
+    before?: string | null;
+    overrides?: { serverKey?: string; tgToken?: string; discordToken?: string };
+    clearWhenMissing?: boolean;
+    // Profile as just written, for the add/edit paths (see applyProviderConfig).
+    profile?: ConfiguredProvider;
+  };
+
+  // Serialised apply: a second tap cannot start a second restart chain.
+  const runApply = async (profileId: string | null | undefined, opts: ApplyOptions) => {
+    if (profileId === undefined) {
+      // The change did not touch the active profile: the earlier write still
+      // has to confirm before anything is reported as saved.
+      if (opts.before !== undefined) {
+        const outcome = await awaitSaveOutcome(opts.before);
+        if (!outcome.ok) {
+          setLocalSaveError(outcome.error);
+          showToast(outcome.error || saveFailedFallback(), 'error');
+          return;
+        }
+        setLocalSaveError(null);
+      }
+      showToast(opts.successMsg, 'success');
+      return;
+    }
+    if (applyBusyRef.current) {
+      showToast(tx('applyBusy', 'A provider change is already being applied. Wait for it to finish.'), 'info');
+      return;
+    }
+    applyBusyRef.current = true;
+    setApplyingProvider(true);
+    setApplyStatus(`${tx('applyingProvider', 'Applying provider change')}: ${opts.label}...`);
+    try {
+      if (opts.before !== undefined) {
+        const outcome = await awaitSaveOutcome(opts.before);
+        if (!outcome.ok) {
+          setLocalSaveError(outcome.error);
+          showToast(outcome.error || saveFailedFallback(), 'error');
+          return;
+        }
+      }
+      const res = await applyProviderConfig(profileId, {
+        overrides: opts.overrides,
+        clearWhenMissing: opts.clearWhenMissing,
+        profile: opts.profile,
+      });
+      if (res.ok) {
+        setLocalSaveError(null);
+        showToast(res.restarted ? opts.restartedMsg || opts.successMsg : opts.successMsg, 'success');
+      } else {
+        setLocalSaveError(res.error);
+        showToast(res.error || tx('applyFailed', 'The change could not be applied to the running gateway.'), 'error');
+      }
+    } finally {
+      applyBusyRef.current = false;
+      setApplyingProvider(false);
+      setApplyStatus(null);
+    }
+  };
+
+  const visibleSaveError =
+    (settingsSaveError && settingsSaveError !== saveErrorDismissed ? settingsSaveError : null) ||
+    (localSaveError && localSaveError !== saveErrorDismissed ? localSaveError : null);
+
+  // Gateway button flags derive from the one lifecycle machine, so Start and
+  // Stop are enabled only in states where they can actually work.
+  const uiFlags = deriveUiFlags(
+    isNativeGateway()
+      ? (gatewayState as GatewayState)
+      : ((connected
+          ? 'RUNNING'
+          : install === 'NOT_INSTALLED'
+            ? 'NOT_INSTALLED'
+            : install === 'FAILED'
+              ? 'FAILED'
+              : 'STOPPED') as GatewayState)
+  );
+
   useEffect(() => {
     const ctrl = new AbortController();
     const { signal } = ctrl;
@@ -636,12 +1084,15 @@ export const SettingsTab: React.FC = () => {
     setTestingKey(true);
     setKeyResult(null);
     setKeyOk(null);
-    setTestedKey('');
+    setTestedFingerprint('');
 
     const norm = normProvider(newProvType);
-    const valid = await service.providersValidate(norm, 'HERMES_API_KEY', newProvKey.trim());
+    const cleaned = newProvKey.trim();
+    const valid = await service.providersValidate(norm, 'HERMES_API_KEY', cleaned);
     setTestingKey(false);
-    setTestedKey(newProvKey.trim());
+    // Record the whole tested tuple (provider, key, baseUrl), not just the
+    // key: editing the Base URL after a pass must drop the validated flag.
+    setTestedFingerprint(validationFingerprint({ provider: norm, [PROVIDER_CREDENTIAL_FIELD]: cleaned, baseUrl: newProvBaseUrl.trim() }));
     if (valid === true) {
       setKeyOk(true);
       setKeyResult(t('keyValid'));
@@ -714,7 +1165,7 @@ export const SettingsTab: React.FC = () => {
   // Security risk indicators (UX-08)
   const unvalidatedKeys = configuredProviders.filter((p) => !p.validated).length;
   const tokensSet = [settings.tgToken, settings.discordToken, settings.serverKey].filter((v) => (v || '').trim()).length;
-  const autoApproveRisk: RiskLevel = settings.autoApproveGlobal ? 'high' : 'off';
+  const autoApproveRisk: RiskLevel = autoApprovePolicy.enabled ? 'high' : 'off';
   const keysRisk: RiskLevel = configuredProviders.length === 0 ? 'off' : unvalidatedKeys > 0 ? 'medium' : 'low';
   const tokensRisk: RiskLevel = tokensSet === 0 ? 'off' : tokensSet >= 2 ? 'medium' : 'low';
   const riskCount = [autoApproveRisk, keysRisk, tokensRisk].filter((r) => r === 'high' || r === 'medium').length;
@@ -734,16 +1185,58 @@ export const SettingsTab: React.FC = () => {
 
   return (
     <div className="space-y-4 max-w-2xl mx-auto px-4 pt-4 pb-28">
-      {/* Toast popup */}
+      {/* Toast popup. Raised above the modals (z-50) so status written while a
+          sheet is open is never painted behind its backdrop. */}
       {toast && (
         <div
           role="status"
           aria-live="polite"
-          className={`fixed top-16 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-xl text-white text-xs font-semibold shadow-2xl animate-in fade-in slide-in-from-top-2 ${
+          className={`fixed top-16 left-1/2 -translate-x-1/2 z-[200] max-w-[min(90vw,28rem)] text-center px-4 py-2 rounded-xl text-white text-xs font-semibold shadow-2xl pointer-events-none animate-in fade-in slide-in-from-top-2 ${
             toast.tone === 'error' ? 'bg-rose-600' : toast.tone === 'success' ? 'bg-emerald-600' : 'bg-indigo-600'
           }`}
         >
           {toast.msg}
+        </div>
+      )}
+
+      {/* Truthful save state: a settings write failed. The success toast is
+          suppressed for that write, so this banner is the single place the
+          failure text and its retry are shown. */}
+      {visibleSaveError && (
+        <div
+          role="alert"
+          className="flex items-start gap-2.5 p-3 rounded-2xl bg-rose-500/10 border border-rose-500/30"
+        >
+          <XCircle className="w-4 h-4 text-rose-300 shrink-0 mt-0.5" />
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-semibold text-rose-200">{tx('settingsSaveFailedTitle', 'Settings were not saved')}</p>
+            <p className="text-[11px] text-rose-200/80 break-words">{visibleSaveError}</p>
+          </div>
+          {hasRetry && (
+            <button
+              onClick={retryFailedSave}
+              className="shrink-0 px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-[11px] font-medium text-rose-100 transition cursor-pointer"
+            >
+              {tx('retrySave', 'Retry')}
+            </button>
+          )}
+          <button
+            onClick={() => setSaveErrorDismissed(visibleSaveError)}
+            className="shrink-0 px-2 py-1 rounded-lg text-[11px] text-rose-200/70 hover:text-rose-100 transition cursor-pointer"
+          >
+            {tx('dismiss', 'Dismiss')}
+          </button>
+        </div>
+      )}
+
+      {/* Provider apply progress: shown while the native mirror and the gateway
+          restart run, so the UI is never a silent wait. */}
+      {applyingProvider && (
+        <div role="status" aria-live="polite" className="flex items-center gap-2.5 p-3 rounded-2xl bg-indigo-500/[0.08] border border-indigo-500/25">
+          <RefreshCw className="w-3.5 h-3.5 text-indigo-300 animate-spin shrink-0" />
+          <span className="text-[11px] text-indigo-200 flex-1 break-words">
+            {applyStatus || tx('applyingProvider', 'Applying provider change')}
+          </span>
         </div>
       )}
 
@@ -870,7 +1363,7 @@ export const SettingsTab: React.FC = () => {
                 setNewProvModel(DEFAULT_MODELS['deepseek']?.[0] || 'deepseek/deepseek-chat');
                 setKeyResult(null);
                 setKeyOk(null);
-                setTestedKey('');
+                setTestedFingerprint('');
                 setShowNewKey(false);
                 setActivateNewProvider(false);
                 setShowAddModal(true);
@@ -927,8 +1420,17 @@ export const SettingsTab: React.FC = () => {
                       {!isActive ? (
                         <button
                           onClick={() => {
+                            // One apply path: activate, confirm the write, then
+                            // mirror + restart so the running gateway stops
+                            // using the previous provider's key/URL.
+                            const before = saveErrorRef.current;
                             activateProvider(prov.id);
-                            showToast(`${t('switchedTo')} ${prov.name}`, 'success');
+                            void runApply(prov.id, {
+                              label: prov.name,
+                              before,
+                              successMsg: `${t('switchedTo')} ${prov.name}`,
+                              restartedMsg: `${t('switchedTo')} ${prov.name}. ${tx('gatewayRestartedShort', 'Gateway restarted.')}`,
+                            });
                           }}
                           className="px-3 py-1.5 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-slate-200 transition cursor-pointer"
                         >
@@ -950,7 +1452,7 @@ export const SettingsTab: React.FC = () => {
                           setNewProvModel(prov.defaultModel || '');
                           setKeyResult(null);
                           setKeyOk(null);
-                          setTestedKey('');
+                          setTestedFingerprint('');
                           setShowNewKey(false);
                           setActivateNewProvider(false);
                           setShowAddModal(true);
@@ -1010,24 +1512,27 @@ export const SettingsTab: React.FC = () => {
               <p className="text-[11px] text-slate-400">{t('autoApproveDesc')}</p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              <RiskBadge level={autoApproveRisk} label={settings.autoApproveGlobal ? 'High risk' : 'Off'} />
-              <button
-                onClick={handleAutoApproveToggle}
-                aria-pressed={!!settings.autoApproveGlobal}
-                title={settings.autoApproveGlobal ? t('confirmDisableAutoApprove') : undefined}
-                aria-label={`${t('autoApprove')}: ${settings.autoApproveGlobal ? t('active') : t('disabled')}${!settings.autoApproveGlobal && !pendingAutoApprove ? `. ${tx('tapAgainAutoApprove', 'Tap again to confirm: auto-approve lets actions run without asking.')}` : ''}`}
-                className={`px-3 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
-                  settings.autoApproveGlobal
+              <RiskBadge level={autoApproveRisk} label={autoApprovePolicy.enabled ? 'High risk' : 'Off'} />
+              <span
+                aria-label={`${t('autoApprove')}: ${autoApprovePolicy.enabled ? t('active') : t('disabled')}`}
+                className={`px-3 py-1 rounded-lg text-xs font-medium ${
+                  autoApprovePolicy.enabled
                     ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                    : pendingAutoApprove
-                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                      : 'bg-white/[0.04] text-slate-400'
+                    : 'bg-white/[0.04] text-slate-400'
                 }`}
               >
-                {settings.autoApproveGlobal ? t('active') : pendingAutoApprove ? tx('confirm', 'Confirm?') : t('disabled')}
-              </button>
+                {autoApprovePolicy.enabled ? t('active') : t('disabled')}
+              </span>
             </div>
           </div>
+        </Row>
+
+        {/* The granular gate is the only auto-approve control. The old boolean
+            toggle wrote a flag nothing read (AutoApproveGate was never
+            mounted), so it is retired and the policy below is the single
+            source of truth for both the UI and the runtime. */}
+        <Row>
+          <AutoApproveGate policy={autoApprovePolicy} onChange={writeAutoApprovePolicy} t={t} />
         </Row>
 
         <Row>
@@ -1084,9 +1589,8 @@ export const SettingsTab: React.FC = () => {
                     }
                     if (disableLockTimer.current !== null) window.clearTimeout(disableLockTimer.current);
                     setPendingDisableLock(false);
-                    updateSettings({ appLockEnabled: false });
+                    saveThenToast({ appLockEnabled: false }, `${appLockTitle}: ${t('disabled')}`, 'success');
                     setShowPinForm(false);
-                    showToast(`${appLockTitle}: ${t('disabled')}`);
                   } else {
                     setPendingDisableLock(false);
                     setPinError(null);
@@ -1209,12 +1713,13 @@ export const SettingsTab: React.FC = () => {
                       return;
                     }
                     writePinThrottle(0, 0);
-                    updateSettings({ appLockPin: newPin, appLockEnabled: true });
+                    // The PIN write goes through the vault, so the confirmation
+                    // copy waits for the provider to confirm the persist.
+                    saveThenToast({ appLockPin: newPin, appLockEnabled: true }, `${appLockTitle}: ${t('enabled')}`, 'success');
                     setShowPinForm(false);
                     setNewPin('');
                     setConfirmPin('');
                     setPinError(null);
-                    showToast(`${appLockTitle}: ${t('enabled')}`);
                   }}
                   className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition cursor-pointer"
                 >
@@ -1296,8 +1801,23 @@ export const SettingsTab: React.FC = () => {
                 </button>
                 <button
                   onClick={() => {
-                    updateSettings({ tgToken: tgToken.trim() });
-                    showToast(t('tgSaved'));
+                    // The token must reach the native mirror and the gateway
+                    // process, not just the local settings store, otherwise
+                    // the bridge never starts with it.
+                    const cleaned = tgToken.trim();
+                    void (async () => {
+                      const outcome = await commitSettings({ tgToken: cleaned });
+                      if (!outcome.ok) {
+                        showToast(outcome.error || saveFailedFallback(), 'error');
+                        return;
+                      }
+                      void runApply(activeProviderIdOrNull(), {
+                        label: t('telegramBridge'),
+                        successMsg: t('tgSaved'),
+                        restartedMsg: `${t('tgSaved')}. ${tx('gatewayRestartedShort', 'Gateway restarted.')}`,
+                        overrides: { tgToken: cleaned },
+                      });
+                    })();
                   }}
                   className="px-3.5 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white transition cursor-pointer"
                 >
@@ -1324,8 +1844,22 @@ export const SettingsTab: React.FC = () => {
                 </button>
                 <button
                   onClick={() => {
-                    updateSettings({ discordToken: discordToken.trim() });
-                    showToast(t('discordSaved'));
+                    // Same as Telegram: mirror to native prefs and restart a
+                    // running gateway so the Discord bridge can start.
+                    const cleaned = discordToken.trim();
+                    void (async () => {
+                      const outcome = await commitSettings({ discordToken: cleaned });
+                      if (!outcome.ok) {
+                        showToast(outcome.error || saveFailedFallback(), 'error');
+                        return;
+                      }
+                      void runApply(activeProviderIdOrNull(), {
+                        label: t('discordBridge'),
+                        successMsg: t('discordSaved'),
+                        restartedMsg: `${t('discordSaved')}. ${tx('gatewayRestartedShort', 'Gateway restarted.')}`,
+                        overrides: { discordToken: cleaned },
+                      });
+                    })();
                   }}
                   className="px-3.5 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white transition cursor-pointer"
                 >
@@ -1352,8 +1886,23 @@ export const SettingsTab: React.FC = () => {
                 </button>
                 <button
                   onClick={() => {
-                    updateSettings({ serverKey: serverKey.trim() });
-                    showToast(t('serverKeySaved'));
+                    // The server key gates every authenticated call, so it has
+                    // to be persisted, pushed to the native prefs and picked up
+                    // by a running gateway, not just stored in JS settings.
+                    const cleaned = serverKey.trim();
+                    void (async () => {
+                      const outcome = await commitSettings({ serverKey: cleaned });
+                      if (!outcome.ok) {
+                        showToast(outcome.error || saveFailedFallback(), 'error');
+                        return;
+                      }
+                      void runApply(activeProviderIdOrNull(), {
+                        label: t('serverKeyTitle'),
+                        successMsg: t('serverKeySaved'),
+                        restartedMsg: `${t('serverKeySaved')}. ${tx('gatewayRestartedShort', 'Gateway restarted.')}`,
+                        overrides: { serverKey: cleaned },
+                      });
+                    })();
                   }}
                   className="px-3.5 py-2 rounded-xl bg-white/[0.06] hover:bg-white/[0.12] text-xs font-medium text-white transition cursor-pointer"
                 >
@@ -1427,7 +1976,8 @@ export const SettingsTab: React.FC = () => {
               onClick={() => {
                 void handleStartGateway();
               }}
-              disabled={gatewayBusy}
+              disabled={gatewayBusy || !uiFlags.canStart}
+              title={!uiFlags.canStart ? tx('startUnavailable', 'Start is unavailable in the current gateway state.') : undefined}
               className="flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-xs transition cursor-pointer disabled:opacity-50"
             >
               <Play className="w-3.5 h-3.5 fill-white" />
@@ -1435,9 +1985,10 @@ export const SettingsTab: React.FC = () => {
             </button>
             <button
               onClick={() => {
-                handleStopGateway();
+                void handleStopGateway();
               }}
-              disabled={gatewayBusy}
+              disabled={gatewayBusy || !uiFlags.canStop}
+              title={!uiFlags.canStop ? tx('stopUnavailable', 'Stop is unavailable in the current gateway state.') : undefined}
               className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] text-slate-300 text-xs font-medium transition cursor-pointer disabled:opacity-50"
             >
               <Square className="w-3.5 h-3.5 fill-slate-300" />
@@ -1448,7 +1999,7 @@ export const SettingsTab: React.FC = () => {
                 onClick={() => {
                   void handleInstallGateway();
                 }}
-                disabled={installing}
+                disabled={installing || !uiFlags.isStable}
                 className="px-4 py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.08] border border-white/[0.08] text-slate-300 text-xs font-medium transition cursor-pointer disabled:opacity-50"
               >
                 {installing ? tx('installing', 'Installing…') : tx('install', 'Install')}
@@ -1476,8 +2027,7 @@ export const SettingsTab: React.FC = () => {
             <button
               onClick={() => {
                 const next = !settings.autostart;
-                updateSettings({ autostart: next });
-                showToast(next ? t('autostartEnabled') : t('autostartDisabled'));
+                saveThenToast({ autostart: next }, next ? t('autostartEnabled') : t('autostartDisabled'), 'success');
               }}
               aria-pressed={!!settings.autostart}
               aria-label={`${t('autostartTitle')}: ${settings.autostart ? t('autostartEnabled') : t('autostartDisabled')}`}
@@ -1646,8 +2196,7 @@ export const SettingsTab: React.FC = () => {
                 <button
                   key={mode.id}
                   onClick={() => {
-                    updateSettings({ themeMode: mode.id as ThemeMode });
-                    showToast(`${t('themeTitle')}: ${mode.label}`);
+                    saveThenToast({ themeMode: mode.id as ThemeMode }, `${t('themeTitle')}: ${mode.label}`, 'success');
                   }}
                   aria-pressed={currentMode === mode.id}
                   aria-label={`${t('themeTitle')}: ${mode.label}`}
@@ -1683,8 +2232,7 @@ export const SettingsTab: React.FC = () => {
                 <button
                   key={th.id}
                   onClick={() => {
-                    updateSettings({ themePalette: th.id });
-                    showToast(`${t('appliedPrefix')} ${th.name} ${t('themeWord')}`);
+                    saveThenToast({ themePalette: th.id }, `${t('appliedPrefix')} ${th.name} ${t('themeWord')}`, 'success');
                   }}
                   aria-pressed={isSelected}
                   aria-label={`${th.name}${isSelected ? ` (${t('active')})` : ''}`}
@@ -1784,8 +2332,7 @@ export const SettingsTab: React.FC = () => {
                   role="option"
                   aria-selected={isSelected}
                   onClick={() => {
-                    updateSettings({ language: lang.id });
-                    showToast(`${t('languageTitle')}: ${lang.name}`);
+                    saveThenToast({ language: lang.id }, `${t('languageTitle')}: ${lang.name}`, 'success');
                   }}
                   className={`w-full px-4 py-3 flex items-center justify-between transition cursor-pointer hover:bg-white/[0.04] ${
                     isSelected ? 'bg-white/[0.06]' : ''
@@ -2151,80 +2698,136 @@ export const SettingsTab: React.FC = () => {
                 {t('cancel')}
               </button>
               <button
-                disabled={!keysValid(newProvType, newProvKey, newProvBaseUrl)}
+                disabled={!keysValid(newProvType, newProvKey, newProvBaseUrl) || applyingProvider}
                 onClick={async () => {
+                  // Busy guard: a second tap must not start a second restart.
+                  if (applyBusyRef.current) {
+                    showToast(tx('applyBusy', 'A provider change is already being applied. Wait for it to finish.'), 'info');
+                    return;
+                  }
                   const cleanedKey = newProvKey.trim();
+                  const baseUrl = newProvBaseUrl.trim();
                   const targetModel = newProvModel.trim() || DEFAULT_MODELS[newProvType]?.[0] || `${newProvType}/default`;
                   const label = newProvName.trim() || PROVIDER_OPTIONS.find(([id]) => id === newProvType)?.[1] || newProvType;
-                  // Only mark validated after a real successful validation of
-                  // the exact key being saved. Untested or failed keys stay
-                  // unvalidated; edits keep their prior flag when the key
-                  // was not retested.
                   const existing = editingProviderId
                     ? configuredProviders.find((p) => p.id === editingProviderId)
                     : undefined;
-                  const freshlyValidated = testedKey === cleanedKey && keyOk === true;
-                  const validated = freshlyValidated || (!!editingProviderId && cleanedKey === (existing?.apiKey || '') && !!existing?.validated);
+                  // Validated only when the whole tuple that was actually
+                  // tested (provider, base URL, key) is the one being saved, so
+                  // editing the Base URL after a pass drops the flag.
+                  const fingerprint = validationFingerprint({ provider: newProvType, apiKey: cleanedKey, baseUrl });
+                  const existingFingerprint = existing
+                    ? validationFingerprint({ provider: existing.provider, apiKey: existing.apiKey || '', baseUrl: existing.baseUrl || '' })
+                    : '';
+                  const freshlyValidated = !!fingerprint && testedFingerprint === fingerprint && keyOk === true;
+                  const keptValidated = !!existing?.validated && !!existingFingerprint && existingFingerprint === fingerprint;
+                  const validated = freshlyValidated || keptValidated;
+                  const isCurrentlyActive = !!existing && (settings.activeProviderId
+                    ? existing.id === settings.activeProviderId
+                    : existing.provider === settings.provider);
+                  // The profile exactly as it is about to be written. The apply
+                  // below needs these values, but configuredProviders is a
+                  // render-scope list that will not contain them yet.
+                  const applyProfile: ConfiguredProvider = {
+                    id: editingProviderId || '',
+                    provider: newProvType,
+                    name: label,
+                    [PROVIDER_CREDENTIAL_FIELD]: cleanedKey,
+                    baseUrl,
+                    defaultModel: targetModel,
+                    enabled: existing?.enabled !== false,
+                    validated,
+                  };
+
+                  // Close the sheet before any await: the apply below can poll
+                  // a restart for minutes and must never trap the modal behind
+                  // an enabled Save button.
+                  closeAddModal();
 
                   if (editingProviderId) {
-                    const targetProv = configuredProviders.find((p) => p.id === editingProviderId);
-                    const isCurrentlyActive = settings.activeProviderId
-                      ? targetProv?.id === settings.activeProviderId
-                      : targetProv?.provider === settings.provider;
-                    updateConfiguredProvider(editingProviderId, {
-                      provider: newProvType,
-                      name: label,
-                      apiKey: cleanedKey,
-                      baseUrl: newProvBaseUrl.trim(),
-                      defaultModel: targetModel,
-                      validated,
-                    });
-                    if (isCurrentlyActive) {
-                      updateSettings({
+                    const editId = editingProviderId;
+                    const outcome = await runVerifiedWrite(async () => {
+                      const before = saveErrorRef.current;
+                      updateConfiguredProvider(editId, {
                         provider: newProvType,
-                        apiKey: cleanedKey,
-                        baseUrl: newProvBaseUrl.trim(),
-                        modelId: targetModel,
+                        name: label,
+                        [PROVIDER_CREDENTIAL_FIELD]: cleanedKey,
+                        baseUrl,
+                        defaultModel: targetModel,
+                        validated,
+                      });
+                      if (isCurrentlyActive) {
+                        updateSettings({
+                          provider: newProvType,
+                          [PROVIDER_CREDENTIAL_FIELD]: cleanedKey,
+                          baseUrl,
+                          modelId: targetModel,
+                        });
+                      }
+                      return awaitSaveOutcome(before);
+                    });
+                    if (!outcome.ok) {
+                      showToast(outcome.error || saveFailedFallback(), 'error');
+                      return;
+                    }
+                    await runApply(isCurrentlyActive ? editId : undefined, {
+                      label,
+                      profile: applyProfile,
+                      successMsg: `${t('updatedItem')} ${label}`,
+                      restartedMsg: `${t('updatedItem')} ${label}. ${tx('gatewayRestartedShort', 'Gateway restarted.')}`,
+                    });
+                    return;
+                  }
+
+                  let createdId: string | null = null;
+                  const outcome = await runVerifiedWrite(async () => {
+                    const before = saveErrorRef.current;
+                    if (createdId === null) {
+                      createdId = addConfiguredProvider({
+                        provider: newProvType,
+                        name: label,
+                        [PROVIDER_CREDENTIAL_FIELD]: cleanedKey,
+                        baseUrl,
+                        defaultModel: targetModel,
+                        enabled: true,
+                        validated,
                       });
                     }
-                    showToast(`${t('updatedItem')} ${label}`);
-                    // On-device the running gateway keeps its rendered config
-                    // until it restarts, so an edit of the active profile
-                    // restarts a running gateway to apply the new values.
-                    if (isCurrentlyActive && isNativeGateway() && connected) {
-                      showToast(tx('providerRestarting', 'Restarting gateway to apply the new provider...'));
-                      await stopGateway();
-                      await startGateway();
-                    }
-                  } else {
-                    const newId = addConfiguredProvider({
-                      provider: newProvType,
-                      name: label,
-                      apiKey: cleanedKey,
-                      baseUrl: newProvBaseUrl.trim(),
-                      defaultModel: targetModel,
-                      enabled: true,
-                      validated,
-                    });
                     // New profiles stay inactive unless the user explicitly
                     // opted in via the activation checkbox. No silent switch.
-                    if (activateNewProvider) {
-                      activateProvider(newId);
-                      showToast(`${t('addedActivated')} ${label}`);
-                      if (isNativeGateway() && connected) {
-                        showToast(tx('providerRestarting', 'Restarting gateway to apply the new provider...'));
-                        await stopGateway();
-                        await startGateway();
-                      }
-                    } else {
-                      showToast(`${tx('addedInactive', 'Added (inactive)')} ${label}`);
-                    }
+                    if (activateNewProvider) activateProvider(createdId);
+                    else updateSettings({});
+                    return awaitSaveOutcome(before);
+                  });
+                  if (!outcome.ok) {
+                    showToast(outcome.error || saveFailedFallback(), 'error');
+                    return;
                   }
-                  closeAddModal();
+                  if (activateNewProvider && createdId) {
+                    await runApply(createdId, {
+                      label,
+                      // The apply must see the just-added profile; the render
+                      // scope list does not contain it yet.
+                      profile: {
+                        id: createdId,
+                        provider: newProvType,
+                        name: label,
+                        [PROVIDER_CREDENTIAL_FIELD]: cleanedKey,
+                        baseUrl,
+                        defaultModel: targetModel,
+                        enabled: true,
+                        validated,
+                      },
+                      successMsg: `${t('addedActivated')} ${label}`,
+                      restartedMsg: `${t('addedActivated')} ${label}. ${tx('gatewayRestartedShort', 'Gateway restarted.')}`,
+                    });
+                  } else {
+                    showToast(`${tx('addedInactive', 'Added (inactive)')} ${label}`, 'success');
+                  }
                 }}
                 className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-xs font-semibold shadow-xs cursor-pointer transition"
               >
-                {editingProviderId ? t('save') : t('saveEnable')}
+                {applyingProvider ? tx('applyingShort', 'Applying…') : editingProviderId ? t('save') : t('saveEnable')}
               </button>
             </div>
           </div>

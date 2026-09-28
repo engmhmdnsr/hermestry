@@ -9,12 +9,13 @@ import {
   Clock,
   Pencil,
   X,
+  Square,
   ChevronDown,
   ChevronUp,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
-import { GatewayService } from '../../services/gateway';
-import { CronJob } from '../../types/hermes';
+import { localizedMessage, toAppError } from '../../services/appErrors';
+import { CronJob, CronRun } from '../../types/hermes';
 import {
   COMMON_TIMEZONES,
   ServerFieldError,
@@ -28,11 +29,111 @@ import {
   scheduleSummary,
 } from '../../utils/jobTime';
 
-const gatewayService = new GatewayService();
-
 const OVERDUE_GRACE_MS = 5 * 60 * 1000;
 
-type PendingAction = 'pause' | 'resume' | 'run' | 'delete';
+type PendingAction = 'pause' | 'resume' | 'run' | 'delete' | 'stop';
+type ToastTone = 'success' | 'error';
+
+// Raw gateway failures arrive as free text ("Jobs unavailable: HTTP 401").
+// Run them through the shared error model so user copy is a friendly
+// cause + action string, never a status code or transport detail.
+const friendlyGatewayError = (detail: string | undefined, lang: string): string => {
+  const raw = (detail || '').trim() || 'gateway unreachable';
+  return localizedMessage(toAppError(new Error(raw)), lang);
+};
+
+// Run status mapping. Success is an explicit allowlist: any status that is
+// not on it must never render as a success badge, and unknown values stay
+// neutral instead of borrowing the emerald tone.
+type RunTone = 'success' | 'failure' | 'active' | 'neutral';
+
+const RUN_SUCCESS_STATUSES = new Set([
+  'success',
+  'succeeded',
+  'completed',
+  'complete',
+  'ok',
+  'done',
+  'finished',
+]);
+const RUN_FAILURE_STATUSES = new Set([
+  'failed',
+  'failure',
+  'error',
+  'errored',
+  'timeout',
+  'timed-out',
+  'timed out',
+]);
+const RUN_ACTIVE_STATUSES = new Set([
+  'running',
+  'pending',
+  'queued',
+  'starting',
+  'in_progress',
+  'in progress',
+]);
+
+const RUN_STATUS_KEYS: Record<string, { key: string; fallback: string }> = {
+  success: { key: 'runStatusSuccess', fallback: 'Success' },
+  succeeded: { key: 'runStatusSuccess', fallback: 'Success' },
+  ok: { key: 'runStatusSuccess', fallback: 'Success' },
+  completed: { key: 'runStatusCompleted', fallback: 'Completed' },
+  complete: { key: 'runStatusCompleted', fallback: 'Completed' },
+  done: { key: 'runStatusCompleted', fallback: 'Completed' },
+  finished: { key: 'runStatusCompleted', fallback: 'Completed' },
+  failed: { key: 'runStatusFailed', fallback: 'Failed' },
+  failure: { key: 'runStatusFailed', fallback: 'Failed' },
+  error: { key: 'runStatusFailed', fallback: 'Failed' },
+  errored: { key: 'runStatusFailed', fallback: 'Failed' },
+  timeout: { key: 'runStatusTimeout', fallback: 'Timed out' },
+  'timed-out': { key: 'runStatusTimeout', fallback: 'Timed out' },
+  'timed out': { key: 'runStatusTimeout', fallback: 'Timed out' },
+  cancelled: { key: 'runStatusCancelled', fallback: 'Cancelled' },
+  canceled: { key: 'runStatusCancelled', fallback: 'Cancelled' },
+  aborted: { key: 'runStatusCancelled', fallback: 'Cancelled' },
+  skipped: { key: 'runStatusSkipped', fallback: 'Skipped' },
+  running: { key: 'runStatusRunning', fallback: 'Running' },
+  'in_progress': { key: 'runStatusRunning', fallback: 'Running' },
+  'in progress': { key: 'runStatusRunning', fallback: 'Running' },
+  pending: { key: 'runStatusPending', fallback: 'Pending' },
+  queued: { key: 'runStatusPending', fallback: 'Pending' },
+  starting: { key: 'runStatusPending', fallback: 'Pending' },
+};
+
+const RUN_TONE_CLASS: Record<RunTone, string> = {
+  success: 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20',
+  failure: 'bg-rose-500/10 text-rose-300 border-rose-500/20',
+  active: 'bg-amber-500/10 text-amber-300 border-amber-500/20',
+  neutral: 'bg-white/[0.04] text-slate-300 border-white/[0.08]',
+};
+
+const runStatusInfo = (
+  raw: string,
+  translate: (key: string, fallback: string) => string
+): { label: string; tone: RunTone } => {
+  const status = (raw || '').trim().toLowerCase();
+  const entry = RUN_STATUS_KEYS[status];
+  const label = entry ? translate(entry.key, entry.fallback) : translate('runStatusUnknown', 'Unknown');
+  const tone: RunTone = RUN_SUCCESS_STATUSES.has(status)
+    ? 'success'
+    : RUN_FAILURE_STATUSES.has(status)
+      ? 'failure'
+      : RUN_ACTIVE_STATUSES.has(status)
+        ? 'active'
+        : 'neutral';
+  return { label, tone };
+};
+
+const isRunActive = (run: CronRun): boolean =>
+  RUN_ACTIVE_STATUSES.has((run.status || '').trim().toLowerCase());
+
+// Most recent in-flight run for a job, so Stop targets the run the history
+// shows as running rather than an arbitrary row.
+const latestActiveRun = (runs: CronRun[]): CronRun | undefined =>
+  [...runs]
+    .sort((a, b) => parseRunDate(b.startedAt) - parseRunDate(a.startedAt))
+    .find(isRunActive);
 
 const parseRunDate = (s: string): number => {
   if (!s) return NaN;
@@ -78,6 +179,14 @@ export const JobsTab: React.FC = () => {
   const deviceTz = useMemo(() => resolveDeviceTimezone(), []);
   const lang = hermes.settings?.language || 'en';
 
+  // i18n with an English fallback for keys a locale bundle does not ship.
+  // t() returns the key itself when nothing has it, so fallbacks stay honest
+  // instead of rendering raw key names.
+  const tx = (key: string, fallback: string): string => {
+    const v = t(key);
+    return !v || v === key ? fallback : v;
+  };
+
   // Create form state
   const [name, setName] = useState('');
   const [schedule, setSchedule] = useState('');
@@ -92,8 +201,9 @@ export const JobsTab: React.FC = () => {
   const [createMissing, setCreateMissing] = useState<string[]>([]);
   const [isCreating, setIsCreating] = useState(false);
   // Stacked toasts so concurrent create/action/delete notices don't
-  // overwrite each other (single-slot toasts lost all but the last).
-  const [toasts, setToasts] = useState<{ id: number; msg: string }[]>([]);
+  // overwrite each other (single-slot toasts lost all but the last). Tone is
+  // carried per toast so a failure never renders in the success style.
+  const [toasts, setToasts] = useState<{ id: number; msg: string; tone: ToastTone }[]>([]);
 
   // Edit form state (shares displayTz above; opening edit never resets it)
   const [editingJob, setEditingJob] = useState<CronJob | null>(null);
@@ -106,9 +216,12 @@ export const JobsTab: React.FC = () => {
   const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   // Jobs list sync state: distinguishes gateway error from a truly empty
-  // list (jobs.length === 0 alone cannot tell them apart).
-  const [jobsLoading, setJobsLoading] = useState(false);
-  const [jobsError, setJobsError] = useState<string | null>(null);
+  // list (jobs.length === 0 alone cannot tell them apart). jobsLive tracks
+  // the envelope's live flag so cached rows are never presented as current.
+  const [jobsLoading, setJobsLoading] = useState(true);
+  const [jobsLive, setJobsLive] = useState(false);
+  const [jobsStale, setJobsStale] = useState(false);
+  const [jobsError, setJobsError] = useState('');
 
   // Search & history
   const [query, setQuery] = useState('');
@@ -153,27 +266,37 @@ export const JobsTab: React.FC = () => {
     return [deviceTz, ...COMMON_TIMEZONES];
   }, [deviceTz]);
 
-  const showToast = (msg: string) => {
+  const showToast = (msg: string, tone: ToastTone = 'success') => {
     const id = ++toastId.current;
-    setToasts((prev) => [...prev.slice(-2), { id, msg }]);
+    setToasts((prev) => [...prev.slice(-2), { id, msg, tone }]);
+    // Failures need reading time: they carry a cause and a next step, so
+    // they stay up longer than a confirmation.
     const timer = setTimeout(() => {
       setToasts((prev) => prev.filter((toastItem) => toastItem.id !== id));
-    }, 3000);
+    }, tone === 'error' ? 7000 : 3000);
     toastTimeouts.current.push(timer);
   };
 
-  // Jobs list truthfulness: a live envelope check on mount so an empty
-  // list caused by a gateway failure renders as an error, not "no jobs".
+  // Jobs list truthfulness: a live envelope check on mount. The envelope's
+  // live flag decides everything: a non-live result (cached rows or a bare
+  // failure) must surface as not live regardless of how many items it holds.
+  const applyJobsEnvelope = (live: boolean, stale: boolean, error: string | undefined) => {
+    setJobsLive(live);
+    setJobsStale(Boolean(live) ? false : stale);
+    setJobsError(live ? '' : friendlyGatewayError(error, lang));
+  };
+
   useEffect(() => {
     let cancelled = false;
     setJobsLoading(true);
     (async () => {
       try {
-        const res = await gatewayService.jobsWithState();
+        const res = await hermes.service.jobsWithState();
         if (cancelled) return;
-        setJobsError(!res.live && res.items.length === 0 ? (res.error ?? 'Could not load jobs.') : null);
-      } catch {
-        if (!cancelled) setJobsError('Could not load jobs. The gateway may be offline.');
+        applyJobsEnvelope(res.live, res.stale, res.error);
+      } catch (e) {
+        if (cancelled) return;
+        applyJobsEnvelope(false, false, e instanceof Error ? e.message : '');
       } finally {
         if (!cancelled) setJobsLoading(false);
       }
@@ -181,10 +304,10 @@ export const JobsTab: React.FC = () => {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleRetryJobs = async () => {
-    setJobsError(null);
     setJobsLoading(true);
     try {
       await refreshJobs();
@@ -192,10 +315,10 @@ export const JobsTab: React.FC = () => {
       // refreshJobs reports failure through the list state below.
     }
     try {
-      const res = await gatewayService.jobsWithState();
-      setJobsError(!res.live && res.items.length === 0 ? (res.error ?? 'Could not load jobs.') : null);
-    } catch {
-      setJobsError('Could not load jobs. The gateway may be offline.');
+      const res = await hermes.service.jobsWithState();
+      applyJobsEnvelope(res.live, res.stale, res.error);
+    } catch (e) {
+      applyJobsEnvelope(false, false, e instanceof Error ? e.message : '');
     } finally {
       setJobsLoading(false);
     }
@@ -310,7 +433,14 @@ export const JobsTab: React.FC = () => {
       });
       const errs = rejectionErrors('action');
       setActionError(errs[0].message);
-      showToast(`Failed to ${action} "${j.name}", rolled back`);
+      const verb =
+        action === 'pause'
+          ? tx('jobPauseFailed', 'Could not pause')
+          : tx('jobResumeFailed', 'Could not resume');
+      showToast(
+        `${verb} "${j.name}". ${tx('jobUnchanged', 'The gateway did not accept it, so the job was left unchanged.')} ${tx('retryOrCheckGateway', 'Try again, or check the gateway status.')}`,
+        'error'
+      );
     }
   };
 
@@ -332,6 +462,38 @@ export const JobsTab: React.FC = () => {
     } else {
       const errs = rejectionErrors('action');
       setActionError(errs[0].message);
+      showToast(
+        `${tx('jobRunFailed', 'Could not start')} "${j.name}". ${tx('jobUnchanged', 'The gateway did not accept it, so the job was left unchanged.')} ${tx('retryOrCheckGateway', 'Try again, or check the gateway status.')}`,
+        'error'
+      );
+    }
+  };
+
+  // Stop an in-flight run through the gateway stop endpoint. The gateway only
+  // acknowledges the request, so the toast says "requested" and the run
+  // history refresh reports the real outcome.
+  const handleStopRun = async (j: CronJob, runId: string) => {
+    setActionError('');
+    setPendingOps((p) => ({ ...p, [j.id]: 'stop' }));
+    const ok = await hermes.service.stopRun(runId);
+    setPendingOps((p) => {
+      const next = { ...p };
+      delete next[j.id];
+      return next;
+    });
+    if (ok) {
+      showToast(
+        `${tx('runStopRequested', 'Stop requested for')} "${j.name}". ${tx('runStopRefreshing', 'Refreshing the run history to confirm.')}`
+      );
+      setHistoryForId(j.id);
+      await handleRetryRuns(j.id);
+    } else {
+      const errs = rejectionErrors('action');
+      setActionError(errs[0].message);
+      showToast(
+        `${tx('jobStopFailed', 'Could not stop')} "${j.name}". ${errs[0].message} ${tx('retryOrCheckGateway', 'Try again, or check the gateway status.')}`,
+        'error'
+      );
     }
   };
 
@@ -358,7 +520,10 @@ export const JobsTab: React.FC = () => {
       });
       const errs = rejectionErrors('action');
       setActionError(errs[0].message);
-      showToast(`Failed to delete "${j.name}", restored`);
+      showToast(
+        `${tx('jobDeleteFailed', 'Could not delete')} "${j.name}". ${tx('jobRestored', 'The job was restored.')} ${tx('retryOrCheckGateway', 'Try again, or check the gateway status.')}`,
+        'error'
+      );
     }
   };
 
@@ -429,9 +594,13 @@ export const JobsTab: React.FC = () => {
           {toasts.map((toastItem) => (
             <div
               key={toastItem.id}
-              role="status"
-              aria-live="polite"
-              className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-xs font-semibold shadow-2xl animate-in fade-in slide-in-from-top-2 text-center"
+              role={toastItem.tone === 'error' ? 'alert' : 'status'}
+              aria-live={toastItem.tone === 'error' ? 'assertive' : 'polite'}
+              className={`px-4 py-2 rounded-xl text-white text-xs font-semibold shadow-2xl animate-in fade-in slide-in-from-top-2 text-center ${
+                toastItem.tone === 'error'
+                  ? 'bg-rose-600 border border-rose-400/50'
+                  : 'bg-indigo-600'
+              }`}
             >
               {toastItem.msg}
             </div>
@@ -611,23 +780,46 @@ export const JobsTab: React.FC = () => {
       {/* 3. Schedules List */}
       <div className="space-y-3">
         <h3 className="text-xs font-semibold text-slate-400 tracking-wider uppercase">
-          {t('scheduledJobsTitle')} ({visibleJobs.length})
+          {/* Count is only meaningful for a live list: a failed load must not
+              print a fabricated (0) next to an "unavailable" message. */}
+          {t('scheduledJobsTitle')}
+          {jobsLive ? ` (${visibleJobs.length})` : ''}
         </h3>
+
+        {/* Not live with rows on screen: the list is a cached snapshot. */}
+        {!jobsLive && !jobsLoading && jobs.length > 0 && (
+          <div
+            role="status"
+            className="px-3.5 py-2.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-300 space-y-1"
+          >
+            <p className="font-semibold">
+              {jobsStale
+                ? tx('jobsStaleTitle', 'Not live: showing saved jobs')
+                : tx('jobsNotLiveTitle', 'Not live: the gateway did not confirm this list')}
+            </p>
+            <p className="text-amber-200/80">{jobsError}</p>
+          </div>
+        )}
 
         {jobsLoading && jobs.length === 0 ? (
           <div className="p-8 rounded-3xl bg-[var(--app-card,#0E1217)] border border-white/[0.06] text-center text-xs text-slate-400" role="status">
             Loading scheduled jobs...
           </div>
-        ) : jobsError && jobs.length === 0 ? (
+        ) : !jobsLive && jobs.length === 0 ? (
           <div className="p-8 rounded-3xl bg-[var(--app-card,#0E1217)] border border-rose-500/20 text-center text-xs text-rose-300 space-y-3" role="alert">
-            <p>Could not load scheduled jobs. {jobsError}</p>
+            <p className="font-medium text-white">
+              {tx('jobsUnavailableTitle', 'Could not load scheduled jobs')}
+            </p>
+            <p className="text-slate-400">
+              {jobsError || tx('jobsUnavailableBody', 'The gateway is unreachable. Make sure it is running, then try again.')}
+            </p>
             <button
               type="button"
               onClick={() => void handleRetryJobs()}
               disabled={jobsLoading}
               className="px-4 min-h-[44px] py-2 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 disabled:opacity-50 text-rose-200 font-semibold cursor-pointer transition"
             >
-              {jobsLoading ? 'Retrying...' : 'Retry'}
+              {jobsLoading ? 'Retrying...' : tx('retry', 'Retry')}
             </button>
           </div>
         ) : jobs.length === 0 ? (
@@ -652,6 +844,8 @@ export const JobsTab: React.FC = () => {
             const isRunsLoading = Boolean(runsLoading[j.id]);
             const runsFetchFailed = runsRaw !== undefined && runsLive === false;
             const pending = pendingOps[j.id];
+            // In-flight run for this job, so Stop can be offered for it.
+            const activeRun = latestActiveRun(runs);
             const nextRunLabel = j.nextRunAt
               ? formatTimeWithZone(j.nextRunAt, displayTz)
               : '';
@@ -686,22 +880,18 @@ export const JobsTab: React.FC = () => {
                       <span className="px-1.5 py-0.5 rounded-md bg-white/[0.04] border border-white/[0.06] text-[10px] font-mono text-slate-300">
                         {displayTz}
                       </span>
-                      <span>·</span>
-                      <span className={j.enabled ? 'text-emerald-400' : 'text-slate-500'}>
-                        {j.state || (j.enabled ? t('active') : 'Paused')}
-                      </span>
                     </div>
                   </div>
 
                   <span
-                    aria-label={`${j.name}: ${j.enabled ? t('enabled') : 'Paused'}`}
+                    aria-label={`${j.name}: ${j.enabled ? t('enabled') : tx('paused', 'Paused')}`}
                     className={`px-2.5 py-1 rounded-lg text-xs font-medium ${
                       j.enabled
                         ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/20'
                         : 'bg-white/[0.04] text-slate-400 border border-white/[0.06]'
                     }`}
                   >
-                    {j.enabled ? t('enabled') : 'Paused'}
+                    {j.enabled ? t('enabled') : tx('paused', 'Paused')}
                   </span>
                 </div>
 
@@ -775,6 +965,20 @@ export const JobsTab: React.FC = () => {
                       <span>{pending === 'run' ? `${t('running')}...` : t('runNow')}</span>
                     </button>
 
+                    {/* Stop an in-flight run. Only offered while the run
+                        history reports a run that has not settled. */}
+                    {activeRun && (
+                      <button
+                        onClick={() => handleStopRun(j, activeRun.id)}
+                        disabled={Boolean(pending)}
+                        className="text-rose-300 hover:text-rose-200 disabled:opacity-50 cursor-pointer flex items-center gap-1.5 transition font-medium min-h-[44px]"
+                        aria-label={`${tx('stopRun', 'Stop run')} ${j.name}`}
+                      >
+                        <Square className="w-3.5 h-3.5" />
+                        <span>{pending === 'stop' ? tx('stopping', 'Stopping...') : tx('stopRun', 'Stop run')}</span>
+                      </button>
+                    )}
+
                     <button
                       onClick={() => openEdit(j)}
                       disabled={Boolean(pending)}
@@ -826,7 +1030,7 @@ export const JobsTab: React.FC = () => {
                           disabled={isRunsLoading}
                           className="px-3 min-h-[44px] py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.08] text-xs text-slate-200 disabled:opacity-50 cursor-pointer transition"
                         >
-                          {isRunsLoading ? 'Retrying...' : 'Retry'}
+                          {isRunsLoading ? 'Retrying...' : tx('retry', 'Retry')}
                         </button>
                       </div>
                     ) : runs.length === 0 ? (
@@ -848,21 +1052,18 @@ export const JobsTab: React.FC = () => {
                           const endedLabel = r.finishedAt
                             ? formatRunTimestamp(r.finishedAt, displayTz)
                             : '';
-                          const status = (r.status || 'completed').toLowerCase();
-                          const badgeClass =
-                            status === 'failed' || status === 'error'
-                              ? 'bg-rose-500/10 text-rose-300 border-rose-500/20'
-                              : status === 'running' || status === 'pending'
-                                ? 'bg-amber-500/10 text-amber-300 border-amber-500/20'
-                                : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20';
+                          // Explicit allowlist: known success values read as
+                          // success, everything else is neutral or failing.
+                          const runInfo = runStatusInfo(r.status, tx);
+                          const badgeClass = RUN_TONE_CLASS[runInfo.tone];
                           return (
                             <div
                               key={r.id || i}
                               className="p-2.5 rounded-xl bg-[var(--app-card-subtle,#141920)] border border-white/[0.06] text-xs space-y-1"
                             >
                               <div className="flex items-center justify-between gap-2 text-slate-300">
-                                <span className={`px-2 py-0.5 rounded-md border text-[10px] font-medium capitalize ${badgeClass}`} aria-label={`Run status: ${r.status || 'Completed'}`}>
-                                  {r.status || 'Completed'}
+                                <span className={`px-2 py-0.5 rounded-md border text-[10px] font-medium ${badgeClass}`} aria-label={`${tx('runStatusLabel', 'Run status')}: ${runInfo.label}`}>
+                                  {runInfo.label}
                                 </span>
                                 <span className="text-slate-500 text-[11px] font-mono" title={r.startedAt}>{startedLabel}</span>
                               </div>

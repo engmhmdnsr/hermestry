@@ -17,6 +17,8 @@ import {
   Sparkles,
   Sliders,
   MoreHorizontal,
+  AlertTriangle,
+  WifiOff,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import { ChatMessage, PendingApproval } from '../../types/hermes';
@@ -49,6 +51,12 @@ interface MessageRowProps {
   speaking: boolean;
   menuOpen: boolean;
   streamBusy: boolean;
+  stopped: boolean;
+  stoppedLabel: string;
+  stoppedHint: string;
+  estimated: boolean;
+  estimatedHint: string;
+  copyUnavailableLabel: string;
   menuContainerRef?: React.RefObject<HTMLDivElement | null>;
   onCopy: (id: string, content: string) => void;
   onSpeak: (id: string, content: string) => void;
@@ -57,6 +65,63 @@ interface MessageRowProps {
   onToggleMenu: (id: string | null) => void;
   t: (key: string) => string;
 }
+
+type StreamFailureKind = 'auth' | 'quota' | 'model' | 'rate' | 'offline' | 'server' | 'unknown';
+
+interface StreamFailureInfo {
+  kind: StreamFailureKind;
+  status: number | null;
+  detail: string;
+}
+
+// Failure text arrives as free form gateway text ('Stream failed: HTTP 404',
+// sometimes already prefixed with 'Stream error:'). Prefixes are collapsed so
+// the banner shows exactly one, and the kind drives the friendly copy plus a
+// real next step. The raw detail stays available behind a details toggle.
+const STREAM_ERROR_PREFIX = /^(?:stream\s*error|stream\s*failed|request\s*failed)\s*:?\s*/i;
+
+const classifyStreamFailure = (raw: string): StreamFailureInfo => {
+  let detail = (raw || '').trim();
+  let prev = '';
+  while (prev !== detail && STREAM_ERROR_PREFIX.test(detail)) {
+    prev = detail;
+    detail = detail.replace(STREAM_ERROR_PREFIX, '').trim();
+  }
+  const match = /(?:http\s*)?\b([1-5]\d{2})\b/i.exec(detail);
+  const status = match ? Number(match[1]) : null;
+  const low = detail.toLowerCase();
+  if (
+    status === 401 ||
+    status === 403 ||
+    /unauthor|forbidden|invalid api key|authentication|api key/.test(low)
+  ) {
+    return { kind: 'auth', status, detail };
+  }
+  if (status === 402 || /quota|billing|insufficient|credit/.test(low)) {
+    return { kind: 'quota', status, detail };
+  }
+  if (status === 404 || /not found|unknown model|no such model/.test(low)) {
+    return { kind: 'model', status, detail };
+  }
+  if (status === 408 || status === 429 || /rate limit|too many requests|timed? ?out/.test(low)) {
+    return { kind: 'rate', status, detail };
+  }
+  if (/failed to fetch|network|econnrefused|unreachable|socket|disconnected|connection/.test(low)) {
+    return { kind: 'offline', status, detail };
+  }
+  if (status !== null && status >= 500) return { kind: 'server', status, detail };
+  return { kind: 'unknown', status, detail };
+};
+
+// Honest durations: sub second turns read '<1s' instead of '0.0s', and long
+// turns stop printing a tenth of a second nobody can use.
+const formatDurationMs = (ms: number, underOneSecondLabel: string): string => {
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  if (ms < 1000) return underOneSecondLabel;
+  if (ms < 10000) return `${(ms / 1000).toFixed(1)}s`;
+  if (ms < 60000) return `${Math.round(ms / 1000)}s`;
+  return `${Math.round(ms / 60000)}m`;
+};
 
 // Memoized so 50ms batched streaming flushes only re-render the live tail
 // row instead of every bubble on every token.
@@ -72,6 +137,12 @@ const MessageRow: React.FC<MessageRowProps> = memo(
     speaking,
     menuOpen,
     streamBusy,
+    stopped,
+    stoppedLabel,
+    stoppedHint,
+    estimated,
+    estimatedHint,
+    copyUnavailableLabel,
     menuContainerRef,
     onCopy,
     onSpeak,
@@ -103,17 +174,26 @@ const MessageRow: React.FC<MessageRowProps> = memo(
             </span>
 
             <div className="flex items-center gap-2 text-slate-400 font-mono text-[10px]">
+              {!isUser && stopped && (
+                <span
+                  className="px-1.5 py-0.5 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300 font-sans"
+                  title={stoppedHint}
+                >
+                  {stoppedLabel}
+                </span>
+              )}
               {!isUser && (modelLabel || durationLabel) && (
-                <span>
+                <span title={estimated ? estimatedHint : undefined}>
                   {modelLabel}
                   {durationLabel && ` · ${durationLabel}`}
                 </span>
               )}
               <button
-                onClick={() => onCopy(msg.id, msg.content || msg.thinking || '')}
-                className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-white cursor-pointer ms-1"
-                title={t('copy')}
-                aria-label={t('copy')}
+                onClick={() => onCopy(msg.id, msg.content)}
+                disabled={!msg.content.trim()}
+                className="min-w-[44px] min-h-[44px] flex items-center justify-center text-slate-400 hover:text-white cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ms-1"
+                title={msg.content.trim() ? t('copy') : copyUnavailableLabel}
+                aria-label={msg.content.trim() ? t('copy') : copyUnavailableLabel}
               >
                 {copied ? (
                   <Check className="w-3.5 h-3.5 text-emerald-400" />
@@ -277,8 +357,17 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     streamError,
     gatewayFailed,
     gatewayFailureReason,
+    refreshNow,
     t,
   } = useHermes();
+
+  // i18n with an English fallback for keys the locale bundle does not ship
+  // yet. t() returns the key itself when no locale has it, so the fallback
+  // stays honest instead of rendering a raw key name.
+  const tx = (key: string, fallback: string): string => {
+    const v = t(key);
+    return !v || v === key ? fallback : v;
+  };
 
   // Composer and input state
   const [text, setText] = useState('');
@@ -305,6 +394,10 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   const [confirmSessionRunId, setConfirmSessionRunId] = useState<string | null>(null);
   const [streamErrorDismissed, setStreamErrorDismissed] = useState<string | null>(null);
   const [stickToBottom, setStickToBottom] = useState(true);
+  // Approvals: the count is always visible, the queue body is deliberately
+  // opened, and gateway-side failures are shown on the card they belong to.
+  const [approvalsExpanded, setApprovalsExpanded] = useState(true);
+  const [approvalFailures, setApprovalFailures] = useState<Record<string, string>>({});
 
   // Optional context surface (lands with the context owner's stream-error
   // work): the live failure banner below activates when present, and stays
@@ -488,6 +581,10 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   const [displayChat, setDisplayChat] = useState<ChatMessage[]>(chat);
   const chatLatestRef = useRef(chat);
   chatLatestRef.current = chat;
+  // Latest pending approvals, so an async resolve can tell whether the gateway
+  // actually confirmed the decision (the card only stays when it did not).
+  const approvalsRef = useRef<PendingApproval[]>(approvals);
+  approvalsRef.current = approvals;
   useEffect(() => {
     if (!streaming) {
       if (flushTimerRef.current !== null) {
@@ -542,8 +639,20 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   // distinct banner with retry/dismiss instead of rendering error-as-bubble.
   const isStreamError = (m: ChatMessage) =>
     m.sender === 'hermes' && m.content.startsWith('Stream error:');
-  const bubbleMessages = useMemo(() => visibleMessages.filter((m) => !isStreamError(m)), [visibleMessages]);
+  // Approval failures are injected by the context as assistant style bubbles.
+  // They belong on the approval card, so they are pulled out of the transcript
+  // here and rendered next to the card that is still pending.
+  const isApprovalFailure = (m: ChatMessage) =>
+    m.sender === 'hermes' && /^approval (grant|deny) failed:/i.test(m.content.trim());
+  const bubbleMessages = useMemo(
+    () => visibleMessages.filter((m) => !isStreamError(m) && !isApprovalFailure(m)),
+    [visibleMessages]
+  );
   const errorMessages = useMemo(() => visibleMessages.filter(isStreamError), [visibleMessages]);
+  const approvalFailureBubbles = useMemo(
+    () => visibleMessages.filter(isApprovalFailure),
+    [visibleMessages]
+  );
   const visibleErrors = useMemo(
     () => errorMessages.filter((m) => !dismissedErrors.includes(m.id)),
     [errorMessages, dismissedErrors]
@@ -560,6 +669,165 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   const hasComposerContent = text.trim().length > 0 || attached.length > 0;
   const canSendNow = hasComposerContent && !!settings.modelId && !attaching;
 
+  // The send button stays tappable even when it cannot send: every tap runs a
+  // guard that says why and offers the fix, so the control never sits dead.
+  const gatewayOffline = !connected || gatewayFailed;
+  const sendHint = !settings.modelId
+    ? tx('sendNeedsModel', 'Select a model first. Tap send to open the model list.')
+    : !hasComposerContent
+      ? tx('sendNeedsText', 'Type a message first, then send.')
+      : tx('sendMessage', 'Send message');
+  const sendNowHint = !settings.modelId
+    ? tx('sendNeedsModel', 'Select a model first. Tap send to open the model list.')
+    : !hasComposerContent
+      ? tx('sendNeedsText', 'Type a message first, then send.')
+      : tx('stopAndSend', 'Stop this turn and send now');
+
+  // Friendly copy plus a real next step per failure kind. One prefix is shown
+  // once, and the action maps to a screen the user can actually fix things in.
+  const describeFailure = (
+    info: StreamFailureInfo
+  ): { title: string; message: string; actions: Array<{ label: string; onClick: () => void; primary?: boolean }> } => {
+    const title = tx('streamFailedTitle', 'Stream failed');
+    const startNewChat = () => {
+      void newSession().catch(() =>
+        showActionToast(tx('newSessionFailed', 'Could not start a new session. Check the gateway.'), 'error')
+      );
+    };
+    switch (info.kind) {
+      case 'auth':
+        return {
+          title,
+          message: tx(
+            'errAuthMessage',
+            `The provider rejected the request${info.status ? ` (HTTP ${info.status})` : ''}. Check the API key and provider profile, then retry.`
+          ),
+          actions: [{ label: tx('openProviderSettings', 'Open provider settings'), onClick: onGoSettings, primary: true }],
+        };
+      case 'quota':
+        return {
+          title,
+          message: tx(
+            'errQuotaMessage',
+            'The provider refused the request for billing or quota reasons. Check the provider account, then retry.'
+          ),
+          actions: [{ label: tx('openProviderSettings', 'Open provider settings'), onClick: onGoSettings, primary: true }],
+        };
+      case 'model':
+        return {
+          title,
+          message: tx(
+            'errModelMessage',
+            `The selected model or endpoint was not found${info.status ? ` (HTTP ${info.status})` : ''}. Pick another model, or adjust the provider profile.`
+          ),
+          actions: [
+            models.length > 0
+              ? {
+                  label: tx('chooseAnotherModel', 'Choose another model'),
+                  onClick: () => setShowModelsSheet(true),
+                  primary: true,
+                }
+              : { label: tx('openProviderSettings', 'Open provider settings'), onClick: onGoSettings, primary: true },
+            { label: tx('startNewChat', 'Start a new chat'), onClick: startNewChat },
+          ],
+        };
+      case 'rate':
+        return {
+          title,
+          message: tx('errRateMessage', 'The provider is rate limiting or the request timed out. Wait a moment, then retry.'),
+          actions: [],
+        };
+      case 'offline':
+        return {
+          title,
+          message: tx('errOfflineMessage', 'The app could not reach the gateway. Start or restart it, then retry.'),
+          actions: [{ label: tx('openGatewaySettings', 'Open gateway settings'), onClick: onGoSettings, primary: true }],
+        };
+      case 'server':
+        return {
+          title,
+          message: tx('errServerMessage', 'The gateway or the provider returned a server error. Retry, and check the gateway status if it repeats.'),
+          actions: [{ label: tx('startNewChat', 'Start a new chat'), onClick: startNewChat }],
+        };
+      default:
+        return {
+          title,
+          message: tx('errUnknownMessage', 'The turn ended before the model finished. Retry, or start a new chat.'),
+          actions: [{ label: tx('startNewChat', 'Start a new chat'), onClick: startNewChat }],
+        };
+    }
+  };
+
+  // One renderer for both the live banner and legacy persisted error bubbles,
+  // so neither shows a doubled prefix or a bare transport string.
+  const renderFailureCard = (raw: string, onDismiss: () => void, key: string) => {
+    const failure = classifyStreamFailure(raw);
+    const described = describeFailure(failure);
+    return (
+      <div
+        key={key}
+        role="alert"
+        className="mb-2 px-3.5 py-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs"
+      >
+        <p className="text-rose-200 break-words leading-relaxed">
+          <span className="font-semibold">{described.title}: </span>
+          {described.message}
+        </p>
+        <details className="mt-1.5">
+          <summary className="text-[11px] text-rose-300/80 cursor-pointer">
+            {tx('showErrorDetail', 'Show details')}
+          </summary>
+          <p className="mt-1 font-mono text-[11px] text-rose-200/70 break-all">
+            {failure.detail || raw}
+          </p>
+        </details>
+        <div className="flex flex-wrap items-center gap-2 mt-2">
+          {described.actions.map((action) => (
+            <button
+              key={action.label}
+              onClick={action.onClick}
+              className={`min-h-[44px] px-3 rounded-lg text-xs font-semibold cursor-pointer ${
+                action.primary
+                  ? 'bg-rose-600 hover:bg-rose-500 text-white'
+                  : 'bg-white/[0.05] hover:bg-white/[0.1] text-slate-200 border border-white/[0.1]'
+              }`}
+            >
+              {action.label}
+            </button>
+          ))}
+          <button
+            onClick={() => {
+              if (streaming) {
+                showActionToast(tx('stillGenerating', 'Still generating, wait or stop first'), 'info');
+                return;
+              }
+              if (!retryLast()) showActionToast(tx('nothingToRetry', 'Nothing to retry yet'), 'info');
+            }}
+            disabled={streaming}
+            className="min-h-[44px] px-3 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {tx('retry', 'Retry')}
+          </button>
+          <button
+            onClick={onDismiss}
+            className="min-h-[44px] px-3 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 text-xs cursor-pointer"
+          >
+            {tx('dismiss', 'Dismiss')}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  // Attachment refs are persisted for history exactly once per send; blobs stay
+  // registered so the refs keep resolving (revoked only on remove).
+  const persistAttachmentRefs = () => {
+    if (currentSessionId && pendingRefsRef.current.length > 0) {
+      appendAttachmentRefs(currentSessionId, pendingRefsRef.current);
+      pendingRefsRef.current = [];
+    }
+  };
+
   const clearComposer = () => {
     handleTextChange('');
     setAttached([]);
@@ -571,28 +839,54 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
 
   // Unified guarded send: model guard, trim, failure-safe draft. The draft
   // and attachments clear ONLY on success; a failed send keeps everything.
-  const handleSend = () => {
+  // origin 'keyboard' keeps an empty Enter press silent; a send button tap
+  // always explains itself instead of sitting dead.
+  const handleSend = (origin: 'button' | 'keyboard' = 'button') => {
+    if (attaching) {
+      showActionToast(tx('attachmentsBusy', 'Still preparing attachments. Try again in a moment.'), 'info');
+      return;
+    }
     const raw = textRef.current;
     const trimmed = raw.trim();
     const payloads = attachedRef.current.map((a) => a.dataUrl);
-    if (!trimmed && payloads.length === 0) return;
+    if (!trimmed && payloads.length === 0) {
+      if (origin === 'button') showActionToast(tx('sendNeedsText', 'Type a message first, then send.'), 'info');
+      return;
+    }
     if (!settings.modelId) {
-      showActionToast('Select a model first', 'error');
+      showActionToast(tx('sendNeedsModel', 'Select a model first. Tap send to open the model list.'), 'error');
       setShowModelsSheet(true);
+      return;
+    }
+    if (gatewayOffline) {
+      // Offline: hold it in the visible queue instead of posting into a stream
+      // that cannot succeed and then reporting a raw transport error.
+      if (!queueMessage(trimmed, payloads)) {
+        showActionToast(tx('queueFailed', 'Could not queue message'), 'error');
+        return;
+      }
+      showActionToast(
+        tx(
+          'queuedOffline',
+          'Gateway offline. Queued: it sends automatically when the gateway reconnects, or send it from the queue bar.'
+        ),
+        'info'
+      );
+      persistAttachmentRefs();
+      clearComposer();
+      setStickToBottom(true);
       return;
     }
     const ok = streaming ? queueMessage(trimmed, payloads) : sendMessage(trimmed, payloads);
     if (!ok) {
-      showActionToast(streaming ? 'Could not queue message' : 'Send failed , draft kept', 'error');
+      showActionToast(
+        streaming ? tx('queueFailed', 'Could not queue message') : tx('sendFailedDraftKept', 'Send failed, draft kept'),
+        'error'
+      );
       return;
     }
-    if (streaming) showActionToast('Queued for next turn', 'info');
-    // Persist metadata-only refs for history; blobs stay registered so the
-    // refs keep resolving. Blobs are revoked only on remove, never on send.
-    if (currentSessionId && pendingRefsRef.current.length > 0) {
-      appendAttachmentRefs(currentSessionId, pendingRefsRef.current);
-      pendingRefsRef.current = [];
-    }
+    if (streaming) showActionToast(tx('queuedNextTurn', 'Queued for next turn'), 'info');
+    persistAttachmentRefs();
     clearComposer();
     setStickToBottom(true);
   };
@@ -600,27 +894,58 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   // Streaming "Send now": stop-then-send via sendNow with the same guards
   // and failure-safe clear as the unified path.
   const handleSendNow = () => {
+    if (attaching) {
+      showActionToast(tx('attachmentsBusy', 'Still preparing attachments. Try again in a moment.'), 'info');
+      return;
+    }
     const raw = textRef.current;
     const trimmed = raw.trim();
     const payloads = attachedRef.current.map((a) => a.dataUrl);
-    if (!trimmed && payloads.length === 0) return;
+    if (!trimmed && payloads.length === 0) {
+      showActionToast(tx('sendNeedsText', 'Type a message first, then send.'), 'info');
+      return;
+    }
     if (!settings.modelId) {
-      showActionToast('Select a model first', 'error');
+      showActionToast(tx('sendNeedsModel', 'Select a model first. Tap send to open the model list.'), 'error');
       setShowModelsSheet(true);
       return;
     }
     const result = sendNow(trimmed, payloads);
     if (!result) {
-      showActionToast('Send failed , draft kept', 'error');
+      showActionToast(tx('sendFailedDraftKept', 'Send failed, draft kept'), 'error');
       return;
     }
-    if (result === 'queued') showActionToast('Queued for next turn', 'info');
-    if (currentSessionId && pendingRefsRef.current.length > 0) {
-      appendAttachmentRefs(currentSessionId, pendingRefsRef.current);
-      pendingRefsRef.current = [];
-    }
+    if (result === 'queued') showActionToast(tx('queuedNextTurn', 'Queued for next turn'), 'info');
+    persistAttachmentRefs();
     clearComposer();
     setStickToBottom(true);
+  };
+
+  // Send the oldest queued message immediately, leaving the rest queued in
+  // order. Used by the queue bar so pending items are never a dead end.
+  const sendFirstQueued = () => {
+    const first = queuedMessages[0];
+    if (!first) return;
+    if (streaming) {
+      showActionToast(tx('stillGenerating', 'Still generating, wait or stop first'), 'info');
+      return;
+    }
+    if (gatewayOffline) {
+      showActionToast(
+        tx('offlineCannotSendNow', 'Gateway offline: queued messages send automatically once it reconnects.'),
+        'info'
+      );
+      return;
+    }
+    const rest = queuedMessages.slice(1);
+    cancelQueued();
+    rest.forEach((m) => queueMessage(m.text, m.images));
+    if (!sendMessage(first.text, first.images)) {
+      queueMessage(first.text, first.images);
+      showActionToast(tx('sendFailedDraftKept', 'Send failed, draft kept'), 'error');
+    } else {
+      setStickToBottom(true);
+    }
   };
 
   const handleResolveApproval = async (
@@ -638,6 +963,20 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     setResolvingRunId(approval.runId);
     try {
       await resolveApproval(approval, allow, scope);
+      // A card that is still pending means the gateway did not confirm the
+      // decision. Report it on the card itself instead of letting the failure
+      // hide in a chat bubble that is not persisted.
+      window.setTimeout(() => {
+        if (approvalsRef.current.some((a) => a.runId === approval.runId)) {
+          setApprovalFailures((prev) => ({
+            ...prev,
+            [approval.runId]: tx(
+              'approvalNotConfirmed',
+              'The gateway did not confirm this decision, so the approval is still pending. Try again, or check the gateway status.'
+            ),
+          }));
+        }
+      }, 250);
     } finally {
       setResolvingRunId((cur) => (cur === approval.runId ? null : cur));
     }
@@ -881,12 +1220,12 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       // Stream guard: never fire a second turn mid-stream; the row button is
       // also disabled, this is the keyboard/edge-path backstop.
       if (streaming) {
-        showActionToast('Still generating , wait or stop first', 'info');
+        showActionToast(tx('stillGenerating', 'Still generating, wait or stop first'), 'info');
         return;
       }
       if (!content.trim()) return;
       const ok = sendMessage(content.trim());
-      if (!ok) showActionToast('Regenerate failed', 'error');
+      if (!ok) showActionToast(tx('regenerateFailed', 'Regenerate failed. Check the gateway and try again.'), 'error');
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [sendMessage, streaming]
@@ -933,6 +1272,16 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     setStreamErrorDismissed(null);
   }, [liveStreamError]);
 
+  // Drop stale approval-failure notices once their card is gone: a confirmed
+  // decision removes the runId from approvals, which clears the notice with it.
+  useEffect(() => {
+    setApprovalFailures((prev) => {
+      const ids = new Set(approvals.map((a) => a.runId));
+      const kept = Object.entries(prev).filter(([id]) => ids.has(id));
+      return kept.length === Object.keys(prev).length ? prev : Object.fromEntries(kept);
+    });
+  }, [approvals]);
+
   const curModelName =
     models.find((m) => m.id === settings.modelId)?.displayName ||
     settings.modelId.split('/').pop() ||
@@ -944,34 +1293,92 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     'Create an automated daily check job for system state',
   ];
 
-  const slashCommands = [
-    { label: '/new', action: () => newSession() },
+  // Slash chips are honest about what they do: app actions run locally,
+  // messages are sent to the model as your next turn. /retry says so when
+  // there is nothing to retry instead of no-oping silently.
+  const slashCommands: Array<{
+    label: string;
+    kind: 'action' | 'message';
+    hint: string;
+    blockedWhileStreaming?: boolean;
+    run: () => void;
+  }> = [
     {
-      label: '/retry',
-      action: () => {
-        retryLast();
+      label: '/new',
+      kind: 'action',
+      hint: tx('slashNewHint', 'App action: starts a new session. Nothing is sent to the model.'),
+      // Switching sessions mid-stream would split the in-flight turn from the
+      // session it belongs to, so this one waits for a stop.
+      blockedWhileStreaming: true,
+      run: () => {
+        void newSession().catch(() =>
+          showActionToast(tx('newSessionFailed', 'Could not start a new session. Check the gateway.'), 'error')
+        );
       },
     },
-    { label: '/find', action: () => setSearchOpen(true) },
-    { label: '/help', action: () => quickSend('/help') },
-    { label: '/status', action: () => quickSend('/status') },
+    {
+      label: '/retry',
+      kind: 'action',
+      hint: tx(
+        'slashRetryHint',
+        'App action: resends your last message. Nothing is sent when there is nothing to retry.'
+      ),
+      run: () => {
+        if (streaming) {
+          showActionToast(tx('stillGenerating', 'Still generating, wait or stop first'), 'info');
+          return;
+        }
+        if (!retryLast()) showActionToast(tx('nothingToRetry', 'Nothing to retry yet'), 'info');
+      },
+    },
+    {
+      label: '/find',
+      kind: 'action',
+      hint: tx('slashFindHint', 'App action: searches this conversation. Nothing is sent to the model.'),
+      run: () => setSearchOpen(true),
+    },
+    {
+      label: '/help',
+      kind: 'message',
+      hint: tx('slashMessageHint', 'Message: sends this text to the model as your next message.'),
+      run: () => quickSend('/help'),
+    },
+    {
+      label: '/status',
+      kind: 'message',
+      hint: tx('slashMessageHint', 'Message: sends this text to the model as your next message.'),
+      run: () => quickSend('/status'),
+    },
   ];
+
+  const visibleSlashCommands = slashCommands.filter((cmd) => {
+    if (text === '') return true;
+    const token = text.trim().split(/\s+/)[0];
+    return cmd.label.startsWith(token || '/');
+  });
+  const slashActions = visibleSlashCommands.filter((cmd) => cmd.kind === 'action');
+  const slashMessages = visibleSlashCommands.filter((cmd) => cmd.kind === 'message');
 
   // Guarded one-shot send for starters + slash shortcuts (bypasses composer).
   const quickSend = (content: string) => {
     const trimmed = content.trim();
     if (!trimmed) return;
     if (!settings.modelId) {
-      showActionToast('Select a model first', 'error');
+      showActionToast(tx('sendNeedsModel', 'Select a model first. Tap send to open the model list.'), 'error');
       setShowModelsSheet(true);
       return;
     }
-    if (streaming) {
-      if (!queueMessage(trimmed, [])) showActionToast('Could not queue message', 'error');
-      else showActionToast('Queued for next turn', 'info');
+    if (gatewayOffline) {
+      if (!queueMessage(trimmed, [])) showActionToast(tx('queueFailed', 'Could not queue message'), 'error');
+      else showActionToast(tx('queuedOffline', 'Gateway offline. Queued: send it from the queue bar when it is back.'), 'info');
       return;
     }
-    if (!sendMessage(trimmed, [])) showActionToast('Send failed', 'error');
+    if (streaming) {
+      if (!queueMessage(trimmed, [])) showActionToast(tx('queueFailed', 'Could not queue message'), 'error');
+      else showActionToast(tx('queuedNextTurn', 'Queued for next turn'), 'info');
+      return;
+    }
+    if (!sendMessage(trimmed, [])) showActionToast(tx('sendFailedDraftKept', 'Send failed, draft kept'), 'error');
     else setStickToBottom(true);
   };
 
@@ -1032,18 +1439,30 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                 role="alert"
                 className="w-full max-w-md px-3.5 py-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-start"
               >
-                <p className="text-xs font-semibold text-rose-300">
+                <p className="text-xs font-semibold text-rose-300 flex items-center gap-1.5">
+                  <WifiOff className="w-3.5 h-3.5 shrink-0" />
                   Gateway offline{gatewayFailed && gatewayFailureReason ? `: ${gatewayFailureReason}` : ''}
                 </p>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  You are disconnected. New messages will queue until the gateway reconnects.
+                  {tx(
+                    'offlineQueuedBody',
+                    'You are offline. Messages you send now are queued, not lost: they send automatically when the gateway reconnects, and you can send them yourself from the queue bar.'
+                  )}
                 </p>
-                <button
-                  onClick={onGoSettings}
-                  className="mt-1.5 min-h-[44px] px-3 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.1] text-xs text-white cursor-pointer"
-                >
-                  Open Settings
-                </button>
+                <div className="flex flex-wrap items-center gap-2 mt-1.5">
+                  <button
+                    onClick={onGoSettings}
+                    className="min-h-[44px] px-3 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.1] text-xs text-white cursor-pointer"
+                  >
+                    {tx('openSettings', 'Open Settings')}
+                  </button>
+                  <button
+                    onClick={() => void refreshNow()}
+                    className="min-h-[44px] px-3 rounded-lg bg-white/[0.06] hover:bg-white/[0.1] border border-white/[0.1] text-xs text-white cursor-pointer"
+                  >
+                    {tx('reconnectNow', 'Reconnect now')}
+                  </button>
+                </div>
               </div>
             )}
             <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-500/20 to-teal-500/20 border border-indigo-500/30 flex items-center justify-center shadow-xs">
@@ -1109,7 +1528,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             const modelLabel =
               meta && msg.sender !== 'you' ? meta.model.split('/').pop() || null : null;
             const durationLabel =
-              meta && meta.durationMs > 0 ? `${(meta.durationMs / 1000).toFixed(1)}s` : null;
+              meta && meta.durationMs > 0
+                ? `${meta.estimated ? '~' : ''}${formatDurationMs(meta.durationMs, tx('durUnderOneSecond', '<1s'))}`
+                : null;
             return (
               <MessageRow
                 key={msg.id}
@@ -1123,6 +1544,12 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                 speaking={speakingMsgId === msg.id}
                 menuOpen={openMenuId === msg.id}
                 streamBusy={streaming}
+                stopped={!!meta?.stopped}
+                stoppedLabel={tx('stoppedChip', 'Stopped')}
+                stoppedHint={tx('stoppedHint', 'This response was stopped before it finished.')}
+                estimated={!!meta?.estimated}
+                estimatedHint={tx('estimatedDurationHint', 'Estimated duration: the gateway sent no usage events for this turn.')}
+                copyUnavailableLabel={tx('nothingToCopy', 'Nothing to copy in this message.')}
                 menuContainerRef={menuRef}
                 onCopy={onCopyMessage}
                 onSpeak={onSpeakMessage}
@@ -1151,114 +1578,134 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       </div>
 
       <div className="shrink-0 min-h-0 max-h-[32vh] overflow-y-auto space-y-2 overscroll-contain">
-            {/* 3. Security Approval Confirmation Queue */}
+            {/* 3. Security Approval Confirmation Queue: the count is always
+                visible, the body opens deliberately, and gateway failures
+                render on the card they belong to (never as a chat bubble). */}
             {pendingApprovals.length > 0 && (
-        <div className="mb-2 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/30 shadow-lg animate-in slide-in-from-bottom duration-200">
-          <div className="flex items-center justify-between gap-2 mb-2">
-            <span className="text-xs font-semibold text-amber-200 tracking-tight">
-              {t('approvalTitle')}
+        <div className="mb-2 rounded-2xl bg-amber-500/10 border border-amber-500/30 shadow-lg animate-in slide-in-from-bottom duration-200">
+          <button
+            type="button"
+            onClick={() => setApprovalsExpanded((v) => !v)}
+            aria-expanded={approvalsExpanded}
+            className="w-full flex items-center justify-between gap-2 p-3 min-h-[44px] text-start cursor-pointer"
+          >
+            <span className="flex items-center gap-2 min-w-0">
+              <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0" />
+              <span className="text-xs font-semibold text-amber-200 tracking-tight truncate">
+                {pendingApprovals.length} {tx('pendingReview', 'pending review')}
+              </span>
             </span>
-            <span className="text-[11px] font-mono text-amber-300/80" aria-label={`${pendingApprovals.length} ${t('pending')}`}>
-              {pendingApprovals.length} {t('pending')}
+            <span className="flex items-center gap-1.5 shrink-0">
+              <span className="text-[11px] font-mono text-amber-300/80">{t('approvalTitle')}</span>
+              {approvalsExpanded ? (
+                <ChevronUp className="w-3.5 h-3.5 text-amber-300" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5 text-amber-300" />
+              )}
             </span>
-          </div>
-          <div className="space-y-3">
-            {pendingApprovals.map((approval) => (
-              <ApprovalCard
-                key={approval.runId}
-                approval={approval}
-                resolving={resolvingRunId === approval.runId}
-                onDeny={(a) => void handleResolveApproval(a, false)}
-                onAllow={(a, scope) => void handleResolveApproval(a, true, scope)}
-              />
-            ))}
-          </div>
+          </button>
+          {!approvalsExpanded && (
+            <p className="px-3 pb-3 text-[11px] text-amber-100/80 truncate" title={pendingApprovals[0].summary}>
+              {pendingApprovals[0].summary}
+            </p>
+          )}
+          {approvalsExpanded && (
+            <div className="px-3 pb-3 space-y-3">
+              {pendingApprovals.map((approval) => (
+                <div key={approval.runId} className="space-y-2">
+                  {approvalFailures[approval.runId] && (
+                    <p
+                      role="alert"
+                      className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-2 text-[11px] text-rose-200"
+                    >
+                      {approvalFailures[approval.runId]}
+                    </p>
+                  )}
+                  <ApprovalCard
+                    approval={approval}
+                    resolving={resolvingRunId === approval.runId}
+                    onDeny={(a) => void handleResolveApproval(a, false)}
+                    onAllow={(a, scope) => void handleResolveApproval(a, true, scope)}
+                  />
+                </div>
+              ))}
+              {approvalFailureBubbles.map((m) => (
+                <p
+                  key={m.id}
+                  role="alert"
+                  className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2.5 py-2 text-[11px] text-rose-200"
+                >
+                  {m.content}
+                </p>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
-      {/* Queued Messages Ribbon */}
+      {/* Approval failures whose card is already gone still get surfaced. */}
+      {pendingApprovals.length === 0 && approvalFailureBubbles.length > 0 && (
+        <div className="mb-2 px-3.5 py-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs space-y-1.5">
+          {approvalFailureBubbles.map((m) => (
+            <p key={m.id} role="alert" className="text-rose-200 break-words leading-relaxed">
+              {m.content}
+            </p>
+          ))}
+        </div>
+      )}
+
+      {/* Queued Messages Ribbon: queued items are visibly pending and can be
+          sent now, so the queue is never a dead end waiting on the gateway. */}
       {queuedMessages.length > 0 && (
         <div
           role="status"
           aria-live="polite"
-          aria-label={`${queuedMessages.length} messages queued for next turn`}
+          aria-label={`${queuedMessages.length} queued: ${queuedMessages[0]?.text || ''}`}
           className="mb-2 px-3.5 py-2 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-between gap-2 text-xs text-indigo-300"
         >
-          <span className="min-w-0 truncate">
-            {queuedMessages.length} queued{queuedMessages[0]?.text ? `: ${queuedMessages[0].text.slice(0, 60)}` : ` ${t('queuedFor')}`}
+          <span className="min-w-0 flex flex-col">
+            <span className="truncate">
+              {queuedMessages.length} queued{queuedMessages[0]?.text ? `: ${queuedMessages[0].text.slice(0, 60)}` : ` ${t('queuedFor')}`}
+            </span>
+            <span className="text-[10px] text-indigo-300/70">
+              {streaming
+                ? tx('queuedAutoHint', 'Pending: sends automatically when this turn finishes.')
+                : tx('queuedManualHint', 'Pending. Sends automatically when the gateway reconnects, or tap Send now.')}
+            </span>
           </span>
-          <button
-            onClick={cancelQueued}
-            aria-label={`Cancel ${queuedMessages.length} queued messages`}
-            className="text-rose-400 hover:underline cursor-pointer shrink-0 min-h-[44px] px-2"
-          >
-            Cancel
-          </button>
+          <span className="flex items-center gap-1 shrink-0">
+            <button
+              onClick={sendFirstQueued}
+              disabled={streaming}
+              className="min-h-[44px] px-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {tx('sendNow', 'Send now')}
+            </button>
+            <button
+              onClick={cancelQueued}
+              aria-label={`Cancel ${queuedMessages.length} queued messages`}
+              className="text-rose-400 hover:underline cursor-pointer shrink-0 min-h-[44px] px-2"
+            >
+              {tx('cancel', 'Cancel')}
+            </button>
+          </span>
         </div>
       )}
 
       {/* Live stream failure banner (context streamError surface, never a bubble) */}
-      {liveStreamError && streamErrorDismissed !== liveStreamError && (
-        <div
-          role="alert"
-          className="mb-2 px-3.5 py-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs"
-        >
-          <p className="text-rose-200 break-words leading-relaxed">Stream error: {liveStreamError}</p>
-          <div className="flex items-center gap-2 mt-2">
-            <button
-              onClick={() => {
-                if (streaming) {
-                  showActionToast('Still generating , wait or stop first', 'info');
-                  return;
-                }
-                if (!retryLast()) showActionToast('Nothing to retry', 'error');
-              }}
-              disabled={streaming}
-              className="min-h-[44px] px-3 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              Retry
-            </button>
-            <button
-              onClick={() => setStreamErrorDismissed(liveStreamError)}
-              className="min-h-[44px] px-3 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 text-xs cursor-pointer"
-            >
-              Dismiss
-            </button>
-          </div>
-        </div>
-      )}
+      {liveStreamError &&
+        streamErrorDismissed !== liveStreamError &&
+        renderFailureCard(
+          liveStreamError,
+          () => setStreamErrorDismissed(liveStreamError),
+          'live-stream-error'
+        )}
 
-      {/* Legacy stream error bubbles (older persisted history), with retry/dismiss */}
-      {visibleErrors.map((err) => (
-        <div
-          key={err.id}
-          role="alert"
-          className="mb-2 px-3.5 py-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-xs"
-        >
-          <p className="text-rose-200 break-words leading-relaxed">{err.content}</p>
-          <div className="flex items-center gap-2 mt-2">
-            <button
-              onClick={() => {
-                if (streaming) {
-                  showActionToast('Still generating , wait or stop first', 'info');
-                  return;
-                }
-                if (!retryLast()) showActionToast('Nothing to retry', 'error');
-              }}
-              disabled={streaming}
-              className="min-h-[44px] px-3 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              Retry
-            </button>
-            <button
-              onClick={() => setDismissedErrors((prev) => [...prev, err.id])}
-              className="min-h-[44px] px-3 rounded-lg bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 text-xs cursor-pointer"
-            >
-              Dismiss
-            </button>
-          </div>
-        </div>
-      ))}
+      {/* Legacy stream error bubbles (older persisted history), same renderer
+          so neither path can print a doubled prefix or a raw transport string */}
+      {visibleErrors.map((err) =>
+        renderFailureCard(err.content, () => setDismissedErrors((prev) => [...prev, err.id]), err.id)
+      )}
 
       {/* Text-file truncation choice notice with included/omitted counts */}
       {attachNotice && (
@@ -1305,29 +1752,53 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
         </div>
       )}
 
-      {/* Slash command helpers: visible on empty composer and while typing a / command */}
-      {!streaming && (text === '' || text.startsWith('/')) && (
-        <div
-          role="toolbar"
-          aria-label="Slash commands"
-          className="flex items-center gap-1.5 mb-2 overflow-x-auto pb-1 text-xs shrink-0"
-        >
-          {slashCommands
-            .filter((cmd) => {
-              if (text === '') return true;
-              const token = text.trim().split(/\s+/)[0];
-              return cmd.label.startsWith(token || '/');
-            })
-            .map((cmd) => (
-            <button
-              key={cmd.label}
-              onClick={cmd.action}
-              aria-label={`Run ${cmd.label} command`}
-              className="px-2.5 min-h-[44px] py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-slate-400 hover:text-white transition cursor-pointer shrink-0 font-mono text-[11px]"
-            >
-              {cmd.label}
-            </button>
-          ))}
+      {/* Slash command helpers: reachable while the composer is empty or a /
+          command is being typed, grouped so app actions are never mistaken for
+          messages sent to the model. */}
+      {(text === '' || text.startsWith('/')) && visibleSlashCommands.length > 0 && (
+        <div role="toolbar" aria-label="Slash commands" className="mb-2 space-y-1 shrink-0">
+          {slashActions.length > 0 && (
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
+              <span className="shrink-0 font-mono text-[10px] uppercase tracking-wide text-slate-500">
+                {tx('slashAppActions', 'App actions')}
+              </span>
+              {slashActions.map((cmd) => {
+                const blocked = streaming && !!cmd.blockedWhileStreaming;
+                return (
+                  <button
+                    key={cmd.label}
+                    onClick={cmd.run}
+                    disabled={blocked}
+                    title={blocked ? tx('stopTurnFirst', 'Stop the current turn first.') : cmd.hint}
+                    aria-label={`${cmd.label}: ${
+                      blocked ? tx('stopTurnFirst', 'Stop the current turn first.') : cmd.hint
+                    }`}
+                    className="px-2.5 min-h-[44px] py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-slate-400 hover:text-white transition cursor-pointer shrink-0 font-mono text-[11px] disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {cmd.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {slashMessages.length > 0 && (
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 text-xs">
+              <span className="shrink-0 font-mono text-[10px] uppercase tracking-wide text-slate-500">
+                {tx('slashSentToModel', 'Sent to model')}
+              </span>
+              {slashMessages.map((cmd) => (
+                <button
+                  key={cmd.label}
+                  onClick={cmd.run}
+                  title={cmd.hint}
+                  aria-label={`${cmd.label}: ${cmd.hint}`}
+                  className="px-2.5 min-h-[44px] py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] text-teal-300 hover:text-white transition cursor-pointer shrink-0 font-mono text-[11px]"
+                >
+                  {cmd.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
       </div>
@@ -1343,7 +1814,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             if (e.key === 'Enter' && !e.shiftKey) {
               if ((e.nativeEvent as unknown as { isComposing?: boolean })?.isComposing || e.keyCode === 229) return;
               e.preventDefault();
-              handleSend();
+              handleSend('keyboard');
             }
           }}
           placeholder={t('askHermes') || 'Message Hermes or paste instructions...'}
@@ -1460,15 +1931,14 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
               <div className="flex items-center gap-1.5">
                 <span className="text-[10.5px] text-teal-300 font-mono flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-teal-500/10 border border-teal-500/20">
                   <Clock className="w-2.5 h-2.5 animate-spin" />
-                  <span>{String(streamElapsed).padStart(2, '0')}s</span>
+                  <span>{streamElapsed < 1 ? tx('durUnderOneSecond', '<1s') : `${streamElapsed}s`}</span>
                 </span>
                 <button
                   type="button"
                   onClick={handleSendNow}
-                  disabled={!canSendNow}
-                  aria-label="Send now (stop and send)"
-                  title={!settings.modelId ? 'Select a model first' : 'Stop and send now'}
-                  className="px-2 min-h-[44px] py-1 rounded-full text-[11px] font-medium bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25 disabled:opacity-40 cursor-pointer"
+                  aria-label={sendNowHint}
+                  title={sendNowHint}
+                  className="px-2 min-h-[44px] py-1 rounded-full text-[11px] font-medium bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25 cursor-pointer"
                 >
                   {t('send')}
                 </button>
@@ -1485,15 +1955,13 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             ) : (
               <button
                 type="button"
-                onClick={handleSend}
-                disabled={!canSendNow}
-                title={!settings.modelId ? (t('noModel') || 'Select a model first') : 'Send Message'}
-                aria-label={!settings.modelId ? (t('noModel') || 'Select a model first') : 'Send Message'}
-                aria-disabled={!canSendNow}
+                onClick={() => handleSend('button')}
+                title={sendHint}
+                aria-label={sendHint}
                 className={`min-w-[44px] min-h-[44px] rounded-full flex items-center justify-center transition-all cursor-pointer shrink-0 shadow-xs border ${
                   canSendNow
                     ? 'bg-white hover:bg-slate-100 text-slate-900 border-white shadow-md active:scale-95'
-                    : 'bg-[var(--app-card-subtle,#1A2230)] text-slate-500 border-white/[0.08] opacity-50 cursor-not-allowed'
+                    : 'bg-[var(--app-card-subtle,#1A2230)] text-slate-400 border-white/[0.08] opacity-70'
                 }`}
               >
                 {/* Slanted Arrow-Paperplane style icon matching user screenshot */}

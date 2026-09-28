@@ -312,10 +312,16 @@ class HermesGatewayPlugin : Plugin() {
     // server_key/serverKey. Blank token clears its slot; blank server key is
     // rejected loudly. Old 4-arg calls behave exactly as before.
     try {
+      // Field-name tolerance (P0-C): the JS wrapper sends camelCase
+      // (provider, apiKey, baseUrl, model, serverKey, tgToken, discordToken),
+      // but the web settings names (modelId, base_url, api_key) and the
+      // snake_case aliases are accepted too. First match wins, so a payload
+      // using the documented names behaves exactly as before.
       val provider = call.getString("provider").orEmpty()
-      val apiKey = call.getString("apiKey").orEmpty()
-      val baseUrl = call.getString("baseUrl").orEmpty()
-      val model = call.getString("model").orEmpty()
+      val apiKey = (call.getString("apiKey") ?: call.getString("api_key")).orEmpty()
+      val baseUrl = (call.getString("baseUrl") ?: call.getString("base_url")).orEmpty()
+      val model = (call.getString("model") ?: call.getString("modelId")
+        ?: call.getString("model_id")).orEmpty()
       context.getSharedPreferences("hermes_mobile", Context.MODE_PRIVATE).edit()
         .putString("provider_name", provider)
         .putString("provider_base_url", baseUrl)

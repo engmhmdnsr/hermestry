@@ -48,6 +48,7 @@ import {
   transactionalVaultSave,
   purgeAllSecretHolders,
   blankSecretHolder,
+  VaultWriteError,
 } from '../services/vaultTransaction';
 import { loadMigratedSettings } from '../services/storageMigrations';
 import {
@@ -69,6 +70,7 @@ import {
   type ProviderProfile,
 } from '../services/providerStore';
 import { SseParser, isTerminalSseEvent } from '../services/sseParser';
+import { toAppError } from '../services/appErrors';
 import { secretRefForProfile } from '../services/secretRefs';
 import { normProvider, DEFAULT_MODELS, PROVIDER_OPTIONS } from '../constants/providers';
 import { ThemeMode, THEME_PALETTES, applyThemeToDom, watchSystemThemePreference } from '../constants/themes';
@@ -93,6 +95,55 @@ const newId = (prefix: string): string => {
   fallbackIdCounter += 1;
   return `${prefix}_${Date.now().toString(36)}_${fallbackIdCounter}`;
 };
+
+// Per-turn metadata (model, duration, stopped / estimated badges) is kept
+// in memory for the live UI and mirrored per session in localStorage.
+// Without the mirror a stopped or estimated turn reads as a clean success
+// after a reload, which is the same class of lie as a fabricated session.
+const TURN_META_PREFIX = 'hermes_turnmeta_';
+const TURN_META_LIMIT = 200;
+
+const loadTurnMetaStore = (sid: string): Record<string, TurnMeta> => {
+  try {
+    const raw = localStorage.getItem(`${TURN_META_PREFIX}${sid}`);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? (parsed as Record<string, TurnMeta>) : {};
+  } catch {
+    return {};
+  }
+};
+
+const saveTurnMetaStore = (sid: string, map: Record<string, TurnMeta>): void => {
+  try {
+    // Newest TURN_META_LIMIT entries only: a long session cannot exhaust the
+    // store, and older badges are re-derivable from the messages themselves.
+    const entries = Object.entries(map).slice(-TURN_META_LIMIT);
+    localStorage.setItem(`${TURN_META_PREFIX}${sid}`, JSON.stringify(Object.fromEntries(entries)));
+  } catch {
+    // Quota or private mode: badges are cosmetic, the turn itself is intact.
+  }
+};
+
+const dropTurnMetaStore = (sid: string): void => {
+  try {
+    localStorage.removeItem(`${TURN_META_PREFIX}${sid}`);
+  } catch {}
+};
+
+// Error key used when a send fails before any session exists (the first
+// message of a chat whose gateway session could not be created).
+const NO_SESSION_ERROR_KEY = '__no_session__';
+
+// Why the gateway is marked failed. 'unauthorized' means an authenticated
+// call was rejected with 401/403 while /health still answered: the stored key
+// is wrong, which is a different fix than "the gateway is down".
+export type GatewayFailureKind = 'start' | 'unhealthy' | 'unauthorized';
+
+// Truthful settings save lifecycle for the Settings tab. 'saved' is only
+// reached after every write resolved; revision bumps on every attempt so a
+// caller can watch the outcome it started.
+export type SettingsSaveState = 'idle' | 'saving' | 'saved' | 'error';
 
 interface HermesSettings {
   provider: string;
@@ -167,6 +218,9 @@ interface HermesContextType {
   gatewayStatus: GatewayStatus;
   gatewayFailed: boolean;
   gatewayFailureReason: string | null;
+  // Distinguishes why the gateway is marked failed: a start failure, a failed
+  // health check, or an authenticated call rejected while health stayed green.
+  gatewayFailureKind: GatewayFailureKind | null;
   
   // Gateway control
   startGateway: () => Promise<void>;
@@ -220,6 +274,12 @@ interface HermesContextType {
   // Last settings/vault persist failure. Set loudly on failure, cleared on
   // success. The UI must never show Saved while this is set.
   settingsSaveError: string | null;
+  // Truthful save lifecycle: settingsSaveState reaches 'saved' (with
+  // settingsSavedAt) only after every write resolved, and settingsSaveRevision
+  // increments once per attempt so a caller can watch the write it started.
+  settingsSaveState: SettingsSaveState;
+  settingsSaveRevision: number;
+  settingsSavedAt: number | null;
 
   // Drafts
   getDraft: (sessionId: string | null) => string;
@@ -332,6 +392,59 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return getTranslation(key, settings.language || 'en');
   };
 
+  // New copy introduced here may not exist in constants/languages yet, so a
+  // missing key degrades to the English fallback instead of printing the key.
+  const tx = (key: string, fallback: string): string => {
+    const v = t(key);
+    return !v || v === key ? fallback : v;
+  };
+
+  // Transport failures used to surface raw strings ('Stream failed: HTTP
+  // 404', 'Auth failed: HTTP 401', 'Failed to fetch') straight into the chat
+  // error banner. Every status now maps to cause + action, the same shape the
+  // list loaders already use.
+  const isHttpAuthStatus = (status: number): boolean => status === 401 || status === 403;
+
+  const authFailureCopy = (): string =>
+    tx(
+      'errGatewayAuthHint',
+      'The gateway rejected the stored key. Check the provider key and Base URL in Settings, then try again.'
+    );
+
+  const sessionGoneCopy = (): string =>
+    tx('errSessionGone', 'This chat is no longer on the gateway. Start a new chat.');
+
+  const unreachableCopy = (): string =>
+    // Existing key: the list loaders already use this exact cause+action copy.
+    t('errUnavailable') ||
+    'The gateway is unreachable. Make sure it is running, then try again.';
+
+  const streamClosedCopy = (): string =>
+    tx(
+      'errStreamClosed',
+      'The gateway closed the connection before the answer finished. Try again.'
+    );
+
+  const gatewayRejectedCopy = (): string =>
+    t('errUnknown') || 'Something went wrong. Try again, and run diagnostics if it continues.';
+
+  // Cause + action for a non-OK response from an authenticated gateway
+  // endpoint. Shared by the stream runner and the first-message session
+  // creator so both give the same advice for the same status.
+  const httpStatusCopy = (status: number): string => {
+    if (isHttpAuthStatus(status)) return authFailureCopy();
+    if (status === 404) return sessionGoneCopy();
+    return gatewayRejectedCopy();
+  };
+
+  // A fetch that never reached the gateway throws TypeError('Failed to
+  // fetch') / 'NetworkError' / 'Load failed' depending on the platform.
+  const isNetworkFailure = (err: unknown): boolean => {
+    if (err instanceof TypeError) return true;
+    const msg = err instanceof Error ? err.message : String(err);
+    return /failed to fetch|networkerror|network error|load failed|econnrefused|unreachable/i.test(msg);
+  };
+
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   // In-memory vault-map mirror (secretRef -> key) backing the providerStore
@@ -391,6 +504,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   });
   const [gatewayFailed, setGatewayFailed] = useState<boolean>(false);
   const [gatewayFailureReason, setGatewayFailureReason] = useState<string | null>(null);
+  const [gatewayFailureKind, setGatewayFailureKind] = useState<GatewayFailureKind | null>(null);
   // Single gateway lifecycle machine (GATEWAY-03). On native this mirrors
   // HermesGatewayPlugin.status() via the poll loop below; every UI flag
   // (connected/install) derives from it. Web builds stay on CHECKING.
@@ -438,6 +552,9 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [listsMeta, setListsMeta] = useState<ListSyncMetaMap>({});
   const [streamError, setStreamError] = useState<string | null>(null);
   const [settingsSaveError, setSettingsSaveError] = useState<string | null>(null);
+  const [settingsSaveState, setSettingsSaveState] = useState<SettingsSaveState>('idle');
+  const [settingsSaveRevision, setSettingsSaveRevision] = useState<number>(0);
+  const [settingsSavedAt, setSettingsSavedAt] = useState<number | null>(null);
   const [pinnedIds, setPinnedIds] = useState<string[]>(() => {
     try {
       const raw = localStorage.getItem('hermes_pinned_sessions');
@@ -489,6 +606,34 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     });
   }, [chat]);
 
+  // Session key for a stream failure: the current session, or a sentinel when
+  // a send failed before any gateway session existed.
+  const streamErrorKey = (): string => currentSessionIdRef.current || NO_SESSION_ERROR_KEY;
+
+  // Record a stream failure against ONE session, and only surface it while
+  // that session is on screen. Selecting another chat switches the visible
+  // error to that chat's own (or none) instead of leaking it across chats.
+  const setStreamErrorFor = (key: string, message: string | null) => {
+    if (message) streamErrorsRef.current[key] = message;
+    else delete streamErrorsRef.current[key];
+    if (streamErrorKey() === key) setStreamError(message);
+  };
+
+  // Load the persisted badges for a session and claim ownership of the
+  // in-memory map, so the persist effect below cannot cross sessions.
+  const hydrateTurnMeta = (sid: string | null) => {
+    turnMetaOwnerRef.current = sid;
+    setTurnMeta(sid ? loadTurnMetaStore(sid) : {});
+  };
+
+  // Persist the badges for the session they belong to. Owner-gated: a switch
+  // mid-render must never write one chat's meta under another chat's id.
+  useEffect(() => {
+    const owner = turnMetaOwnerRef.current;
+    if (!owner || owner !== currentSessionId) return;
+    saveTurnMetaStore(owner, turnMeta);
+  }, [turnMeta, currentSessionId]);
+
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Synchronous mirrors so stop-then-send in the same tick works (state lags a render).
@@ -508,6 +653,20 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // Guards the approvals cache write-back until the startup hydration below
   // has run once (otherwise the initial [] would clobber the stored cache).
   const approvalsHydratedRef = useRef<boolean>(false);
+  // Stream failures are per session: the visible streamError switches when the
+  // user selects another chat instead of leaking one chat's failure into all.
+  const streamErrorsRef = useRef<Record<string, string>>({});
+  // Session id the in-memory turnMeta state currently belongs to, so the
+  // persistence effect never writes one chat's badges under another's id.
+  const turnMetaOwnerRef = useRef<string | null>(null);
+  // Synchronous mirror of connected: sendMessage decides queue-vs-post without
+  // waiting for the next render.
+  const connectedRef = useRef<boolean>(false);
+  // Queue draining is single-flight: a queued message is popped once and sent
+  // 300ms later, so a second drain must not pop the next one meanwhile.
+  const queueDrainPendingRef = useRef<boolean>(false);
+  const wasConnectedRef = useRef<boolean>(false);
+  connectedRef.current = connected;
 
   // Persist chat outside of state updaters (StrictMode purity).
   useEffect(() => {
@@ -604,6 +763,19 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return sanitizeVaultPayload(raw);
   };
 
+  // Human-readable reason for a failed settings write. Vault cipher failures
+  // say what the user can do; storage failures keep the cause text.
+  const describeSaveFailure = (e: unknown): string => {
+    if (e instanceof VaultWriteError) {
+      return tx(
+        'errSettingsVaultWrite',
+        'Settings were not saved: the encrypted vault write failed. Unlock the app and try again.'
+      );
+    }
+    const detail = e instanceof Error ? e.message : String(e);
+    return `Settings write failed: ${detail}`;
+  };
+
   // Transactional persist. AppLock on: sanitized settings to localStorage +
   // cipher committed via transactionalVaultSave (rejects with VaultWriteError
   // on any failure, previous vault kept). AppLock off: legacy plaintext
@@ -617,44 +789,64 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       discordToken: next.discordToken,
       appLockPin: next.appLockPin,
     };
-    if (next.appLockEnabled && !vaultLocked()) {
-      const pub = sanitizeForPersist({ ...next } as unknown as Record<string, unknown>) as unknown as HermesSettings;
-      try {
+    setSettingsSaveState('saving');
+    try {
+      if (next.appLockEnabled && !vaultLocked()) {
+        // Sanitized public copy first, then the cipher: transactionalVaultSave
+        // rejects (VaultWriteError) and keeps the previous vault on failure.
+        const pub = sanitizeForPersist({ ...next } as unknown as Record<string, unknown>) as unknown as HermesSettings;
         localStorage.setItem('hermes_settings', JSON.stringify(pub));
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setSettingsSaveError(`Settings write failed: ${msg}`);
-        addLog(`Settings save failed: ${msg}`);
-        throw e;
-      }
-      await transactionalVaultSave(buildVaultPayload(next));
-      setSettingsSaveError(null);
-    } else if (!next.appLockEnabled) {
-      try {
+        await transactionalVaultSave(buildVaultPayload(next));
+      } else if (!next.appLockEnabled) {
         localStorage.setItem('hermes_settings', JSON.stringify(next));
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setSettingsSaveError(`Settings write failed: ${msg}`);
-        addLog(`Settings save failed: ${msg}`);
-        throw e;
-      }
-      try {
-        localStorage.removeItem('hermes_vault');
-      } catch {}
-      setSettingsSaveError(null);
-    } else {
-      // Vault locked: persist the sanitized public copy only, never secrets.
-      const pub = sanitizeForPersist({ ...next } as unknown as Record<string, unknown>) as unknown as HermesSettings;
-      try {
+        try {
+          localStorage.removeItem('hermes_vault');
+        } catch {}
+      } else {
+        // Vault locked: persist the sanitized public copy only, never secrets.
+        const pub = sanitizeForPersist({ ...next } as unknown as Record<string, unknown>) as unknown as HermesSettings;
         localStorage.setItem('hermes_settings', JSON.stringify(pub));
-        setSettingsSaveError(null);
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setSettingsSaveError(`Settings write failed: ${msg}`);
-        addLog(`Settings save failed: ${msg}`);
-        throw e;
       }
+      // 'saved' is honest only here: every write above resolved without throw.
+      setSettingsSaveError(null);
+      setSettingsSaveState('saved');
+      setSettingsSavedAt(Date.now());
+    } catch (e) {
+      const msg = describeSaveFailure(e);
+      setSettingsSaveError(msg);
+      setSettingsSaveState('error');
+      addLog(`Settings save failed: ${msg}`);
+      throw e;
+    } finally {
+      // One bump per attempt, success or failure, so a caller watching a
+      // revision always learns the outcome of the write it started.
+      setSettingsSaveRevision((n) => n + 1);
     }
+  };
+
+  // Mirror the active provider plus the global credentials into the native
+  // prefs renderConfig reads on every gateway (re)start. Without it the
+  // on-device gateway keeps the old provider and chat fails auth, and the
+  // Telegram/Discord platform tokens never reach the gateway process.
+  // The bridge treats a blank serverKey as "leave the stored key alone" and a
+  // blank token as "this slot was cleared", and it no-ops on builds that
+  // predate these fields. Every rejection is logged truthfully and never
+  // thrown, because the settings write itself already landed.
+  const mirrorCredentialsToNative = (next: HermesSettings, reason: string) => {
+    if (!isNativeGateway()) return;
+    nativeSetProvider({
+      provider: next.provider || '',
+      apiKey: next.apiKey || '',
+      baseUrl: next.baseUrl || '',
+      model: next.modelId || '',
+      serverKey: next.serverKey || '',
+      tgToken: next.tgToken || '',
+      discordToken: next.discordToken || '',
+    }).catch((e: unknown) => {
+      addLog(
+        `Native credential sync failed (${reason}): ${e instanceof Error ? e.message : String(e)}`
+      );
+    });
   };
 
   const updateSettings = (newSettings: Partial<HermesSettings>) => {
@@ -707,7 +899,13 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         next.appLockPin = prev.appLockPin;
         setSettingsSaveError('PIN change blocked while locked: unlock the app first, then change the PIN.');
         addLog('PIN change blocked while vault locked; keeping the existing PIN.');
-        void persistSettings(next).catch(() => {});
+        // Still persist (the PIN field itself is unchanged), but a rejection
+        // must never vanish: persistSettings also drives settingsSaveState.
+        void persistSettings(next).catch((e: unknown) => {
+          addLog(
+            `Settings persist after blocked PIN change needs attention: ${e instanceof Error ? e.message : String(e)}`
+          );
+        });
       } else {
         lockVault(next.appLockPin)
           .then(() => {
@@ -720,8 +918,11 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
     } else {
       if (!next.appLockEnabled) setVaultUnlocked(true);
-      // persistSettings surfaces failures via settingsSaveError + log.
-      void persistSettings(next).catch(() => {});
+      // persistSettings surfaces failures via settingsSaveError + log; this
+      // catch only stops the rejection from escaping as unhandled.
+      void persistSettings(next).catch((e: unknown) => {
+        addLog(`Settings persist failed: ${e instanceof Error ? e.message : String(e)}`);
+      });
     }
     // On-device APK: mirror the autostart switch into the native prefs
     // that BootReceiver reads, so boot start follows the same toggle.
@@ -739,16 +940,12 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       (next.provider !== prev.provider ||
         next.apiKey !== prev.apiKey ||
         next.baseUrl !== prev.baseUrl ||
-        next.modelId !== prev.modelId)
+        next.modelId !== prev.modelId ||
+        next.serverKey !== prev.serverKey ||
+        next.tgToken !== prev.tgToken ||
+        next.discordToken !== prev.discordToken)
     ) {
-      nativeSetProvider({
-        provider: next.provider || '',
-        apiKey: next.apiKey || '',
-        baseUrl: next.baseUrl || '',
-        model: next.modelId || '',
-      }).catch((e: unknown) => {
-        addLog(`Native provider sync failed: ${e instanceof Error ? e.message : String(e)}`);
-      });
+      mirrorCredentialsToNative(next, 'provider change');
     }
     setSettings(next);
   };
@@ -1129,20 +1326,20 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             refreshNow();
           }
         })
-        .catch(() => {});
+        .catch((e: unknown) => {
+          // Silent failure here means every authenticated call goes out
+          // keyless (empty sessions/jobs), so it must be visible in the log.
+          addLog(
+            `Local gateway key unavailable: ${e instanceof Error ? e.message : String(e)}. Authenticated calls may fail until Settings holds the key.`
+          );
+        });
     }
     // On-device: push the already-saved web provider/key into the native
     // prefs once, so upgrades do not leave the gateway on a stale provider.
-    if (isNativeGateway() && settingsRef.current.provider) {
-      const s = settingsRef.current;
-      nativeSetProvider({
-        provider: s.provider || '',
-        apiKey: s.apiKey || '',
-        baseUrl: s.baseUrl || '',
-        model: s.modelId || '',
-      }).catch((e: unknown) => {
-        addLog(`Native provider sync failed: ${e instanceof Error ? e.message : String(e)}`);
-      });
+    if (isNativeGateway()) {
+      // Upgrade path: push whatever the web side already saved, credentials
+      // included, so the first gateway start after an update is not stale.
+      mirrorCredentialsToNative(settingsRef.current, 'boot sync');
     }
     refreshNow();
     // Pending approvals startup: show the cached list instantly (offline
@@ -1283,6 +1480,31 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     };
   }, [streaming]);
 
+  // An authenticated endpoint rejecting our stored key while /health still
+  // answers means the key is stale, not that the gateway is down. Mark the
+  // machine failed with a distinct 'unauthorized' kind so the UI stops
+  // reporting everything as fine. Every call is logged truthfully.
+  const markGatewayUnauthorized = (source: string, status?: number) => {
+    setGatewayFailed(true);
+    setGatewayFailureKind('unauthorized');
+    setGatewayFailureReason(
+      tx(
+        'errGatewayKeyRejected',
+        'The gateway rejected the stored key. Check the key and Base URL in Settings, then retry.'
+      )
+    );
+    addLog(
+      `Gateway rejected an authenticated request (${source}${status ? `, HTTP ${status}` : ''}); the stored key may be stale.`
+    );
+  };
+
+  const authStatusFromError = (text: string | undefined): number | undefined => {
+    const m = /\bhttp\s*(40[13])\b/i.exec(text || '');
+    if (!m) return undefined;
+    const n = Number(m[1]);
+    return Number.isFinite(n) ? n : undefined;
+  };
+
   const refreshNow = async () => {
     const token = ++refreshTokenRef.current;
     const alive = () => token === refreshTokenRef.current;
@@ -1337,12 +1559,27 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       const merged = [...localOnly, ...sessList];
       sessionsRef.current = merged;
       setSessions(merged);
+      // Authenticated call rejected while /health (checked above) answered:
+      // the stored key is stale, not the gateway. Say so instead of leaving
+      // the UI claiming everything is fine.
+      const sessionsAuthStatus = authStatusFromError(sessPage.error);
+      if (sessionsAuthStatus) {
+        markGatewayUnauthorized('sessions list', sessionsAuthStatus);
+      } else if (sessPage.live) {
+        // Health and the authenticated sessions list both answered, so any
+        // older failure banner is stale: clear it truthfully.
+        setGatewayFailed(false);
+        setGatewayFailureReason(null);
+        setGatewayFailureKind(null);
+      }
       const jobsRes: ListSyncResult<CronJob> = await gatewayService.jobsWithState();
       if (!alive()) return;
       setJobs(jobsRes.items);
       setListMeta('jobs', jobsRes, jobsRes.items.length, {
         loading: jobsRes.items.length === 0 && !jobsRes.live && !jobsRes.stale,
       });
+      const jobsAuthStatus = authStatusFromError(jobsRes.error);
+      if (jobsAuthStatus) markGatewayUnauthorized('jobs list', jobsAuthStatus);
       const skillsRes = await gatewayService.skillsWithState();
       if (!alive()) return;
       setSkills(skillsRes.items);
@@ -1375,6 +1612,9 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (cur) {
         const msgs = gatewayService.loadLocalMessages(cur);
         setChat(msgs);
+        // Restore the persisted per-turn badges with the messages, so a
+        // stopped or estimated turn still reads as stopped after a reload.
+        hydrateTurnMeta(cur);
       } else if (merged.length > 0) {
         selectSession(merged[0].id);
       }
@@ -1414,6 +1654,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     if (!isNativeGateway()) setInstall('RUNNING');
     setGatewayFailed(false);
     setGatewayFailureReason(null);
+    setGatewayFailureKind(null);
     // On-device APK: start the real gateway process via the native runner.
     if (isNativeGateway()) {
       try {
@@ -1422,6 +1663,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         const reason = e instanceof Error ? e.message : String(e);
         setConnected(false);
         setGatewayFailed(true);
+        setGatewayFailureKind('start');
         setGatewayFailureReason(reason);
         addLog(`Gateway start failed: ${reason}`);
         return;
@@ -1452,6 +1694,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       } else {
         setConnected(false);
         setGatewayFailed(true);
+        setGatewayFailureKind('unhealthy');
         setInstall('FAILED');
         setInstallProgress('');
         const reason = 'Gateway did not start within 4 minutes. Press Retry to try again.';
@@ -1474,6 +1717,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     } else {
       setConnected(false);
       setGatewayFailed(true);
+      setGatewayFailureKind('unhealthy');
       const reason = 'Gateway start failed: the health check did not pass. Press Retry to try again.';
       setGatewayFailureReason(reason);
       addLog(reason);
@@ -1689,6 +1933,12 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     streamingRef.current = false;
     setStreaming(false);
     setCurrentSessionId(id);
+    // Stream failures are per chat: show THIS chat's failure (or none) rather
+    // than the one the previously selected chat hit.
+    setStreamError(streamErrorsRef.current[id] || null);
+    // Restore this chat's persisted turn badges (stopped / estimated) with
+    // its messages, so a reload does not turn a stopped turn into a success.
+    hydrateTurnMeta(id);
     const local = gatewayService.loadLocalMessages(id);
     setChat(local);
     // Merge server history with local messages (dedupe by id, chronological).
@@ -1704,7 +1954,11 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           );
         });
       })
-      .catch(() => {});
+      .catch((e: unknown) => {
+        // History merge failed: the local copy is already on screen, so log
+        // the reason instead of silently pretending the server had nothing.
+        addLog(`Session history unavailable: ${e instanceof Error ? e.message : String(e)}`);
+      });
   };
 
   const newSession = async (): Promise<string> => {
@@ -1718,8 +1972,14 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     } catch (e) {
       // createSession throws on failure: log loudly and rethrow so callers
       // never navigate to a phantom session or log a false success.
-      const reason = e instanceof Error ? e.message : String(e);
-      addLog(`Create session failed: ${reason}`);
+      const appErr = toAppError(e);
+      const reason = appErr.message;
+      if (isHttpAuthStatus(typeof appErr.status === 'number' ? appErr.status : 0)) {
+        // Authenticated endpoint rejected while health was fine: surface the
+        // stale key instead of only logging a raw HTTP string.
+        markGatewayUnauthorized('create session', appErr.status);
+      }
+      addLog(`Create session failed (${appErr.code}): ${reason}`);
       throw e;
     }
   };
@@ -1734,11 +1994,17 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
     const updated = await gatewayService.fetchSessions();
     setSessions(updated);
+    // The session is gone: drop its persisted turn badges and its scoped
+    // stream error so nothing about it survives a reload or a chat switch.
+    dropTurnMetaStore(id);
+    delete streamErrorsRef.current[id];
     if (currentSessionId === id) {
       if (updated.length > 0) selectSession(updated[0].id);
       else {
         setCurrentSessionId(null);
         setChat([]);
+        hydrateTurnMeta(null);
+        setStreamError(null);
       }
     }
     addLog(`Deleted session ${id}`);
@@ -1836,19 +2102,21 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         callbacks.onStopped?.();
         return;
       }
-      callbacks.onError?.(err instanceof Error ? err.message : 'Stream failed: gateway unreachable');
+      // Never surface raw transport text ('Failed to fetch') to the user.
+      callbacks.onError?.(isNetworkFailure(err) ? unreachableCopy() : streamClosedCopy());
       return;
     }
     if (!res.ok) {
-      if (res.status === 401 || res.status === 403) {
-        callbacks.onError?.(`Auth failed: HTTP ${res.status}`);
-      } else {
-        callbacks.onError?.(`Stream failed: HTTP ${res.status}`);
-      }
+      // 401/403 while /health is green means a stale key, so say that and
+      // flag the gateway distinctly; 404 means this chat is gone. No raw
+      // 'Stream failed: HTTP 404' reaches the chat error banner.
+      if (isHttpAuthStatus(res.status)) markGatewayUnauthorized('chat stream', res.status);
+      callbacks.onError?.(httpStatusCopy(res.status));
+      addLog(`Chat stream rejected by the gateway (HTTP ${res.status})`);
       return;
     }
     if (!res.body) {
-      callbacks.onError?.('Stream failed: empty response body');
+      callbacks.onError?.(streamClosedCopy());
       return;
     }
     const asRecord = (v: unknown): Record<string, unknown> =>
@@ -1974,7 +2242,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       if (err instanceof Error && err.name === 'AbortError') {
         callbacks.onStopped?.();
       } else {
-        callbacks.onError?.(err instanceof Error ? err.message : 'Stream failed: gateway unreachable');
+        callbacks.onError?.(isNetworkFailure(err) ? unreachableCopy() : streamClosedCopy());
       }
     } finally {
       try {
@@ -2030,45 +2298,16 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     addLog('Stream interrupted by user');
   };
 
-  const sendMessage = (text: string, imageDataUrls: string[] = []): boolean => {
-    const trimmed = text.trim();
-    if (!trimmed && imageDataUrls.length === 0) return false;
-    // Never silently drop: queue when a stream is active.
-    if (streamingRef.current) {
-      queueMessage(trimmed, imageDataUrls);
-      addLog('Stream busy, message queued for next turn');
-      return true;
-    }
-
-    let targetSid = currentSessionIdRef.current;
-    if (!targetSid) {
-      // Auto create a session if none active
-      targetSid = newId('sess');
-      const newSess: MobileSession = {
-        id: targetSid,
-        title: trimmed.slice(0, 30) || 'New Conversation',
-        model: settingsRef.current.modelId,
-        messageCount: 0,
-        lastActiveAt: Date.now(),
-        costUsd: 0.0,
-        source: 'web',
-      };
-      try {
-        const known = sessionsRef.current;
-        if (!known.some((s) => s.id === targetSid)) {
-          const nextKnown = [newSess, ...known];
-          sessionsRef.current = nextKnown;
-          gatewayService.saveLocalSessions(nextKnown);
-        }
-      } catch {}
-      setSessions((prev) => (prev.some((s) => s.id === targetSid) ? prev : [newSess, ...prev]));
-      setCurrentSessionId(targetSid);
-    }
-
-    const sid = targetSid;
-    const userMsgId = newId('msg');
-    const agentMsgId = newId('msg');
-
+  // Runs one turn against a gateway session that is known to exist. Extracted
+  // from sendMessage so a brand new chat can create its session on the gateway
+  // FIRST and still reuse this body unchanged.
+  const runTurn = (
+    sid: string,
+    trimmed: string,
+    imageDataUrls: string[],
+    userMsgId: string,
+    agentMsgId: string
+  ): boolean => {
     const userMessage: ChatMessage = {
       id: userMsgId,
       sender: 'you',
@@ -2109,7 +2348,9 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
     streamingRef.current = true;
     setStreaming(true);
-    setStreamError(null);
+    // Clear THIS chat's scoped failure; other chats keep their own.
+    setStreamErrorFor(sid, null);
+    turnMetaOwnerRef.current = sid;
     lastAgentMsgIdRef.current = agentMsgId;
     turnUsageSeenRef.current = false;
     turnOutCharsRef.current = 0;
@@ -2243,7 +2484,9 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           // partial turn content is not lost.
           flushStreamBuffers();
           const msg = message || 'the gateway closed the stream unexpectedly';
-          setStreamError(msg);
+          // Scoped to this session: a failure here must not paint an error
+          // banner over whatever chat the user switched to meanwhile.
+          setStreamErrorFor(sid, msg);
           setTurnMeta((prev) => ({
             ...prev,
             [agentMsgId]: {
@@ -2323,15 +2566,128 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           gatewayService.saveLocalSessions(bumped);
         } catch {}
 
-        // Process next queued message if any (outside the updater; StrictMode purity).
-        const nextMsg = queuedRef.current[0];
-        if (nextMsg) {
-          queuedRef.current = queuedRef.current.slice(1);
-          setQueuedMessages([...queuedRef.current]);
-          setTimeout(() => {
-            sendMessage(nextMsg.text, nextMsg.images);
-          }, 300);
-        }
+        // Deliver the next queued message now that this turn released the
+        // stream. drainQueue also refuses while the gateway is unreachable, so
+        // a queued message cannot be fired into a dead gateway.
+        drainQueue();
+      });
+
+    return true;
+  };
+
+  // Deliver the next queued message once the way is clear: not streaming, and
+  // the gateway actually reachable. Single-flight, because the queued send
+  // lands 300ms later and a second drain must not pop the following message.
+  const drainQueue = () => {
+    if (queueDrainPendingRef.current) return;
+    if (streamingRef.current || !connectedRef.current) return;
+    const next = queuedRef.current[0];
+    if (!next) return;
+    queueDrainPendingRef.current = true;
+    queuedRef.current = queuedRef.current.slice(1);
+    setQueuedMessages([...queuedRef.current]);
+    setTimeout(() => {
+      queueDrainPendingRef.current = false;
+      sendMessage(next.text, next.images);
+    }, 300);
+  };
+
+  // The chat banner promises queued messages are delivered when the gateway
+  // comes back, so a reconnect must actually drain them. Without this the
+  // queue only moved on the next user-sent turn, which is part of the
+  // dishonest-banner problem.
+  useEffect(() => {
+    const was = wasConnectedRef.current;
+    wasConnectedRef.current = connected;
+    if (connected && !was) {
+      addLog('Gateway reachable again, delivering queued message(s)');
+      drainQueue();
+    }
+  }, [connected]);
+
+  const sendMessage = (text: string, imageDataUrls: string[] = []): boolean => {
+    const trimmed = text.trim();
+    if (!trimmed && imageDataUrls.length === 0) return false;
+    // Never silently drop while a stream is live: queue it for the next turn.
+    if (streamingRef.current) {
+      queueMessage(trimmed, imageDataUrls);
+      addLog('Stream busy, message queued for next turn');
+      return true;
+    }
+    // Offline honesty: an unreachable gateway used to get the POST anyway,
+    // which failed with a raw transport error and could leave a ghost chat.
+    // Queue it instead (that is what the banner promises) and let the
+    // reconnect drain above deliver it. No session is created for it.
+    if (!connectedRef.current) {
+      queueMessage(trimmed, imageDataUrls);
+      addLog('Gateway offline, message queued until it is reachable again');
+      return true;
+    }
+
+    const userMsgId = newId('msg');
+    const agentMsgId = newId('msg');
+    const existingSid = currentSessionIdRef.current;
+    if (existingSid) {
+      return runTurn(existingSid, trimmed, imageDataUrls, userMsgId, agentMsgId);
+    }
+
+    // First message of a new chat: create the session on the gateway BEFORE
+    // streaming to it. Inventing a local sess_* id and streaming to it 404s on
+    // the very first message and persists a session the gateway never heard
+    // of, which is the ghost chat that then shows up in the sidebar.
+    const title = trimmed.slice(0, 30) || 'New Conversation';
+    const model = settingsRef.current.modelId;
+    streamingRef.current = true;
+    setStreaming(true);
+    setStreamErrorFor(NO_SESSION_ERROR_KEY, null);
+    lastAgentMsgIdRef.current = agentMsgId;
+    setTurnMeta((prev) => ({ ...prev, [agentMsgId]: { model, durationMs: 0 } }));
+
+    gatewayService
+      .createSession(model, title)
+      .then((createdId) => {
+        if (!createdId) throw new Error('the gateway returned no session id');
+        const newSess: MobileSession = {
+          id: createdId,
+          title,
+          model,
+          messageCount: 0,
+          lastActiveAt: Date.now(),
+          costUsd: 0.0,
+          source: 'web',
+        };
+        const nextKnown = [newSess, ...sessionsRef.current.filter((s) => s.id !== createdId)];
+        sessionsRef.current = nextKnown;
+        gatewayService.saveLocalSessions(nextKnown);
+        setSessions(nextKnown);
+        setCurrentSessionId(createdId);
+        addLog(`Created session ${createdId} on the gateway before the first message`);
+        runTurn(createdId, trimmed, imageDataUrls, userMsgId, agentMsgId);
+      })
+      .catch((e: unknown) => {
+        // The session never existed, so there is no ghost to clean up: report
+        // the failure and leave the chat exactly where it was.
+        const appErr = toAppError(e);
+        const status = typeof appErr.status === 'number' ? appErr.status : 0;
+        const message = isHttpAuthStatus(status)
+          ? authFailureCopy()
+          : appErr.offline || appErr.code === 'unavailable'
+            ? unreachableCopy()
+            : tx(
+                'errSessionCreateFailed',
+                'Could not start a new chat. Check the gateway status and try again.'
+              );
+        streamingRef.current = false;
+        setStreaming(false);
+        lastAgentMsgIdRef.current = null;
+        setStreamErrorFor(NO_SESSION_ERROR_KEY, message);
+        setTurnMeta((prev) => {
+          const next = { ...prev };
+          delete next[agentMsgId];
+          return next;
+        });
+        addLog(`Create session failed (${appErr.code}): ${appErr.message}`);
+        if (isHttpAuthStatus(status)) markGatewayUnauthorized('create session', status);
       });
 
     return true;
@@ -2522,6 +2878,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         gatewayStatus,
         gatewayFailed,
         gatewayFailureReason,
+        gatewayFailureKind,
         startGateway,
         stopGateway,
         installGateway,
@@ -2562,6 +2919,9 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         retryLast,
         streamError,
         settingsSaveError,
+        settingsSaveState,
+        settingsSaveRevision,
+        settingsSavedAt,
         getDraft,
         setDraft,
         jobs,

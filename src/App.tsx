@@ -173,11 +173,14 @@ export const App: React.FC = () => {
           {currentTab === 0 && (
             <HomeTab
               onGoChat={() => setCurrentTab(1)}
-              // Labeled "Verify Gateway Diagnostics" in HomeTab; the
-              // Diagnostics section lives in Settings, not Chat.
-              onRunCommand={() => setCurrentTab(3)}
+              // "Verify Gateway Diagnostics" card in HomeTab: the Diagnostics
+              // section lives in Settings, so the card navigates there.
+              onGoDiagnostics={() => setCurrentTab(3)}
               onGoActivity={() => setCurrentTab(2)}
               onGoSettings={() => setCurrentTab(3)}
+              // "View all" on Recent Sessions: opens the sessions drawer so
+              // every conversation is reachable, not just the newest four.
+              onGoSessions={() => setIsDrawerOpen(true)}
             />
           )}
           {currentTab === 1 && (
@@ -240,17 +243,16 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* Slide-over Sessions Drawer (for mobile view) */}
-      {!isDesktop && (
-        <SessionsDrawer
-          isOpen={isDrawerOpen}
-          onClose={() => setIsDrawerOpen(false)}
-          onSelectSession={(id) => {
-            selectSession(id);
-            setCurrentTab(1);
-          }}
-        />
-      )}
+      {/* Slide-over Sessions Drawer. Rendered on desktop too, because Home's
+          "View all" opens it; the backdrop and close button are identical. */}
+      <SessionsDrawer
+        isOpen={isDrawerOpen}
+        onClose={() => setIsDrawerOpen(false)}
+        onSelectSession={(id) => {
+          selectSession(id);
+          setCurrentTab(1);
+        }}
+      />
     </div>
   );
 };

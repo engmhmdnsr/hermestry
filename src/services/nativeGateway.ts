@@ -49,8 +49,16 @@ interface HermesGatewayPlugin {
   preflight(): Promise<Partial<NativePreflight>>;
   serverKey(): Promise<{ serverKey: string }>;
   setServerKey?(options: { serverKey: string }): Promise<unknown>;
-  setProvider(options: { provider: string; apiKey: string; baseUrl: string; model: string }): Promise<void>;
-  setAutostart(options: { enabled: boolean }): Promise<void>;
+  setProvider(options: {
+    provider: string;
+    apiKey: string;
+    baseUrl: string;
+    model: string;
+    serverKey?: string;
+    tgToken?: string;
+    discordToken?: string;
+  }): Promise<void>;
+  setAutostart?(options: { enabled: boolean }): Promise<void>;
   addListener(
     event: 'installLog' | 'installProgress' | 'installPhase' | 'installDone',
     cb: (info: Record<string, unknown>) => void
@@ -151,20 +159,57 @@ export async function nativeHealth(): Promise<boolean> {
 // Mirror the active provider/key into the native prefs that renderConfig
 // reads on every gateway (re)start. Without this the on-device gateway keeps
 // running its old provider and chat fails auth.
+//
+// P0-C: the same call also carries the local-API server key and the Telegram
+// / Discord bot tokens. MobileGatewayService.startGateway() reads all three
+// out of SecurePrefs (server_key / tg_token / discord_token) and exports them
+// as API_SERVER_KEY / TELEGRAM_BOT_TOKEN / DISCORD_BOT_TOKEN, so pushing them
+// here is what makes saved credentials reach the gateway process.
 export async function nativeSetProvider(opts: {
   provider: string;
   apiKey: string;
   baseUrl: string;
   model: string;
+  // Optional credential carry (P0-C): forwarded only when the caller sets
+  // them, so an older 4-field caller behaves exactly as before.
+  serverKey?: string;
+  tgToken?: string;
+  discordToken?: string;
 }): Promise<void> {
   const plugin = getPlugin();
   if (!plugin || typeof plugin.setProvider !== 'function') return;
-  await plugin.setProvider(opts);
+  // Wire names are camelCase; the native plugin also accepts the snake_case
+  // aliases (server_key / tg_token / discord_token). A blank/absent serverKey
+  // is omitted: the plugin rejects a blank server key loudly and omitting it
+  // leaves the stored value untouched. A blank token is forwarded, which the
+  // plugin reads as "user cleared this slot".
+  const payload: {
+    provider: string;
+    apiKey: string;
+    baseUrl: string;
+    model: string;
+    serverKey?: string;
+    tgToken?: string;
+    discordToken?: string;
+  } = {
+    provider: opts.provider ?? '',
+    apiKey: opts.apiKey ?? '',
+    baseUrl: opts.baseUrl ?? '',
+    model: opts.model ?? '',
+  };
+  if (typeof opts.serverKey === 'string' && opts.serverKey !== '') {
+    payload.serverKey = opts.serverKey;
+  }
+  if (typeof opts.tgToken === 'string') payload.tgToken = opts.tgToken;
+  if (typeof opts.discordToken === 'string') payload.discordToken = opts.discordToken;
+  await plugin.setProvider(payload);
 }
 
 export async function nativeSetAutostart(enabled: boolean): Promise<void> {
   const plugin = getPlugin();
-  if (!plugin) return;
+  // No-plugin (web) and pre-setAutostart plugin builds are both no-ops, so an
+  // older APK never makes the caller throw.
+  if (!plugin || typeof plugin.setAutostart !== 'function') return;
   await plugin.setAutostart({ enabled });
 }
 
