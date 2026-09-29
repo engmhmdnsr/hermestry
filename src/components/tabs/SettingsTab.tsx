@@ -44,6 +44,7 @@ import {
 } from '../../services/nativeGateway';
 import { deriveUiFlags, type GatewayState } from '../../services/gatewayState';
 import { validationFingerprint } from '../../services/providerValidation';
+import { plainGatewayFailure, plainResultLine } from '../../services/plainFailure';
 import { AutoApproveGate } from '../approvals/AutoApproveGate';
 import { useOverlayBehavior } from '../../hooks/useOverlayBehavior';
 import {
@@ -458,6 +459,11 @@ export const SettingsTab: React.FC = () => {
     const v = t(key);
     return !v || v === key ? fallback : v;
   };
+
+  // Machine and platform reasons are logs, not sentences, so they are mapped
+  // to plain copy by the shared mapper (services/plainFailure). Settings and
+  // Home use the same rules, which is why a bare token such as
+  // "service_start_blocked" can never render here.
 
   // Disabling App Lock is a two-tap confirm like auto-approve: first tap
   // arms, second tap commits. Re-enabling always requires a new PIN.
@@ -1596,7 +1602,9 @@ export const SettingsTab: React.FC = () => {
                 <span className="t-caption font-normal text-[var(--app-text-muted)]"> · {GATEWAY_ADDR} · {installStateLabel(install)}</span>
               </span>
               <span className="block t-caption text-[var(--app-text-dim)] truncate">
-                {gatewayFailed && gatewayFailureReason ? gatewayFailureReason : tx('tapForDetailsPlain', 'Tap for details')}
+                {gatewayFailed && gatewayFailureReason
+                  ? plainGatewayFailure(gatewayFailureReason, tx)
+                  : tx('tapForDetailsPlain', 'Tap for details')}
               </span>
             </span>
             <ChevronDown className={`w-4 h-4 text-[var(--app-text-muted)] shrink-0 transition-transform ${showGatewayDetails ? 'rotate-180' : ''}`} />
@@ -1790,30 +1798,12 @@ export const SettingsTab: React.FC = () => {
         id={sectionDomId('security')}
         badge={riskCount > 0 ? <Badge tone={riskTone('medium')}>{riskCount}</Badge> : <Badge tone="neutral">{tx('noRiskShort', 'Clear')}</Badge>}
       >
-        <Row>
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="t-body text-[var(--app-text)]">{t('autoApprove')}</p>
-              <p className="t-caption text-[var(--app-text-muted)]">{t('autoApproveDesc')}</p>
-            </div>
-            <Badge
-              tone={autoApprovePolicy.enabled ? riskTone(autoApproveRisk) : 'neutral'}
-              icon={riskIcon(autoApprovePolicy.enabled ? autoApproveRisk : 'off')}
-              ariaLabel={`${t('autoApprove')}: ${autoApprovePolicy.enabled ? t('active') : t('disabled')}`}
-            >
-              {autoApprovePolicy.enabled
-                ? autoApproveRisk === 'high'
-                  ? tx('riskHigh', 'High risk')
-                  : tx('riskMedium', 'Medium risk')
-                : t('disabled')}
-            </Badge>
-          </div>
-        </Row>
-
-        {/* The granular gate is the only auto-approve control. The old boolean
-            toggle wrote a flag nothing read (AutoApproveGate was never
-            mounted), so it is retired and the policy below is the single
-            source of truth for both the UI and the runtime. */}
+        {/* One auto-approve block, not two. The gate below already carries the
+            title, the plain ON / OFF status and the only Enable / Disable
+            control, so the summary row that repeated the same setting with a
+            second Disabled badge is gone. The section badge still counts the
+            risk from autoApproveRisk. The policy the gate writes stays the
+            single source of truth for both the UI and the runtime. */}
         <Row>
           <AutoApproveGate policy={autoApprovePolicy} onChange={writeAutoApprovePolicy} t={t} />
         </Row>
@@ -2669,7 +2659,13 @@ export const SettingsTab: React.FC = () => {
             )}
             {doctorReport && (
               <div className="space-y-2 pt-1">
-                <p className={`t-label ${doctorReport.ok ? 'text-[var(--app-success)]' : 'text-[var(--app-danger)]'}`}>{doctorReport.summary}</p>
+                <p className={`t-label ${doctorReport.ok ? 'text-[var(--app-success)]' : 'text-[var(--app-danger)]'}`}>
+                  {plainResultLine(
+                    doctorReport.summary,
+                    tx('diagnosticsFailedPlain', 'The diagnostics run did not finish. Try again.'),
+                    tx,
+                  )}
+                </p>
                 <div className="space-y-2">
                   {doctorReport.checks.map((c, i) => (
                     <div key={i} className="flex items-center gap-3 py-2 border-b border-[var(--app-border-subtle)] last:border-0 t-label">
@@ -2706,7 +2702,13 @@ export const SettingsTab: React.FC = () => {
               {backupResult && (
                 <div className="pt-2 space-y-2">
                   <p className={`t-caption ${backupResult.ok ? 'text-[var(--app-success)]' : 'text-[var(--app-danger)]'}`}>
-                    {backupResult.message}
+                    {backupResult.ok
+                      ? backupResult.message
+                      : plainResultLine(
+                          backupResult.message,
+                          tx('snapshotFailedPlain', 'The snapshot was not saved. Try again.'),
+                          tx,
+                        )}
                   </p>
                   {backupResult.ok && backupResult.path && (
                     <p className="t-micro text-[var(--app-text-dim)] font-mono truncate" title={backupResult.path}>
@@ -2731,7 +2733,13 @@ export const SettingsTab: React.FC = () => {
               {sharingDebug && <div className="pt-2"><StateNote state="loading" message={tx('debugRunning', 'Removing secrets and exporting…')} /></div>}
               {debugResult && (
                 <div className="pt-2 space-y-2">
-                  <p className="t-caption text-[var(--app-accent-text)]">{debugResult.summary}</p>
+                  <p className="t-caption text-[var(--app-accent-text)]">
+                    {plainResultLine(
+                      debugResult.summary,
+                      tx('debugFailedPlain', 'The diagnostics bundle was not exported. Try again.'),
+                      tx,
+                    )}
+                  </p>
                   {debugResult.urls.map((u) => (
                     <a
                       key={u}

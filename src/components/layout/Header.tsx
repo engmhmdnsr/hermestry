@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Menu,
   AlertCircle,
@@ -28,23 +28,21 @@ interface HeaderProps {
   title?: string;
 }
 
-// Gateway failure signals read defensively: the context carries at least
-// `connected`, and sibling work adds an explicit failure/unauthorized flag.
-// Any of these naming variants is honoured, and the raw failure reason /
-// health detail are pattern matched as a fallback so a rejected key never
-// renders as a plain "Not connected".
+// Extra failure-flag spellings, probed in addition to the typed context
+// fields. HomeTab probes the same variants, and the two screens must never
+// answer differently about one connection.
 interface GatewayFailureSignals {
-  gatewayFailed?: boolean;
-  gatewayFailureKind?: string;
   gatewayUnauthorized?: boolean;
   gatewayAuthFailed?: boolean;
   gatewayAuthRejected?: boolean;
   unauthorized?: boolean;
   authFailed?: boolean;
-  gatewayFailureReason?: string | null;
-  gatewayStatus?: { ok?: boolean; detail?: string } | null;
 }
 
+// Exactly the rule HomeTab applies to the list sync envelopes: an
+// authenticated list call rejected (HTTP 401/403 while health stayed green)
+// means the stored key is stale, not that the server is offline.
+const AUTH_FAILURE_RE = /401|403|auth/i;
 const AUTH_FAILURE_PATTERN = /401|403|unauthori[sz]ed|forbidden|rejected the key|invalid (api )?key|server key/i;
 
 const APP_TITLE = 'Hermes Agent';
@@ -102,7 +100,13 @@ export const Header: React.FC<HeaderProps> = ({
     usageIn,
     usageOut,
     approvals,
+    listsMeta,
+    models,
     settings,
+    gatewayFailed,
+    gatewayFailureKind,
+    gatewayFailureReason,
+    gatewayStatus,
     t,
   } = hermes;
 
@@ -117,25 +121,33 @@ export const Header: React.FC<HeaderProps> = ({
   const isHealthy = connected;
   const isConnecting = install === 'RUNNING' || install === 'INSTALLING';
 
-  // A gateway that is reachable but rejects the key is NOT offline: it fails.
+  // The pill and the Home status card describe ONE connection, so this reads
+  // the same signals in the same order HomeTab does: a reachable server that
+  // rejects the key is a failure (not connected), a failed install or start
+  // is a failure, and neither may ever be reported as connected just because
+  // the health check happens to answer.
   const signals = hermes as unknown as GatewayFailureSignals;
-  const failureText = `${signals.gatewayFailureReason || ''} ${signals.gatewayStatus?.detail || ''}`;
+  const failureText = `${gatewayFailureReason || ''} ${gatewayStatus?.detail || ''}`;
+  const authFailureFromLists = [listsMeta['sessions'], listsMeta['jobs']].some(
+    (meta) => !!meta?.error && AUTH_FAILURE_RE.test(meta.error)
+  );
   const isUnauthorized =
-    signals.gatewayFailureKind === 'unauthorized' ||
+    gatewayFailureKind === 'unauthorized' ||
     signals.gatewayUnauthorized === true ||
     signals.gatewayAuthFailed === true ||
     signals.gatewayAuthRejected === true ||
     signals.unauthorized === true ||
     signals.authFailed === true ||
-    AUTH_FAILURE_PATTERN.test(failureText);
-  const isFailed = !isHealthy && (signals.gatewayFailed === true || isUnauthorized);
+    AUTH_FAILURE_PATTERN.test(failureText) ||
+    authFailureFromLists;
+  const isFailed = gatewayFailed === true || install === 'FAILED' || isUnauthorized;
 
-  const statusState: 'connected' | 'starting' | 'failed' | 'offline' = isHealthy
-    ? 'connected'
-    : isConnecting
-      ? 'starting'
-      : isFailed
-        ? 'failed'
+  const statusState: 'connected' | 'starting' | 'failed' | 'offline' = isFailed
+    ? 'failed'
+    : isHealthy
+      ? 'connected'
+      : isConnecting
+        ? 'starting'
         : 'offline';
 
   const statusLabel =
@@ -174,8 +186,8 @@ export const Header: React.FC<HeaderProps> = ({
     statusState === 'failed'
       ? isUnauthorized
         ? tx('keyNotAcceptedHint', 'The Hermes server did not accept the key. Open Settings and paste the right key.')
-        : signals.gatewayFailureReason
-          ? localizedMessage(toAppError(new Error(String(signals.gatewayFailureReason))), lang)
+        : gatewayFailureReason
+          ? localizedMessage(toAppError(new Error(String(gatewayFailureReason))), lang)
           : tx('noReplyFromServer', 'The Hermes server did not respond. Make sure it is running, then retry.')
       : statusState === 'offline'
         ? tx('notConnectedHint', 'Not connected to the Hermes server. Messages you send are kept and sent when it is back.')
@@ -206,6 +218,23 @@ export const Header: React.FC<HeaderProps> = ({
         : tx(screenEntry.key, screenEntry.fallback)
       : APP_TITLE;
   const isHomeTitle = screenTitle === APP_TITLE;
+
+  // The chip used to print settings.modelId straight out, so a bare provider
+  // id read as if it were a model name and an unset model left a dangling
+  // colon. Resolve the friendly label from the loaded model list, fall back to
+  // the model part of the id, and show no chip when there is no model to name.
+  const activeModelLabel = useMemo(() => {
+    const id = (settings?.modelId || '').trim();
+    if (!id) return null;
+    const known = models.find((m) => m.id === id);
+    const friendly = (known?.displayName || '').trim();
+    if (friendly) return friendly;
+    const tail = id.split('/').pop() || '';
+    const provider = (settings?.provider || '').trim().toLowerCase();
+    // A bare provider id (no model segment) names the provider, not a model.
+    if (!tail || (tail === id && tail.toLowerCase() === provider)) return null;
+    return tail;
+  }, [models, settings?.modelId, settings?.provider]);
 
   const approvalCount = approvals.length;
   // The badge says what it counts, so a bare "3" can never read as unread
@@ -248,7 +277,7 @@ export const Header: React.FC<HeaderProps> = ({
 
   return (
     <header
-      className="sticky top-0 z-30 backdrop-blur-xl border-b elev-2 edge flex items-center justify-between gap-2 px-4 py-2"
+      className="sticky top-0 z-30 backdrop-blur-xl border-b elev-2 edge flex items-center justify-between gap-2 px-3 sm:px-4 py-2"
       style={{
         backgroundColor: 'var(--app-bg)',
         // Edge-to-edge (viewport-fit=cover, targetSdk 36): the status bar and
@@ -260,8 +289,11 @@ export const Header: React.FC<HeaderProps> = ({
         minHeight: 'calc(3.5rem + env(safe-area-inset-top, 0px))',
       }}
     >
-      {/* Left Area: Mobile Drawer or Desktop Sidebar Toggle + Screen Title */}
-      <div className="flex items-center gap-3 min-w-0">
+      {/* Left Area: Mobile Drawer or Desktop Sidebar Toggle + Screen Title.
+          With the app name on stage this group never shrinks, so no squeeze
+          from the right can reach the name; a screen name may shrink and clip
+          instead of pushing the controls out of reach. */}
+      <div className={`flex items-center gap-2 ${isHomeTitle ? 'shrink-0' : 'min-w-0'}`}>
         {!isDesktop ? (
           <button
             onClick={onOpenDrawer}
@@ -283,9 +315,13 @@ export const Header: React.FC<HeaderProps> = ({
         )}
 
         <div className="flex items-center gap-2 min-w-0">
+          {/* Brand mark. It only earns its 32px beside the app name where the
+              bar is wide enough to hold menu + mark + name + status pill
+              without squeezing the name; on a 360dp phone it does not, so
+              below 400px the name owns the space and the mark stands down. */}
           {!isDesktop && isHomeTitle && (
             <div
-              className="w-8 h-8 r-xs edge p-1 flex items-center justify-center shrink-0"
+              className="hidden min-[400px]:flex w-8 h-8 r-xs edge p-1 items-center justify-center shrink-0"
               style={{ backgroundColor: 'var(--app-accent-subtle)' }}
             >
               <img
@@ -298,23 +334,32 @@ export const Header: React.FC<HeaderProps> = ({
               />
             </div>
           )}
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="t-title font-semibold tracking-tight truncate text-[var(--app-text)]" aria-live="polite">
-                {screenTitle}
+          <div className="flex items-center gap-2 min-w-0">
+            {/* The app name is never truncated: it keeps its full width and the
+                row gives up space elsewhere. A screen name may truncate, since
+                it is a label for the tab you just picked, not an identity. */}
+            <span
+              className={`t-title font-semibold tracking-tight text-[var(--app-text)] ${
+                isHomeTitle ? 'whitespace-nowrap shrink-0' : 'truncate'
+              }`}
+              aria-live="polite"
+            >
+              {screenTitle}
+            </span>
+            {isHomeTitle && activeModelLabel && (
+              <span className="t-micro font-mono text-[var(--app-text-dim)] hidden sm:block truncate min-w-0">
+                {tx('activeModel', 'Active model')}: {activeModelLabel}
               </span>
-              {isHomeTitle && (
-                <span className="t-micro font-mono text-[var(--app-text-dim)] hidden sm:inline">
-                  {tx('activeModel', 'Active model')}: {settings.modelId.split('/').pop()}
-                </span>
-              )}
-            </div>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Right Area: one status element + one overflow menu entry. */}
-      <div className="flex items-center gap-2 shrink-0">
+      {/* Right Area: one status element + one overflow menu entry. It can
+          shrink, so on a very narrow screen the pill label ellipsizes before
+          the app name does: the colour, the dot, the title and the aria label
+          all still carry the full state. */}
+      <div className="flex items-center gap-2 min-w-0">
         {/* Connection status indicator. role=status + aria-label so the colour
             dot is never the only signal, and the text label stays visible at
             every width, including the failed/unauthorized honesty states. */}
@@ -323,7 +368,7 @@ export const Header: React.FC<HeaderProps> = ({
           aria-live="polite"
           aria-label={`${tx('connectionStatus', 'Connection status')}: ${statusLabel}`}
           title={statusTitle}
-          className={`flex items-center gap-1 r-xs h-6 px-2 ${statusPillClass}`}
+          className={`flex items-center gap-1 min-w-0 h-6 px-2 ${statusPillClass}`}
         >
           <span
             className="w-2 h-2 rounded-full shrink-0"
@@ -336,13 +381,13 @@ export const Header: React.FC<HeaderProps> = ({
                   : undefined,
             }}
           />
-          <span className="t-caption font-medium whitespace-nowrap">
+          <span className="t-caption font-medium truncate">
             {statusLabel}
           </span>
         </div>
 
         {/* Overflow menu: token telemetry, approvals and the inspector toggle. */}
-        <div className="relative" ref={menuWrapRef}>
+        <div className="relative shrink-0" ref={menuWrapRef}>
           <button
             onClick={() => setMenuOpen((prev) => !prev)}
             className={`relative min-w-[44px] min-h-[44px] r-xs edge flex items-center justify-center transition cursor-pointer ${

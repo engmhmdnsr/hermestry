@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   MessageSquare,
   Terminal,
@@ -9,9 +9,11 @@ import {
   ChevronRight,
   ChevronDown,
   Download,
+  KeyRound,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import { resolveListUiState } from '../../services/pagination';
+import { plainGatewayFailure } from '../../services/plainFailure';
 import { AgentStatus } from '../../types/hermes';
 import { formatHomeAgo } from '../../constants/languages';
 import { scheduleSummary } from '../../utils/jobTime';
@@ -64,6 +66,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     chat,
     gatewayFailed,
     gatewayFailureReason,
+    gatewayFailureKind,
     currentSessionId,
     selectSession,
     newSession,
@@ -74,6 +77,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     refreshNow,
     listsMeta,
     settings,
+    models,
     t,
   } = hermes;
 
@@ -93,47 +97,20 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   ];
 
   // Native start failures surface machine strings ("not_installed: run
-  // install() first"). Never print those verbatim: map the known causes to
-  // user copy, and only pass through reasons that are already human-facing.
-  const describeGatewayFailure = (raw: string | null | undefined): string | null => {
-    const s = (raw || '').trim();
-    if (!s) return null;
-    if (/not[_\s-]?installed/i.test(s)) {
-      return tx('setupNeededNow', 'Hermes is not set up on this device yet.');
-    }
-    if (/install\(\)/i.test(s)) {
-      return tx('setupStepNeeded', 'Hermes needs one setup step before it can start.');
-    }
-    return s;
-  };
-
+  // install() first") and, on Android, a bare token ("service_start_blocked").
+  // The shared mapper is the only place that turns a reason into words, so
+  // Home can never print a token or a raw transport string.
   const sessionMeta: ListMetaLike | undefined = listsMeta['sessions'];
   const jobMeta: ListMetaLike | undefined = listsMeta['jobs'];
 
-  // A sibling owns the context and is adding the explicit gateway failure
-  // signal (`gatewayFailureKind: 'start' | 'unhealthy' | 'unauthorized'`).
-  // Read it through a shape cast so this screen compiles and behaves the same
-  // whether or not those fields have landed yet; every candidate is probed.
-  const signalContext = hermes as unknown as {
-    gatewayFailureKind?: string | null;
-    gatewayUnauthorized?: boolean;
-    gatewayAuthFailed?: boolean;
-    authFailed?: boolean;
-    unauthorized?: boolean;
-  };
-  const authFailureFlag =
-    signalContext.gatewayFailureKind === 'unauthorized' ||
-    signalContext.gatewayUnauthorized === true ||
-    signalContext.gatewayAuthFailed === true ||
-    signalContext.authFailed === true ||
-    signalContext.unauthorized === true;
-
-  // Fallback that works today: an authenticated endpoint rejected the request
-  // while health was fine (sessions/jobs envelopes carry "HTTP 401").
+  // A rejected key is terminal: /health answered, but an authenticated call
+  // came back 401/403. The context carries that as gatewayFailureKind
+  // 'unauthorized'; the sessions/jobs envelopes ("HTTP 401") are the fallback
+  // for gateways that only report it per list.
   const authFailureFromLists = [sessionMeta, jobMeta].some(
     (m) => !!m?.error && AUTH_FAILURE_RE.test(m.error || '')
   );
-  const authFailure = authFailureFlag || authFailureFromLists;
+  const authFailure = gatewayFailureKind === 'unauthorized' || authFailureFromLists;
 
   // Worst subsystem wins, and connectivity is tested BEFORE approvals: with a
   // dead gateway the cached approval count is not actionable, so Home must
@@ -209,8 +186,9 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             'agentStatusAuthErrorDescPlain',
             'Hermes rejected the API key. Add or fix it under Settings.'
           )
-        : describeGatewayFailure(gatewayFailureReason) ||
-          tx('agentStatusErrorDescPlain', 'Hermes did not respond. Check that it is running.'),
+        : gatewayFailureReason
+          ? plainGatewayFailure(gatewayFailureReason, tx)
+          : tx('agentStatusErrorDescPlain', 'Hermes did not respond. Check that it is running.'),
     },
   }[agentStatus];
 
@@ -224,6 +202,14 @@ export const HomeTab: React.FC<HomeTabProps> = ({
         'Hermes is running, but some lists did not load. Refresh to try again.'
       )
     : statusConfig.desc;
+
+  // The hero chip names the model the way a person reads it, never as a bare
+  // provider token: the live catalog name when the gateway offered one, else
+  // words built from the id ("deepseek-v4.1-flash" -> "DeepSeek V4.1 Flash").
+  const modelName = useMemo(() => {
+    const entry = models.find((m) => m.id === settings.modelId);
+    return modelDisplayName(settings.modelId, entry?.displayName);
+  }, [models, settings.modelId]);
 
   // Session described by the hero strip: always the selected session, so the
   // strip and the highlighted list row never disagree.
@@ -256,10 +242,17 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   const [actionError, setActionError] = useState<string | null>(null);
   const [gatewayBusy, setGatewayBusy] = useState(false);
 
+  // A rejected key cannot be fixed by starting or restarting anything, so the
+  // button never spins on that attempt: the moment the failure is known the
+  // busy flag is released and the card offers the key fix instead.
+  useEffect(() => {
+    if (authFailure) setGatewayBusy(false);
+  }, [authFailure]);
+
   // Error vs first-run gating: a real failure (FAILED flag, failed install,
-  // rejected API key) gets the alarm card. A clean offline state (never
-  // started / stopped) gets a friendly setup card instead, with no localhost
-  // details leaked.
+  // rejected API key) turns the status card into the failure card with its
+  // fix. A clean offline state (never started / stopped) gets a friendly
+  // setup card instead, with no localhost details leaked.
   const isError = gatewayFailed || install === 'FAILED' || authFailure;
   const isInstalling = install === 'INSTALLING';
   const needsInstall = install === 'NOT_INSTALLED';
@@ -415,22 +408,32 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   const errorCardCta = needsInstall || install === 'FAILED' ? 'install' : 'restart';
 
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-6 px-4 pt-4 pb-20">
-      {/* 1. Hero presence banner: flat card plus edge, status carried by the
-          dot and the copy, not by a decorative hue wash. */}
-      <div className="r-md edge elev-0 overflow-hidden bg-[var(--app-card)] p-5">
+    <div className="mx-auto flex max-w-2xl flex-col gap-6 px-4 pt-4 hm-tab-bottom">
+      {/* 1. Status card: presence, model, and (when something is wrong) the one
+          place the failure and its fix live. A single card, so the same
+          connection error is never printed twice in two different styles. */}
+      <div
+        role={isError ? 'alert' : undefined}
+        className={`r-md elev-0 overflow-hidden bg-[var(--app-card)] p-5 ${
+          isError ? 'border border-[var(--app-danger-border)]' : 'edge'
+        }`}
+      >
         <div className="flex items-start justify-between gap-4">
           <div className="flex min-w-0 flex-col gap-3">
             <div className="flex min-w-0 items-center gap-2">
               <span
                 className={`h-2 w-2 shrink-0 rounded-full ${statusConfig.dot} ${statusConfig.dotAnim}`}
               />
-              <span className="t-title truncate text-[var(--app-text)]">
+              <span
+                className={`t-title truncate ${
+                  isError ? 'text-[var(--app-danger)]' : 'text-[var(--app-text)]'
+                }`}
+              >
                 {statusConfig.title}
               </span>
               <span className="shrink-0 text-[var(--app-text-dim)]">·</span>
               <ExpandablePill
-                value={modelAlias(settings.modelId)}
+                value={modelName}
                 full={settings.modelId}
                 label={tx('modelLabel', 'Model')}
                 expandHint={tx('tapToExpand', 'Tap to expand')}
@@ -451,6 +454,54 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             </button>
           )}
         </div>
+
+        {/* The fix belongs to the failure, so it lives in the same card. A
+            rejected key is terminal: no start or restart is offered there,
+            only the key fix and a re-check. */}
+        {isError && (
+          <div className="mt-4 flex items-center gap-2">
+            {authFailure ? (
+              <button
+                onClick={onGoSettings}
+                className="r-sm flex min-h-[40px] flex-1 items-center justify-center gap-2 bg-[var(--app-accent)] px-4 t-label text-[var(--app-text)] transition cursor-pointer hover:bg-[var(--app-accent-hover)]"
+              >
+                <KeyRound className="h-4 w-4" />
+                <span>{tx('fixApiKeyAction', 'Add or fix the key')}</span>
+              </button>
+            ) : (
+              <button
+                onClick={() =>
+                  void (errorCardCta === 'install' ? handleInstallGateway() : handleRestartGateway())
+                }
+                disabled={gatewayBusy}
+                className="r-sm flex min-h-[40px] flex-1 items-center justify-center gap-2 bg-[var(--app-accent)] px-4 t-label text-[var(--app-text)] transition cursor-pointer hover:bg-[var(--app-accent-hover)] disabled:opacity-60"
+              >
+                {errorCardCta === 'install' ? (
+                  <Download className={`h-4 w-4 ${gatewayBusy ? 'animate-pulse' : ''}`} />
+                ) : (
+                  <RefreshCw className={`h-4 w-4 ${gatewayBusy ? 'animate-spin' : ''}`} />
+                )}
+                <span>
+                  {errorCardCta === 'install'
+                    ? gatewayBusy
+                      ? t('installing')
+                      : install === 'FAILED'
+                        ? tx('retrySetupPlain', 'Try setup again')
+                        : tx('setupHermesAction', 'Set up Hermes')
+                    : gatewayBusy
+                      ? `${t('starting')}…`
+                      : tx('restartHermes', 'Restart Hermes')}
+                </span>
+              </button>
+            )}
+            <button
+              onClick={() => void (authFailure ? handleRetrySessions() : onGoSettings())}
+              className="r-sm edge elev-0 flex min-h-[40px] items-center justify-center bg-[var(--app-card-subtle)] px-4 t-label text-[var(--app-text-muted)] transition cursor-pointer hover:text-[var(--app-text)]"
+            >
+              {authFailure ? tx('tryAgainPlain', 'Try again') : tx('settingsTitle', 'Settings')}
+            </button>
+          </div>
+        )}
 
         {/* Session strip: "Current task" only while a turn is running */}
         {showTaskStrip && (
@@ -483,63 +534,8 @@ export const HomeTab: React.FC<HomeTabProps> = ({
         )}
       </div>
 
-      {/* Gateway state card: error alarm OR first-run setup, never both */}
-      {isError && (
-        <div
-          role="alert"
-          className="r-md elev-0 flex flex-col gap-4 border border-[var(--app-danger-border)] bg-[var(--app-card)] p-4"
-        >
-          <div className="flex flex-col gap-1">
-            <h3 className="t-heading text-[var(--app-danger)]">
-              {authFailure
-                ? tx('agentStatusAuthErrorPlain', 'Connection rejected')
-                : tx('agentStatusErrorPlain', 'Could not connect')}
-            </h3>
-            <p className="t-caption text-[var(--app-text-muted)]">
-              {authFailure
-                ? tx(
-                    'agentStatusAuthErrorDescPlain',
-                    'Hermes rejected the API key. Add or fix it under Settings.'
-                  )
-                : describeGatewayFailure(gatewayFailureReason) ||
-                  tx('agentStatusErrorDescPlain', 'Hermes did not respond. Check that it is running.')}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() =>
-                void (errorCardCta === 'install' ? handleInstallGateway() : handleRestartGateway())
-              }
-              disabled={gatewayBusy}
-              className="r-sm flex min-h-[40px] flex-1 items-center justify-center gap-2 bg-[var(--app-accent)] px-4 t-label text-[var(--app-text)] transition cursor-pointer hover:bg-[var(--app-accent-hover)] disabled:opacity-60"
-            >
-              {errorCardCta === 'install' ? (
-                <Download className={`h-4 w-4 ${gatewayBusy ? 'animate-pulse' : ''}`} />
-              ) : (
-                <RefreshCw className={`h-4 w-4 ${gatewayBusy ? 'animate-spin' : ''}`} />
-              )}
-              <span>
-                {errorCardCta === 'install'
-                  ? gatewayBusy
-                    ? t('installing')
-                    : install === 'FAILED'
-                      ? tx('retrySetupPlain', 'Try setup again')
-                      : tx('setupHermesAction', 'Set up Hermes')
-                  : gatewayBusy
-                    ? `${t('starting')}…`
-                    : tx('restartHermes', 'Restart Hermes')}
-              </span>
-            </button>
-            <button
-              onClick={onGoSettings}
-              className="r-sm edge elev-0 flex min-h-[40px] items-center justify-center bg-[var(--app-card-subtle)] px-4 t-label text-[var(--app-text-muted)] transition cursor-pointer hover:text-[var(--app-text)]"
-            >
-              {tx('settingsTitle', 'Settings')}
-            </button>
-          </div>
-        </div>
-      )}
-
+      {/* First-run setup card: shown only when nothing is wrong, so it never
+          competes with the failure card above. */}
       {showSetupCard && (
         <div className="r-md edge elev-0 flex flex-col gap-4 bg-[var(--app-card)] p-4">
           <div className="flex flex-col gap-1">
@@ -955,6 +951,38 @@ export function modelAlias(id: string): string {
   const seg = (id || '').split('/').pop() || '';
   if (!seg) return '';
   return seg.split(/[-_]/)[0] || seg;
+}
+
+// Tokens that must not be title-cased like ordinary words when a model id has
+// to be read out without the live catalog behind it.
+const MODEL_INITIALISMS: Record<string, string> = {
+  ai: 'AI',
+  api: 'API',
+  glm: 'GLM',
+  gpt: 'GPT',
+  llm: 'LLM',
+};
+
+// Human name for a model, so a status card never shows a bare raw id such as
+// "deepseek" or "deepseek-v4.1-flash". The live catalog name wins when it says
+// something the id does not; otherwise the last segment of the id becomes
+// words ("deepseek-v4.1-flash" -> "DeepSeek V4.1 Flash").
+export function modelDisplayName(id: string, catalogName?: string | null): string {
+  const raw = (id || '').trim();
+  const name = (catalogName || '').trim();
+  if (name && name.toLowerCase() !== raw.toLowerCase()) return name;
+  const seg = raw.split('/').pop() || '';
+  if (!seg) return '';
+  return seg
+    .replace(/[-_]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => {
+      const known = MODEL_INITIALISMS[word.toLowerCase()];
+      if (known) return known;
+      return word.charAt(0).toUpperCase() + word.slice(1);
+    })
+    .join(' ');
 }
 
 const ExpandablePill: React.FC<{

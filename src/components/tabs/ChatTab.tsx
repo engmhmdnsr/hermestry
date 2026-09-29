@@ -1,29 +1,24 @@
-import React, { useState, useRef, useEffect, useMemo, useCallback, memo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import {
   Square,
-  RefreshCw,
   Plus,
-  Volume2,
-  VolumeX,
-  Copy,
   Check,
   Search,
   X,
   ChevronDown,
   ChevronUp,
   Mic,
-  GitFork,
   Clock,
   Sparkles,
   Sliders,
-  MoreHorizontal,
   AlertTriangle,
   WifiOff,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import { ChatMessage, PendingApproval } from '../../types/hermes';
 import { PROVIDER_OPTIONS, normProvider } from '../../constants/providers';
-import { getTranslation, speechLocaleForLanguage } from '../../constants/languages';
+import { speechLocaleForLanguage } from '../../constants/languages';
+import { ChatMessageBubble } from '../chat';
 import { processAttachBatch, buildTextChoiceNotice, MAX_IMAGE_COUNT } from '../../services/attachments';
 import type { AttachmentRef } from '../../services/attachmentRefs';
 import {
@@ -43,34 +38,6 @@ type EffortLevel = (typeof EFFORT_LEVELS)[number];
 interface ChatTabProps {
   onGoSettings: () => void;
   isDesktop?: boolean;
-}
-
-interface MessageRowProps {
-  msg: ChatMessage;
-  isLiveTail: boolean;
-  modelLabel: string | null;
-  durationLabel: string | null;
-  formulatingLabel: string;
-  copied: boolean;
-  speaking: boolean;
-  menuOpen: boolean;
-  streamBusy: boolean;
-  stopped: boolean;
-  stoppedLabel: string;
-  stoppedHint: string;
-  estimated: boolean;
-  estimatedHint: string;
-  copyUnavailableLabel: string;
-  regenerateSource: string;
-  regenerateLabel: string;
-  regenerateBusyHint: string;
-  menuContainerRef?: React.RefObject<HTMLDivElement | null>;
-  onCopy: (id: string, content: string) => void;
-  onSpeak: (id: string, content: string) => void;
-  onRegenerate: (content: string) => void;
-  onFork: () => void;
-  onToggleMenu: (id: string | null) => void;
-  t: (key: string) => string;
 }
 
 type StreamFailureKind = 'auth' | 'quota' | 'model' | 'rate' | 'offline' | 'server' | 'unknown';
@@ -129,262 +96,6 @@ const formatDurationMs = (ms: number, underOneSecondLabel: string): string => {
   if (ms < 60000) return `${Math.round(ms / 1000)}s`;
   return `${Math.round(ms / 60000)}m`;
 };
-
-// Memoized so 50ms batched streaming flushes only re-render the live tail
-// row instead of every bubble on every token.
-const MessageRow: React.FC<MessageRowProps> = memo(
-  ({
-    msg,
-    isLiveTail,
-    modelLabel,
-    durationLabel,
-    formulatingLabel,
-    copied,
-    speaking,
-    menuOpen,
-    streamBusy,
-    stopped,
-    stoppedLabel,
-    stoppedHint,
-    estimated,
-    estimatedHint,
-    copyUnavailableLabel,
-    regenerateSource,
-    regenerateLabel,
-    regenerateBusyHint,
-    menuContainerRef,
-    onCopy,
-    onSpeak,
-    onRegenerate,
-    onFork,
-    onToggleMenu,
-    t,
-  }) => {
-  // English fallback for keys the locale bundle does not ship yet, so a
-  // message action never renders a raw key name.
-  const tx = (key: string, fallback: string): string => {
-    const v = t(key);
-    return !v || v === key ? fallback : v;
-  };
-    const isUser = msg.sender === 'you';
-    // Actions are revealed on tap (or Enter when the row has focus) instead of
-    // adding a full action band under every bubble on a phone screen.
-    const [actionsOpen, setActionsOpen] = useState(false);
-    const showActions = actionsOpen || menuOpen;
-    const handleBubbleClick = (event: React.MouseEvent<HTMLDivElement>) => {
-      const target = event.target as HTMLElement;
-      // Never steal a tap meant for a control, a menu, or a text selection.
-      if (target.closest('button, a, input, textarea, summary, [role="menu"]')) return;
-      if ((window.getSelection?.()?.toString() || '').length > 0) return;
-      setActionsOpen((v) => !v);
-    };
-
-    const handleBubbleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-      if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        setActionsOpen((v) => !v);
-        return;
-      }
-      if (event.key === 'Escape' && actionsOpen) {
-        setActionsOpen(false);
-      }
-    };
-
-    return (
-      <div
-        className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}
-        tabIndex={0}
-        role="group"
-        aria-label={`${isUser ? tx('yourMessage', 'Your message') : tx('hermesResponse', 'Reply from Hermes')}. ${
-          showActions
-            ? tx('messageActionsShown', 'Actions shown. Press Escape to hide them.')
-            : tx('messageActionsHint', 'Press Enter for message actions.')
-        }`}
-        onClick={handleBubbleClick}
-        onKeyDown={handleBubbleKeyDown}
-      >
-        {/* Bubble Container: user turns size to their content, replies stay full width */}
-        <div
-          role="article"
-          aria-label={isUser ? tx('yourMessage', 'Your message') : tx('hermesResponse', 'Reply from Hermes')}
-          className={`r-md t-body p-4 transition-all ${
-            isUser
-              ? 'w-fit max-w-[80%] bg-[var(--app-accent)] text-[var(--app-on-accent)]'
-              : 'w-full max-w-[94%] sm:max-w-[88%] bg-[var(--app-card)] edge text-[var(--app-text)]'
-          }`}
-          style={{
-            fontSize: 'var(--msg-font-size)',
-            lineHeight: 1.5,
-          }}
-        >
-          {/* Unboxed metadata row: no rule brackets the bubble any more, so a
-              one word message reads as a message instead of a truncated table. */}
-          <div className="flex items-center justify-between gap-3 mb-3">
-            <span
-              className={`t-micro font-semibold tracking-tight ${
-                isUser ? 'text-[var(--app-on-accent)]' : 'text-[var(--app-text)]'
-              }`}
-            >
-              {isUser ? tx('you', 'You') : tx('hermes', 'Hermes')}
-            </span>
-
-            {!isUser && (stopped || modelLabel || durationLabel) && (
-              <div className="flex items-center gap-2">
-                {stopped && (
-                  <span className="pill-warning t-micro font-mono" title={stoppedHint}>
-                    {stoppedLabel}
-                  </span>
-                )}
-                {(modelLabel || durationLabel) && (
-                  <span
-                    className="pill-neutral t-micro font-mono"
-                    title={estimated ? estimatedHint : undefined}
-                  >
-                    {modelLabel}
-                    {durationLabel && ` · ${durationLabel}`}
-                  </span>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Thinking Block */}
-          {msg.thinking && (
-            <ThinkingAccordion thinking={msg.thinking} isDone={msg.thinkingDone !== false} />
-          )}
-
-          {/* Tool Invocations */}
-          {msg.tools && msg.tools.length > 0 && (
-            <div className="mb-3 space-y-2">
-              <div className="flex flex-wrap gap-2">
-                {msg.tools.map((toolName, idx) => (
-                  <span
-                    key={idx}
-                    className="pill-neutral t-micro font-mono inline-flex items-center gap-2"
-                  >
-                    <span className="w-2 h-2 rounded-full bg-[var(--app-accent)]" />
-                    <span>{toolName}</span>
-                  </span>
-                ))}
-              </div>
-
-              {msg.toolOutputs && msg.toolOutputs.length > 0 && (
-                <div className="r-sm edge bg-[var(--app-bg)] p-3 t-caption font-mono text-[var(--app-text-muted)] space-y-2">
-                  {msg.toolOutputs.map((out, i) => (
-                    <div key={i} className="leading-relaxed break-all whitespace-pre-wrap">
-                      <span className="text-[var(--app-info)] font-medium">{out.toolName}:</span>{' '}
-                      <span>{out.output}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Message Body */}
-          {msg.content ? (
-            <div className="t-body max-w-none whitespace-pre-wrap break-words [overflow-wrap:anywhere] select-text font-sans">
-              {msg.content}
-              {isLiveTail && !isUser && (
-                <span className="inline-block w-1.5 h-4 ms-1 bg-[var(--app-accent)] animate-pulse align-middle" />
-              )}
-            </div>
-          ) : isLiveTail ? (
-            <div className="flex items-center gap-2 t-caption text-[var(--app-text-muted)] py-1">
-              <span className="w-2 h-2 rounded-full bg-[var(--app-accent)] animate-ping" />
-              <span>{formulatingLabel}</span>
-            </div>
-          ) : null}
-
-          {/* Message actions: revealed on tap and separated from the text by
-              spacing only (no rule under the bubble). Regenerate belongs to
-              assistant turns and resends the prompt that produced them; user
-              turns keep copy and the overflow menu. */}
-          {showActions && (
-          <div className="relative flex items-center justify-end gap-2 mt-3">
-            <button
-              onClick={() => onCopy(msg.id, msg.content)}
-              disabled={!msg.content.trim()}
-              className="min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--app-text-muted)] hover:text-[var(--app-text)] cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-              title={msg.content.trim() ? t('copy') : copyUnavailableLabel}
-              aria-label={msg.content.trim() ? t('copy') : copyUnavailableLabel}
-            >
-              {copied ? (
-                <Check className="w-4 h-4 text-[var(--app-success)]" />
-              ) : (
-                <Copy className="w-4 h-4" />
-              )}
-            </button>
-            {!isUser && (
-              <button
-                onClick={() => onRegenerate(regenerateSource)}
-                disabled={streamBusy || !regenerateSource}
-                aria-label={streamBusy ? regenerateBusyHint : regenerateLabel}
-                title={streamBusy ? regenerateBusyHint : regenerateLabel}
-                className="hm-hit r-xs min-h-[36px] px-3 flex items-center gap-2 t-caption text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <RefreshCw className="w-4 h-4" />
-                <span>{regenerateLabel}</span>
-              </button>
-            )}
-            <button
-              onClick={() => onToggleMenu(menuOpen ? null : msg.id)}
-              className="min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition cursor-pointer"
-              title={tx('moreActions', 'More actions')}
-              aria-label={tx('moreMessageActions', 'More message actions')}
-              aria-expanded={menuOpen}
-            >
-              <MoreHorizontal className="w-4 h-4" />
-            </button>
-            {menuOpen && (
-              <div
-                ref={menuOpen ? menuContainerRef : undefined}
-                role="menu"
-                className="absolute bottom-full end-0 mb-2 min-w-[160px] r-sm elev-2 edge bg-[var(--app-card-subtle)] py-1 z-20"
-              >
-                {isUser && (
-                  <button
-                    onClick={() => {
-                      onFork();
-                      onToggleMenu(null);
-                    }}
-                    role="menuitem"
-                    className="w-full min-h-[44px] px-4 py-2 flex items-center gap-2 text-start t-caption text-[var(--app-text)] hover:bg-[var(--app-card-hover)] transition cursor-pointer"
-                  >
-                    <GitFork className="w-4 h-4" />
-                    <span>{tx('duplicateChat', 'Duplicate chat')}</span>
-                  </button>
-                )}
-                <button
-                  onClick={() => {
-                    onSpeak(msg.id, msg.content);
-                    onToggleMenu(null);
-                  }}
-                  role="menuitem"
-                  className="w-full min-h-[44px] px-4 py-2 flex items-center gap-2 text-start t-caption text-[var(--app-text)] hover:bg-[var(--app-card-hover)] transition cursor-pointer"
-                  title={speaking ? tx('stopReading', 'Stop reading out loud') : tx('readAloud', 'Read aloud')}
-                >
-                  {speaking ? (
-                    <>
-                      <VolumeX className="w-4 h-4 text-[var(--app-danger)]" />
-                      <span className="text-[var(--app-danger)] font-medium">{t('stopShort')}</span>
-                    </>
-                  ) : (
-                    <>
-                      <Volume2 className="w-4 h-4" />
-                      <span>{tx('readAloud', 'Read aloud')}</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            )}
-          </div>
-          )}
-        </div>
-      </div>
-    );
-  }
-);
 
 export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = false }) => {
   const {
@@ -539,6 +250,15 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     textRef.current = draft;
     setText(draft);
   }, [currentSessionId]);
+
+  // The composer never takes focus on its own: on Android the soft keyboard
+  // would otherwise open the moment the chat tab appears. Nothing in this file
+  // focuses the field, so if the shell or a restored focus hands the caret over
+  // anyway, it is dropped once here. Tapping the field still focuses it.
+  useEffect(() => {
+    const field = textareaRef.current;
+    if (field && document.activeElement === field) field.blur();
+  }, []);
 
   // Model selection modal search & category filters
   const [modelSearchQuery, setModelSearchQuery] = useState('');
@@ -1744,7 +1464,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                     return '';
                   })();
             return (
-              <MessageRow
+              <ChatMessageBubble
                 key={msg.id}
                 msg={msg}
                 isLiveTail={msg.id === liveTailId}
@@ -2033,43 +1753,6 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       )}
       </div>
 
-      {/* Compact model + effort row: one tap target each, both open a sheet, and
-          the composer bar below keeps only attach, mic and send. Pills are 36px
-          tall with a hm-hit expanded tap area; the 16px gap equals that
-          expansion, so neighbouring hit areas never overlap. */}
-      <div
-        role="group"
-        aria-label={tx('composerSettings', 'Model and reasoning effort')}
-        className="flex items-center gap-4 mb-2 px-1 shrink-0"
-      >
-        <button
-          type="button"
-          onClick={() => setShowModelsSheet(true)}
-          title={settings.modelId || t('noModel')}
-          aria-label={`${tx('activeModel', 'Active model')}: ${
-            settings.modelId ? curModelName : t('noModel')
-          }. ${tx('opensModelList', 'Opens the model list.')}`}
-          className="hm-hit min-h-[36px] min-w-0 max-w-[62%] pill-neutral font-mono cursor-pointer"
-        >
-          <span className="truncate">{settings.modelId ? curModelName : t('noModel')}</span>
-          <ChevronDown className="w-4 h-4 shrink-0" />
-        </button>
-        <button
-          type="button"
-          onClick={() => setShowEffortSheet(true)}
-          title={tx('reasoningEffortPlain', 'Reasoning effort')}
-          aria-label={`${tx('reasoningEffortPlain', 'Reasoning effort')}: ${effortLabel}. ${tx(
-            'opensEffortOptions',
-            'Opens the reasoning effort options.'
-          )}`}
-          className="hm-hit min-h-[36px] pill-neutral font-mono cursor-pointer"
-        >
-          <Sliders className="w-4 h-4 shrink-0" />
-          <span>{effortLabel}</span>
-          <ChevronDown className="w-4 h-4 shrink-0" />
-        </button>
-      </div>
-
       {/* 4. Desktop/Mobile Composer Surface matching modern Hermes aesthetic */}
       <div className="r-lg elev-2 edge bg-[var(--app-card)] px-4 pt-3 pb-2 shrink-0 transition-all focus-within:ring-1 focus-within:ring-[var(--app-accent)] mb-1">
         <textarea
@@ -2093,9 +1776,16 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           {tx('composerHint', 'Enter sends. Shift plus Enter adds a new line.')}
         </p>
 
-        {/* Action Bar: attach on the left, mic and send on the right. Model and
-            effort now live in the compact row above the composer. */}
-        <div className="flex items-center justify-between gap-2 pt-2 mt-2 border-t border-[var(--app-border-subtle)]">
+        {/* One action bar, in the order a reply is composed: attach, model
+            pill, effort pill, then mic and send. It wraps on a 360dp phone
+            (attach, model and effort on the first line, mic and send pushed to
+            the end of the next one) so the model name is never clipped to fit.
+            Both pills open a sheet and keep a hm-hit expanded tap area. */}
+        <div
+          role="group"
+          aria-label={tx('composerSettings', 'Model and reasoning effort')}
+          className="flex flex-wrap items-center gap-2 pt-2 mt-2 border-t border-[var(--app-border-subtle)]"
+        >
           <input
             type="file"
             ref={fileInputRef}
@@ -2114,8 +1804,39 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             <Plus className="w-4 h-4 stroke-[2.2]" />
           </button>
 
-          {/* Right Action Buttons: neutral mic and the single accent send */}
-          <div className="flex items-center gap-2 shrink-0">
+          {/* Model first, then effort: the model name shows in full whenever
+              the bar has room for it, and only ellipsises when it truly cannot
+              fit. */}
+          <button
+            type="button"
+            onClick={() => setShowModelsSheet(true)}
+            title={settings.modelId || t('noModel')}
+            aria-label={`${tx('activeModel', 'Active model')}: ${
+              settings.modelId ? curModelName : t('noModel')
+            }. ${tx('opensModelList', 'Opens the model list.')}`}
+            className="hm-hit min-h-[36px] min-w-[9rem] flex-1 pill-neutral font-mono cursor-pointer"
+          >
+            <span className="truncate">{settings.modelId ? curModelName : t('noModel')}</span>
+            <ChevronDown className="w-4 h-4 shrink-0" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowEffortSheet(true)}
+            title={tx('reasoningEffortPlain', 'Reasoning effort')}
+            aria-label={`${tx('reasoningEffortPlain', 'Reasoning effort')}: ${effortLabel}. ${tx(
+              'opensEffortOptions',
+              'Opens the reasoning effort options.'
+            )}`}
+            className="hm-hit min-h-[36px] shrink-0 pill-neutral font-mono cursor-pointer"
+          >
+            <Sliders className="w-4 h-4 shrink-0" />
+            <span>{effortLabel}</span>
+            <ChevronDown className="w-4 h-4 shrink-0" />
+          </button>
+
+          {/* Mic and send close the bar, pushed to the end of the line so the
+              composer keeps the familiar send corner. */}
+          <div className="ms-auto flex items-center gap-2 shrink-0">
             {/* Voice Dictation (Cyan Mic) */}
             <button
               type="button"
@@ -2436,62 +2157,6 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
               )}
             </p>
           </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
-interface ThinkingAccordionProps {
-  thinking: string;
-  isDone: boolean;
-}
-
-const ThinkingAccordion: React.FC<ThinkingAccordionProps> = ({ thinking, isDone }) => {
-  const [expanded, setExpanded] = useState(!isDone);
-
-  // The accordion sits outside the i18n provider, so it reads the same bundle
-  // through the document language and keeps an English fallback.
-  const tx = (key: string, fallback: string): string => {
-    const docLang =
-      typeof document !== 'undefined' ? document.documentElement.lang || 'en' : 'en';
-    const value = getTranslation(key, docLang.toLowerCase().split('-')[0] || 'en');
-    return value && value !== key ? value : fallback;
-  };
-
-  // Follow the live state: expand while reasoning, auto-collapse when done.
-  useEffect(() => {
-    setExpanded(!isDone);
-  }, [isDone]);
-
-  return (
-    <div className="mb-3 r-sm elev-0 edge bg-[var(--app-card-subtle)] overflow-hidden">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        aria-expanded={expanded}
-        aria-label={tx('thinkingAria', 'Thinking, {state}. Tap to {action}.')
-          .replace('{state}', isDone ? tx('reasoningDone', 'finished') : tx('reasoningWorking', 'working…'))
-          .replace(
-            '{action}',
-            expanded ? tx('thinkingCollapse', 'hide the details') : tx('thinkingExpand', 'show the details')
-          )}
-        className="w-full flex items-center justify-between px-4 min-h-[44px] py-2 t-caption text-[var(--app-text-muted)] hover:text-[var(--app-text)] cursor-pointer transition"
-      >
-        <div className="flex items-center gap-2">
-          <span className={isDone ? 'text-[var(--app-success)]' : 'text-[var(--app-accent)] animate-spin'}>
-            {isDone ? '✓' : '◐'}
-          </span>
-          <span className="font-medium text-[var(--app-text)]">{tx('thinkingLabel', 'Thinking')}</span>
-          <span className="t-caption text-[var(--app-text-muted)]">({isDone ? tx('reasoningDone', 'finished') : tx('reasoningWorking', 'working…')})</span>
-        </div>
-        {expanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-      </button>
-
-      {expanded && (
-        <div
-          className="p-4 font-mono t-caption text-[var(--app-text-muted)] border-t border-[var(--app-border-subtle)] whitespace-pre-wrap leading-relaxed max-h-56 overflow-y-auto bg-[var(--app-bg)]"
-        >
-          {thinking}
         </div>
       )}
     </div>

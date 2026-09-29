@@ -64,6 +64,7 @@ const HEALTH_TIMEOUT_MS = 5000;
 const JOB_ACTIONS = new Set(['pause', 'resume', 'run', 'delete']);
 
 import { redactSecrets } from './redaction';
+import { plainListStale, plainServiceFailure } from './plainFailure';
 export { REDACTED } from './redaction';
 
 export class GatewayService {
@@ -291,7 +292,7 @@ export class GatewayService {
       const slice = page.cursor ? cached.slice(0, page.limit) : cached.slice(page.offset, page.offset + page.limit);
       return toPagedResult(
         slice,
-        staleMeta(readSyncedAt(GatewayService.SYNC_KEYS.sessions), `Sessions unavailable: ${msg}`, cached.length > 0),
+        staleMeta(readSyncedAt(GatewayService.SYNC_KEYS.sessions), plainListStale('Sessions unavailable:', msg), cached.length > 0),
         page
       );
     }
@@ -405,7 +406,7 @@ export class GatewayService {
         : cached.slice(page.offset, page.offset + page.limit);
       return toPagedResult(
         slice,
-        staleMeta(readSyncedAt(syncKey), `Messages unavailable: ${msg}`, cached.length > 0),
+        staleMeta(readSyncedAt(syncKey), plainListStale('Messages unavailable:', msg), cached.length > 0),
         page
       );
     }
@@ -680,7 +681,7 @@ export class GatewayService {
       const cached = this.loadLocalJobs();
       return {
         items: cached,
-        ...staleMeta(readSyncedAt(GatewayService.SYNC_KEYS.jobs), `Jobs unavailable: ${msg}`, cached.length > 0),
+        ...staleMeta(readSyncedAt(GatewayService.SYNC_KEYS.jobs), plainListStale('Jobs unavailable:', msg), cached.length > 0),
       };
     }
   }
@@ -784,7 +785,7 @@ export class GatewayService {
       const msg = e instanceof Error ? e.message : 'gateway unreachable';
       return toPagedResult<CronRun>(
         [],
-        staleMeta(readSyncedAt(GatewayService.SYNC_KEYS.runs), `Run history unavailable: ${msg}`, false),
+        staleMeta(readSyncedAt(GatewayService.SYNC_KEYS.runs), plainListStale('Run history unavailable:', msg), false),
         page
       );
     }
@@ -813,7 +814,7 @@ export class GatewayService {
       const msg = e instanceof Error ? e.message : 'gateway unreachable';
       return {
         items: [],
-        ...staleMeta(readSyncedAt(GatewayService.SYNC_KEYS.skills), `Skills unavailable: ${msg}`, false),
+        ...staleMeta(readSyncedAt(GatewayService.SYNC_KEYS.skills), plainListStale('Skills unavailable:', msg), false),
       };
     }
   }
@@ -871,7 +872,7 @@ export class GatewayService {
         {
           enabled: false,
           provider: '',
-          summary: e instanceof Error ? `Memory unavailable: ${e.message}` : 'Memory unavailable: gateway unreachable',
+          summary: plainListStale('Memory unavailable:', e instanceof Error ? e.message : ''),
           entries: 0,
         },
         false
@@ -896,7 +897,7 @@ export class GatewayService {
       const msg = e instanceof Error ? e.message : 'gateway unreachable';
       return {
         items: [],
-        ...staleMeta(readSyncedAt(GatewayService.SYNC_KEYS.blueprints), `Blueprints unavailable: ${msg}`, false),
+        ...staleMeta(readSyncedAt(GatewayService.SYNC_KEYS.blueprints), plainListStale('Blueprints unavailable:', msg), false),
       };
     }
   }
@@ -944,7 +945,7 @@ export class GatewayService {
     } catch (e: unknown) {
       return {
         ok: false,
-        summary: e instanceof Error ? `Doctor check failed: ${e.message}` : 'Doctor check failed: gateway unreachable',
+        summary: plainServiceFailure(e),
         version: '',
         checks: [],
       };
@@ -971,7 +972,7 @@ export class GatewayService {
       return {
         ok: false,
         path: '',
-        message: e instanceof Error ? `Backup failed: ${e.message}` : 'Backup failed: gateway unreachable',
+        message: plainServiceFailure(e),
       };
     }
   }
@@ -994,7 +995,7 @@ export class GatewayService {
     } catch (e: unknown) {
       return {
         urls: [],
-        summary: e instanceof Error ? `Debug share failed: ${e.message}` : 'Debug share failed: gateway unreachable',
+        summary: plainServiceFailure(e),
       };
     }
   }
@@ -1025,7 +1026,7 @@ export class GatewayService {
       const msg = e instanceof Error ? e.message : 'gateway unreachable';
       return toPagedResult<LogLine>(
         [],
-        staleMeta(readSyncedAt(GatewayService.SYNC_KEYS.logs), `Logs unavailable: ${msg}`, false),
+        staleMeta(readSyncedAt(GatewayService.SYNC_KEYS.logs), plainListStale('Logs unavailable:', msg), false),
         page
       );
     }

@@ -454,6 +454,13 @@ class MobileGatewayService : Service() {
     private const val WAKE_TIMEOUT_MS = 10 * 60 * 1_000L
     /** Circuit breaker: stop auto-retry after this many consecutive failures. */
     private const val MAX_RESTARTS = 5
+    /**
+     * Stable machine token for a platform-refused service start. Android's own
+     * exception text ("startForegroundService() not allowed due…", "Not
+     * allowed to start service Intent… app is in background") is never
+     * surfaced; screens map this token to plain copy.
+     */
+    private const val REASON_SERVICE_START_BLOCKED = "service_start_blocked"
 
     /** True once the supervisor hit the circuit breaker; cleared on explicit Start. */
     val gatewayFailed = MutableStateFlow(false)
@@ -524,19 +531,57 @@ class MobileGatewayService : Service() {
     }
 
     fun start(ctx: Context) {
-      val i = Intent(ctx, MobileGatewayService::class.java).setAction("START")
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i)
-      else ctx.startService(i)
+      startServiceWithStableReason(ctx, "START")
     }
 
     fun install(ctx: Context) {
-      val i = Intent(ctx, MobileGatewayService::class.java).setAction("INSTALL")
-      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i)
-      else ctx.startService(i)
+      startServiceWithStableReason(ctx, "INSTALL")
     }
 
     fun stop(ctx: Context) {
-      ctx.startService(Intent(ctx, MobileGatewayService::class.java).setAction("STOP"))
+      try {
+        ctx.startService(Intent(ctx, MobileGatewayService::class.java).setAction("STOP"))
+      } catch (e: Exception) {
+        logRaw(ctx, "service stop blocked: ${e.message}")
+        throw IllegalStateException(REASON_SERVICE_START_BLOCKED, e)
+      }
+    }
+
+    /**
+     * Ask the platform to run the service as a foreground service.
+     *
+     * Android 12+ refuses a foreground-service start from the background and
+     * throws ForegroundServiceStartNotAllowedException, whose message begins
+     * "startForegroundService() not allowed due…". That text is Android
+     * internals, never user copy, so it is translated into the stable
+     * [REASON_SERVICE_START_BLOCKED] token: screens render plain words and the
+     * raw platform message stays out of the reporting path. Background starts
+     * keep the app's existing expedited-worker route (BootReceiver/BootWorker).
+     */
+    private fun startServiceWithStableReason(ctx: Context, action: String) {
+      val i = Intent(ctx, MobileGatewayService::class.java).setAction(action)
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        try {
+          ctx.startForegroundService(i)
+        } catch (e: Exception) {
+          // Keep the raw platform text in the log (it is diagnostics, not
+          // copy) and hand the UI the stable token instead.
+          logRaw(ctx, "service start blocked: ${e.message}")
+          throw IllegalStateException(REASON_SERVICE_START_BLOCKED, e)
+        }
+      } else {
+        ctx.startService(i)
+      }
+    }
+
+    /** Append one timestamped line to service.log; never throws. */
+    private fun logRaw(ctx: Context, line: String) {
+      try {
+        val f = File(Bootstrap.rootDir(ctx), "service.log")
+        val ts = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+          .format(java.util.Date())
+        f.appendText("$ts $line\n")
+      } catch (_: Exception) { }
     }
 
     /** Registry provider id -> key env var (mirrors hermes_cli/auth.py rows). */
