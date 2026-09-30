@@ -216,6 +216,16 @@ export const DEFAULT_MODELS: Record<string, string[]> = {
 
 // Verified live id for the opencode-go provider. Keep in sync with the
 // gateway only; the static list stays as the offline fallback snapshot.
+export const PROVIDER_DEFAULT_BASE_URL: Record<string, string> = {
+  // Known model-catalog roots for OpenAI-compatible providers: when the base
+  // URL field is empty, the direct key test falls back here instead of
+  // failing on an empty host. Only providers whose catalog path is certain
+  // are listed (deepseek and others stay on the gateway path until verified).
+  'openai-api': 'https://api.openai.com/v1',
+  openrouter: 'https://openrouter.ai/api/v1',
+  'opencode-go': 'https://opencode.ai/zen/go/v1',
+  xai: 'https://api.x.ai/v1',
+};
 export const OPENCODE_GO_VERIFIED_MODELS: readonly string[] = ['deepseek-v4.1-flash'];
 
 // Static catalog entries tagged as offline fallback. UI lists must label

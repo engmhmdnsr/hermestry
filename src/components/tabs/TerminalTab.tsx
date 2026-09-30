@@ -341,7 +341,7 @@ export const TerminalTab: React.FC = () => {
         <div className="flex items-center gap-2 min-w-0">
           <span
             aria-hidden="true"
-            className={`w-2 h-2 rounded-full shrink-0 ${connected ? 'bg-[var(--app-success)]' : 'bg-[var(--app-danger)]'}`}
+            className={`w-2 h-2 r-full shrink-0 ${connected ? 'bg-[var(--app-success)]' : 'bg-[var(--app-danger)]'}`}
           />
           <SquareTerminal className="w-4 h-4 shrink-0 text-[var(--app-term-green)]" aria-hidden="true" />
           <span className="font-mono text-xs font-bold text-[var(--app-term-green)] truncate">
@@ -509,7 +509,7 @@ export const TerminalTab: React.FC = () => {
           type="button"
           onClick={() => runCommand(input)}
           disabled={!input.trim()}
-          className={`w-[34px] h-[34px] rounded-lg flex items-center justify-center transition shrink-0 ${
+          className={`w-[44px] h-[44px] r-sm flex items-center justify-center transition shrink-0 ${
             input.trim()
               ? 'bg-[var(--app-success-subtle)] text-[var(--app-success)] hover:brightness-125 cursor-pointer'
               : 'text-[var(--app-text-dim)] cursor-not-allowed'
@@ -517,7 +517,7 @@ export const TerminalTab: React.FC = () => {
           title={tx('termRun', 'Run command')}
           aria-label={tx('termRun', 'Run command')}
         >
-          <Send className="w-[18px] h-[18px]" />
+          <Send className="w-[18px] h-[18px] rtl-flip" />
         </button>
       </div>
     </div>

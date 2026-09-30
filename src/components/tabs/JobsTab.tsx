@@ -32,6 +32,9 @@ import {
 } from '../../utils/jobTime';
 import { resolveListUiState } from '../../services/pagination';
 
+// Local display grace: a job a few minutes past its slot reads as due, not
+// overdue. This is a client-side display choice only; the desktop gateway
+// may mark overdue at the exact due time, so badges can differ by surface.
 const OVERDUE_GRACE_MS = 5 * 60 * 1000;
 
 // List sync envelope shape (subset) read out of context.listsMeta. Same
@@ -617,6 +620,10 @@ export const JobsTab: React.FC = () => {
       );
       setHistoryForId(j.id);
       await handleRetryRuns(j.id);
+      // Post-stop refresh goes through context like every other job action,
+      // so a future envelope change covers Stop too instead of silently
+      // skipping the one action that reached past context to the service.
+      void refreshJobs();
     } else {
       setActionError(tx(REJECTION_KEYS.action.key, REJECTION_KEYS.action.fallback));
       showToast(
@@ -736,6 +743,17 @@ export const JobsTab: React.FC = () => {
   // the sheet can offer Stop for the run the history is showing).
   const menuJob = menuJobId ? jobs.find((j) => j.id === menuJobId) ?? null : null;
   const menuActiveRun = menuJob ? latestActiveRun(cronRuns[menuJob.id] || []) : undefined;
+
+  // Prefetch history when the sheet opens: without it Stop only appears for
+  // jobs whose history was already fetched elsewhere (the emergency action
+  // must not hide precisely when the user has not gone looking yet).
+  useEffect(() => {
+    if (menuJobId) {
+      setHistoryForId(menuJobId);
+      void handleRetryRuns(menuJobId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [menuJobId]);
 
   const closeMenu = () => setMenuJobId(null);
 
@@ -938,7 +956,7 @@ export const JobsTab: React.FC = () => {
     <div className="space-y-6 max-w-2xl mx-auto px-4 pt-4 hm-tab-bottom">
       {/* Toast stack: overlays sit at elev-3, never a raw shadow. */}
       {toasts.length > 0 && (
-        <div className="fixed top-16 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] space-y-2 w-max max-w-[calc(100vw-2rem)]">
+        <div className="fixed top-[calc(4rem+env(safe-area-inset-top,0px))] start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] space-y-2 w-max max-w-[calc(100vw-2rem)]">
           {toasts.map((toastItem) => (
             <div
               key={toastItem.id}

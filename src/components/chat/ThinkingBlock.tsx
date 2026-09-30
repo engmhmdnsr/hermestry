@@ -27,7 +27,7 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ thinking, isDone, 
     : tx('thinkingExpand', 'show the details');
 
   return (
-    <div className="mb-2.5 rounded-xl border border-[var(--app-info-border)]/60 bg-[var(--app-bg)]/80 overflow-hidden transition-all">
+    <div className="mb-2.5 r-md border border-[var(--app-info-border)]/60 bg-[var(--app-bg)]/80 overflow-hidden transition-all">
       <button
         type="button"
         onClick={() => setExpanded((value) => !value)}
@@ -41,7 +41,7 @@ export const ThinkingBlock: React.FC<ThinkingBlockProps> = ({ thinking, isDone, 
           {!isDone && (
             <span
               aria-hidden="true"
-              className="w-1.5 h-1.5 rounded-full bg-[var(--app-info)] animate-pulse shrink-0"
+              className="w-1.5 h-1.5 r-full bg-[var(--app-info)] animate-pulse shrink-0"
             />
           )}
           <span className="t-caption font-mono tracking-wide truncate">

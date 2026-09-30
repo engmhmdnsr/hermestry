@@ -93,6 +93,10 @@ export { REDACTED } from './redaction';
 
 export class GatewayService {
   private baseUrl: string;
+  // Last non-OK HTTP status from a boolean toggle write (null when the last
+  // write succeeded or never ran): the UI appends it so a rejected toggle
+  // keeps the server's verdict instead of degrading to a bare boolean.
+  lastToggleStatus: number | null = null;
   private apiKey: () => string;
   private isConnected: boolean = false;
   /** Last live-catalog fetch outcome: null = ok (or never ran), else a short reason. */
@@ -934,7 +938,11 @@ export class GatewayService {
     for (const a of attempts) {
       try {
         const res = await fetch(a.url, a.init);
-        if (res.ok) return true;
+        if (res.ok) {
+          this.lastToggleStatus = null;
+          return true;
+        }
+        this.lastToggleStatus = res.status;
         // A 404/405 means this gateway simply has no such route: try the
         // next shape instead of treating it as a verdict on the toggle.
         if (res.status !== 404 && res.status !== 405) return false;
@@ -1044,7 +1052,11 @@ export class GatewayService {
     for (const a of attempts) {
       try {
         const res = await fetch(a.url, a.init);
-        if (res.ok) return true;
+        if (res.ok) {
+          this.lastToggleStatus = null;
+          return true;
+        }
+        this.lastToggleStatus = res.status;
         if (res.status !== 404 && res.status !== 405) return false;
       } catch {
         return false;

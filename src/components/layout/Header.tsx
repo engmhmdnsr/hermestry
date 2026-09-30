@@ -68,10 +68,13 @@ function readPersistedTab(): number | null {
   return null;
 }
 
-export function fmtTok(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return `${n}`;
+export function fmtTok(n: number, lang = 'en'): string {
+  // The BCP 47 tag carries the digits: ar/fa render ۱۲۳ natively, others Latin.
+  const fmt = (v: number) =>
+    v.toLocaleString(lang, { maximumFractionDigits: 1 });
+  if (n >= 1_000_000) return `${fmt(n / 1_000_000)}M`;
+  if (n >= 1_000) return `${fmt(n / 1_000)}k`;
+  return fmt(n);
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -294,7 +297,7 @@ export const Header: React.FC<HeaderProps> = ({
         {!isDesktop ? (
           <button
             onClick={onOpenDrawer}
-            className="w-10 h-10 min-w-[40px] rounded-xl bg-[var(--app-card)] hover:bg-[var(--app-card-hover)] border border-[var(--app-border)] flex items-center justify-center shrink-0 text-[var(--app-text-muted)] hover:text-[var(--app-text)] active:scale-95 transition-all shadow-sm"
+            className="w-10 h-10 min-w-[40px] r-md bg-[var(--app-card)] hover:bg-[var(--app-card-hover)] border border-[var(--app-border)] flex items-center justify-center shrink-0 text-[var(--app-text-muted)] hover:text-[var(--app-text)] active:scale-95 transition-all shadow-sm"
             title={tx('openChats', 'Open chats')}
             aria-label={tx('openChats', 'Open chats')}
           >
@@ -362,19 +365,19 @@ export const Header: React.FC<HeaderProps> = ({
                   >
                     <span
                       aria-hidden="true"
-                      className="status-pulse absolute inline-flex h-full w-full rounded-full"
+                      className="status-pulse absolute inline-flex h-full w-full r-full"
                       style={{ backgroundColor: lampColor, opacity: 0.75 }}
                     />
                     <span
                       aria-hidden="true"
-                      className="relative inline-flex rounded-full h-2.5 w-2.5"
+                      className="relative inline-flex r-full h-2.5 w-2.5"
                       style={{
                         backgroundColor: lampColor,
                         boxShadow: `0 0 8px ${lampColor}`,
                       }}
                     />
                   </button>
-                  <h1 className="text-[15px] font-bold tracking-tight text-[var(--app-text)] truncate">
+                  <h1 className="text-[0.9375rem] font-bold tracking-tight text-[var(--app-text)] truncate">
                     {tx('hermesChat', 'Hermes Chat')}
                   </h1>
                 </span>
@@ -434,7 +437,7 @@ export const Header: React.FC<HeaderProps> = ({
             className="min-w-[44px] min-h-[44px] r-xs edge flex items-center justify-center cursor-pointer hover:bg-[var(--app-card-hover)] active:scale-95 transition-all"
           >
             <span
-              className="w-3 h-3 rounded-full shrink-0"
+              className="w-3 h-3 r-full shrink-0"
               aria-hidden="true"
               style={{
                 backgroundColor: lampColor,
@@ -457,7 +460,7 @@ export const Header: React.FC<HeaderProps> = ({
         <div className="relative shrink-0" ref={menuWrapRef}>
           <button
             onClick={() => setMenuOpen((prev) => !prev)}
-            className={`relative flex items-center gap-1.5 font-mono text-[11px] text-[var(--app-warning)] tracking-tight font-medium rounded-full border border-[var(--app-warning-border)] bg-[var(--app-card)] px-2.5 py-1.5 min-h-[36px] shadow-[0_0_12px_var(--app-warning-subtle)] hover:bg-[var(--app-card-hover)] transition active:scale-95 cursor-pointer hm-hit ${
+            className={`relative flex items-center gap-1.5 font-mono text-[0.6875rem] text-[var(--app-warning)] tracking-tight font-medium r-full border border-[var(--app-warning-border)] bg-[var(--app-card)] px-2.5 py-1.5 min-h-[36px] shadow-[0_0_12px_var(--app-warning-subtle)] hover:bg-[var(--app-card-hover)] transition active:scale-95 cursor-pointer hm-hit ${
               menuOpen ? 'bg-[var(--app-card-hover)] ring-1 ring-[var(--app-warning-border)]' : ''
             }`}
             title={moreOptionsLabel}
@@ -466,9 +469,9 @@ export const Header: React.FC<HeaderProps> = ({
             aria-expanded={menuOpen}
           >
             <Zap className="w-3.5 h-3.5 text-[var(--app-warning)] animate-pulse shrink-0 fill-current" />
-            <span className="text-[var(--app-warning)] font-semibold">↑ {fmtTok(usageIn)}</span>
+            <span className="text-[var(--app-warning)] font-semibold">↑ {fmtTok(usageIn, lang)}</span>
             <span className="text-[var(--app-text-dim)]">·</span>
-            <span className="text-[var(--app-success)] font-semibold">↓ {fmtTok(usageOut)}</span>
+            <span className="text-[var(--app-success)] font-semibold">↓ {fmtTok(usageOut, lang)}</span>
             {approvalCount > 0 && (
               <span
                 className="absolute -top-1 -end-1 pill-danger font-mono font-semibold"
@@ -501,9 +504,9 @@ export const Header: React.FC<HeaderProps> = ({
                   <div className="flex items-center justify-between gap-2 t-micro font-mono text-[var(--app-text-muted)]">
                     <span className="text-[var(--app-text-dim)]">{tx('tokens', 'Tokens')}</span>
                     <span className="flex items-center gap-2">
-                      <span title={tx('promptTokens', 'Tokens sent to the model')}>↑ {fmtTok(usageIn)}</span>
+                      <span title={tx('promptTokens', 'Tokens sent to the model')}>↑ {fmtTok(usageIn, lang)}</span>
                       <span className="text-[var(--app-text-dim)]">·</span>
-                      <span title={tx('outputTokens', 'Tokens received from the model')}>↓ {fmtTok(usageOut)}</span>
+                      <span title={tx('outputTokens', 'Tokens received from the model')}>↓ {fmtTok(usageOut, lang)}</span>
                     </span>
                   </div>
                 </div>
@@ -536,7 +539,7 @@ export const Header: React.FC<HeaderProps> = ({
                         : 'text-[var(--app-text-muted)] hover:bg-[var(--app-card-hover)] hover:text-[var(--app-text)]'
                     }`}
                   >
-                    {inspectorOpen ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
+                    {inspectorOpen ? <PanelRightClose className="w-4 h-4 rtl-flip" /> : <PanelRightOpen className="w-4 h-4 rtl-flip" />}
                     <span>{tx('inspectorMenuLabel', 'Technical details')}</span>
                   </button>
                 )}

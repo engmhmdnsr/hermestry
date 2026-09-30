@@ -467,6 +467,11 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         if (!VALID_APPROVAL_SCOPES.includes(merged.approvalScope)) {
           merged.approvalScope = 'once';
         }
+        // Session elevation never survives a restart: a persisted 'session'
+        // scope would silently outlive the intent it was granted with.
+        if (merged.approvalScope === 'session') {
+          merged.approvalScope = 'once';
+        }
         if (parsed.autoApprovePolicy) {
           merged.autoApprovePolicy = normalizePolicy(parsed.autoApprovePolicy);
           merged.autoApproveGlobal = Boolean(merged.autoApprovePolicy.enabled);
@@ -3377,7 +3382,10 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         !(m.thinking || '').trim() &&
         (m.tools || []).length === 0 &&
         (m.toolOutputs || []).length === 0;
-      const failed = (m.content || '').startsWith('Stream error:');
+      // A failed turn is any agent bubble that carried a stream failure: the
+      // current 'Stream error:'/'Turn error:' prefixes (approval cards show a
+      // retry bar instead and never enter the bubble stream).
+      const failed = /^(Stream error|Turn error):/.test(m.content || '');
       if (!empty && !failed) break;
       cut -= 1;
     }
@@ -3947,7 +3955,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       addLog(
         outcome === 'ok'
           ? `Approval for "${approval.summary.slice(0, 40)}" ${allow ? 'ALLOWED (' + mode + ')' : 'DENIED'}`
-          : `Approval for "${approval.summary.slice(0, 40)}" already resolved elsewhere; dropping the card.`
+          : `Approval for "${approval.summary.slice(0, 40)}" already resolved elsewhere (run ${approval.runId}); dropping the card.`
       );
     } else {
       // Keep the card and surface the failure WITHOUT a chat bubble: a

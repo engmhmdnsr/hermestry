@@ -31,7 +31,7 @@ import {
 } from '../../services/attachmentRefs';
 import { ApprovalCard } from '../approvals/ApprovalCard';
 import { useOverlayBehavior } from '../../hooks/useOverlayBehavior';
-import { isMachineFailure, isTransportFailure, plainGatewayFailure, plainResultLine } from '../../services/plainFailure';
+import { isMachineFailure, isTransportFailure, plainGatewayFailure, plainResultLine, localizeAttachmentMessage } from '../../services/plainFailure';
 import { modelLabel } from '../../services/modelLabel';
 import { isNativeGateway, nativeHealth } from '../../services/nativeGateway';
 
@@ -230,6 +230,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   saveErrorRef.current = settingsSaveError;
   const [isListening, setIsListening] = useState(false);
   const [speakingMsgId, setSpeakingMsgId] = useState<string | null>(null);
+  // Every TTS start/cancel bumps this: a delayed route or voice-wait from an
+  // older request sees a stale seq and stays silent instead of speaking late.
+  const ttsSeqRef = useRef(0);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [actionToast, setActionToast] = useState<string | null>(null);
   const [toastKind, setToastKind] = useState<'info' | 'success' | 'error'>('info');
@@ -916,7 +919,11 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     cancelQueued();
     rest.forEach((m) => queueMessage(m.text, m.images));
     if (!sendMessage(first.text, first.images)) {
+      // Order-preserving requeue: the failed head goes back first so the
+      // queue order the user saw is the order that will send later.
+      cancelQueued();
       queueMessage(first.text, first.images);
+      rest.forEach((m) => queueMessage(m.text, m.images));
       showActionToast(tx('sendFailedDraftKept', 'Send failed, draft kept'), 'error');
     } else {
       setStickToBottom(true);
@@ -1043,7 +1050,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
         const next = base ? `${base}\n\n${blocks}` : blocks;
         handleTextChange(next);
         const notice = buildTextChoiceNotice(batch.texts);
-        if (notice) setAttachNotice(notice);
+        if (notice) setAttachNotice(localizeAttachmentMessage(notice, tx) || notice);
       }
 
       if (batch.errors.length > 0) {
@@ -1051,9 +1058,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
         // must reach the user as the friendly attach fallback, not as raw text.
         showActionToast(
           batch.errors
-            .map((err) =>
-              plainResultLine(err, tx('attachFailed', 'Could not add those files. Nothing was attached.'), tx)
-            )
+            .map((err) => localizeAttachmentMessage(err, tx) || plainResultLine(err, tx('attachFailed', 'Could not add those files. Nothing was attached.'), tx))
             .join('\n'),
           'error'
         );
@@ -1165,7 +1170,12 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           showActionToast(tx('voiceFailed', 'Voice dictation failed. Try again.'), 'error');
         }
       };
-      recognition.onend = () => setIsListening(false);
+      recognition.onend = () => {
+        setIsListening(false);
+        // Terminal state: a stale non-null ref would let a later stop tap
+        // call stop() on a dead recognizer while a new one is starting.
+        if (recognitionRef.current === recognition) recognitionRef.current = null;
+      };
 
       recognitionRef.current = recognition;
       recognition.start();
@@ -1214,6 +1224,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       }
       stopNative();
       setSpeakingMsgId(null);
+      ttsSeqRef.current += 1;
       return;
     }
 
@@ -1223,6 +1234,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       /* ignore */
     }
     stopNative();
+    ttsSeqRef.current += 1;
     const cleanText = sanitizeForSpeech(content);
     if (!cleanText) {
       showActionToast(tx('nothingToSpeak', 'Nothing to read in this message.'), 'info');
@@ -1249,27 +1261,55 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     // Native bridge when the WebView itself cannot speak and the plugin ships
     // TTS. The promise resolves when the utterance is queued, not finished,
     // so the speaking badge clears there; the toggle above still stops it.
-    // Prefer native TTS when the WebView cannot speak OR has no voices
-    // (typical Android WebView): speaking voiceless says nothing.
-    const webVoiceless =
-      !window.speechSynthesis || window.speechSynthesis.getVoices().length === 0;
-    if (webVoiceless && bridge && typeof bridge.ttsSpeak === 'function') {
-      setSpeakingMsgId(msgId);
-      if (truncated) showActionToast(tx('ttsTruncated', 'Long message: reading the first part aloud'), 'info');
-      bridge
-        .ttsSpeak({ text: spoken, locale })
-        .catch(() => {
-          showActionToast(tx('ttsFailed', 'Could not read this message aloud.'), 'error');
-        })
-        .finally(() => {
-          setSpeakingMsgId((cur) => (cur === msgId ? null : cur));
-        });
-      return;
-    }
-    if (!window.speechSynthesis) {
-      // No web voice and no native bridge yet: say so instead of going silent.
-      showActionToast(tx('ttsUnsupported', 'Read aloud is not supported on this device.'), 'error');
-      return;
+    // Route only after voices settle (bounded): getVoices() starts empty in
+    // most WebViews, and branching on that first snapshot misroutes speech
+    // (native instead of web, or voiceless instead of native). route() always
+    // runs async, after the utterance helpers below are initialized.
+    const seq = ttsSeqRef.current;
+    const route = () => {
+      if (seq !== ttsSeqRef.current) return;
+      const webVoiceless =
+        !window.speechSynthesis || window.speechSynthesis.getVoices().length === 0;
+      if (webVoiceless && bridge && typeof bridge.ttsSpeak === 'function') {
+        setSpeakingMsgId(msgId);
+        if (truncated) showActionToast(tx('ttsTruncated', 'Long message: reading the first part aloud'), 'info');
+        bridge
+          .ttsSpeak({ text: spoken, locale })
+          .catch(() => {
+            showActionToast(tx('ttsFailed', 'Could not read this message aloud.'), 'error');
+          })
+          .finally(() => {
+            setSpeakingMsgId((cur) => (cur === msgId ? null : cur));
+          });
+        return;
+      }
+      if (!window.speechSynthesis) {
+        // No web voice and no native bridge yet: say so instead of going silent.
+        showActionToast(tx('ttsUnsupported', 'Read aloud is not supported on this device.'), 'error');
+        return;
+      }
+      speakOrWait();
+    };
+    try {
+      const voices = window.speechSynthesis?.getVoices?.() || [];
+      if (voices.length > 0) {
+        queueMicrotask(route);
+      } else {
+        let settled = false;
+        const go = () => {
+          if (settled) return;
+          settled = true;
+          route();
+        };
+        try {
+          window.speechSynthesis.addEventListener('voiceschanged', go, { once: true });
+        } catch {
+          /* older WebViews take no options; the timeout below still fires */
+        }
+        window.setTimeout(go, 800);
+      }
+    } catch {
+      queueMicrotask(route);
     }
 
     const utter = new SpeechSynthesisUtterance(spoken);
@@ -1305,30 +1345,12 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
         /* ignore */
       }
     };
-    // Voices load async in the WebView: an empty list now can fill a moment
-    // later, and speaking voiceless is what silently says nothing. Wait once
-    // for voiceschanged instead, with a bounded fallback that speaks anyway.
-    try {
-      const voices = window.speechSynthesis.getVoices?.() || [];
-      if (voices.length > 0) {
-        speakWithVoice();
-      } else {
-        let done = false;
-        const finish = () => {
-          if (done) return;
-          done = true;
-          speakWithVoice();
-        };
-        try {
-          window.speechSynthesis.addEventListener('voiceschanged', finish, { once: true });
-        } catch {
-          /* older WebViews take no options; the timeout below still fires */
-        }
-        window.setTimeout(finish, 800);
-      }
-    } catch {
+    // Voices already settled in route(): speak at once, unless a cancel or a
+    // newer request bumped the seq while routing.
+    const speakOrWait = () => {
+      if (seq !== ttsSeqRef.current) return;
       speakWithVoice();
-    }
+    };
   };
 
   const handleCopy = async (id: string, content: string) => {
@@ -1823,7 +1845,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
         <div
           role={toastKind === 'error' ? 'alert' : 'status'}
           aria-live={toastKind === 'error' ? 'assertive' : 'polite'}
-          className={`fixed top-16 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] px-4 py-3 r-sm elev-2 t-caption font-semibold max-w-[90vw] break-words ${toastClass}`}
+          className={`fixed top-[calc(4rem+env(safe-area-inset-top,0px))] start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] px-4 py-3 r-sm elev-2 t-caption font-semibold max-w-[90vw] break-words ${toastClass}`}
         >
           {actionToast}
         </div>
@@ -1925,13 +1947,13 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             </div>
 
             {/* Hacker-style suggestion strip: one line, tiny mono, horizontal scroll */}
-            <div className="flex gap-1.5 w-full max-w-md pt-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <div className="flex gap-1.5 w-full max-w-md pt-2 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [mask-image:linear-gradient(to_right,transparent,black_12px,black_calc(100%-12px),transparent)]">
               {starterChips.map((chip, idx) => (
                 <button
                   key={idx}
                   onClick={() => quickSend(chip)}
                   title={chip}
-                  className="hack-chip shrink-0 px-2 py-1 r-sm bg-[var(--app-success-subtle)] border border-[var(--app-success-border)] font-mono text-[10px] leading-4 text-[var(--app-success)] text-start transition hover:brightness-125 cursor-pointer max-w-[220px] overflow-hidden text-ellipsis"
+                  className="hack-chip shrink-0 px-2 py-1 r-sm bg-[var(--app-success-subtle)] border border-[var(--app-success-border)] font-mono text-[0.625rem] leading-4 text-[var(--app-success)] text-start transition hover:brightness-125 cursor-pointer max-w-[220px] overflow-hidden text-ellipsis"
                 >
                   {chip}
                 </button>
@@ -2276,7 +2298,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           role="toolbar"
           aria-label={tx('slashCommandsLabel', 'Slash commands')}
           onFocus={() => setComposerFocused(true)}
-          className="mb-2 shrink-0 flex gap-1.5 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className="mb-2 shrink-0 flex gap-1.5 overflow-x-auto whitespace-nowrap [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [mask-image:linear-gradient(to_right,transparent,black_12px,black_calc(100%-12px),transparent)]"
         >
           {slashRailCommands.map((cmd) => {
             const blocked = streaming && (cmd.kind === 'message' || !!cmd.blockedWhileStreaming);
@@ -2293,7 +2315,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                 aria-label={`${cmd.label}: ${
                   blocked ? tx('stopTurnFirst', 'Stop the current turn first.') : cmd.hint
                 }`}
-                className={`hack-chip shrink-0 px-2 py-1 r-sm font-mono text-[10px] leading-4 border transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                className={`hack-chip shrink-0 px-2 py-1 r-sm font-mono text-[0.625rem] leading-4 border transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                   cmd.kind === 'message'
                     ? 'bg-[var(--app-info-subtle)] border-[var(--app-info-border)] text-[var(--app-info)]'
                     : 'bg-[var(--app-success-subtle)] border-[var(--app-success-border)] text-[var(--app-success)]'

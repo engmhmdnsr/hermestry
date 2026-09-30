@@ -269,8 +269,8 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = memo(
       }
     };
 
-    // The full model id is always shown, never truncated: it wraps instead
-    // of crowding the clock out of the single info row, with no brackets.
+    // The model id is never cut mid-word visually: it truncates with ellipsis
+    // inside a capped badge while the full id stays in title for copy/read.
     const modelAndDuration = [modelLabel, durationLabel].filter(Boolean).join(' · ');
 
     return (
@@ -294,7 +294,7 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = memo(
             read-aloud on the end side for replies, always visible. User turns
             keep a tight YOU + clock line. */}
         {isUser ? (
-          <div className="w-full flex items-center [justify-content:end] gap-2 mb-1 pe-1 text-[11px] font-medium text-[var(--app-chat-violet-light)]">
+          <div className="w-full flex items-center [justify-content:end] gap-2 mb-1 pe-1 text-[0.6875rem] font-medium text-[var(--app-chat-violet-light)]">
             <span className="tracking-wider uppercase font-semibold text-[var(--app-chat-violet-light)]">
               {tx('you', 'You')}
             </span>
@@ -309,12 +309,12 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = memo(
               >
                 <Zap className="w-3 h-3 fill-current" />
               </span>
-              <span className="text-[11px] font-bold uppercase tracking-wider text-[var(--app-chat-violet-light)] truncate max-w-[110px]">
+              <span className="text-[0.6875rem] font-bold uppercase tracking-wider text-[var(--app-chat-violet-light)] truncate max-w-[110px]">
                 {tx('hermesAgent', 'Hermes Agent')}
               </span>
               {modelLabel && (
                 <span
-                  className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded border border-[var(--app-chat-violet)]/40 bg-[var(--app-chat-violet)]/20 text-[var(--app-chat-violet-light)] whitespace-nowrap shrink-0 max-w-[120px] truncate"
+                  className="text-[0.5625rem] font-mono uppercase px-1.5 py-0.5 rounded border border-[var(--app-chat-violet)]/40 bg-[var(--app-chat-violet)]/20 text-[var(--app-chat-violet-light)] whitespace-nowrap shrink-0 max-w-[120px] truncate"
                   dir="ltr"
                   title={estimated ? `${modelAndDuration}. ${estimatedHint}` : modelAndDuration}
                 >

@@ -90,6 +90,52 @@ export function plainResultLine(raw, fallback, tx = englishOnly) {
         return fallback;
     return s;
 }
+// Attachment service errors arrive as English sentences with a filename.
+// Map the known shapes to localized templates so the Arabic UI never shows
+// raw English; unknown shapes fall back to the generic failure upstream.
+export function localizeAttachmentMessage(raw, tx = englishOnly) {
+    const s = (raw || '').trim();
+    if (!s)
+        return null;
+    const fill = (key, fb, vars) => {
+        let out = tx(key, fb);
+        for (const [k, v] of Object.entries(vars))
+            out = out.split(`{${k}}`).join(v);
+        return out;
+    };
+    // Multi-file notices join one line per file: localize each line.
+    if (s.includes('\n')) {
+        const lines = s.split('\n').map((l) => localizeAttachmentMessage(l, tx) || l);
+        return lines.join('\n');
+    }
+    let m = /^Unsupported image type:\s*(.+?)\s*\(JPEG, PNG, WebP, GIF only\)\s*$/.exec(s);
+    if (m)
+        return fill('attachErrImageType', '{file} is not a supported image (JPEG, PNG, WebP, GIF only).', {
+            file: m[1],
+        });
+    m = /^Empty file:\s*(.+?)\s*$/.exec(s);
+    if (m)
+        return fill('attachErrEmpty', '{file} is empty.', { file: m[1] });
+    m = /^Unsupported file type:\s*(.+?)\s*\(images and /.exec(s);
+    if (m)
+        return fill('attachErrFileType', '{file} is not a supported file (images and .txt/.md/.csv/.json only).', { file: m[1] });
+    m = /^(.+?) is still .+ after compression \(limit .+\)\s*$/.exec(s);
+    if (m)
+        return fill('attachErrCompress', '{file} is still too big after compression.', {
+            file: m[1],
+        });
+    m = /^(.+?) is .+ \(limit .+\)\s*$/.exec(s);
+    if (m)
+        return fill('attachErrTooBig', '{file} is too big for the limit.', { file: m[1] });
+    m = /^(.+?): included (\d+), omitted ~(\d+)\s*$/.exec(s);
+    if (m)
+        return fill('attachNoticeTruncated', '{file}: kept {inc} chars, skipped ~{omit}.', {
+            file: m[1],
+            inc: m[2],
+            omit: m[3],
+        });
+    return null;
+}
 // Service-layer entry point: turn a thrown value into plain copy. The gateway
 // service calls this so a raw transport or platform message is never composed
 // into a result the UI might render.

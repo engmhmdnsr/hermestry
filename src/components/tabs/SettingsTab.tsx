@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { CapacitorHttp } from '@capacitor/core';
 import {
   Eye,
   EyeOff,
@@ -33,6 +34,7 @@ import {
   providerLabel,
   DEFAULT_MODELS,
   keysValid,
+  PROVIDER_DEFAULT_BASE_URL,
 } from '../../constants/providers';
 import { THEME_PALETTES, ThemeMode } from '../../constants/themes';
 import { LANGUAGES } from '../../constants/languages';
@@ -682,6 +684,9 @@ export const SettingsTab: React.FC = () => {
   // empty-but-live with a reason. The note renders inside the modal and the
   // View button drops its ratio until a real catalog confirms it.
   const [skillsNote, setSkillsNote] = useState<string>('');
+  // Same honest-reason pattern as skills: a dead blueprints route must not
+  // present as "no routines".
+  const [blueprintsNote, setBlueprintsNote] = useState<string>('');
   // Dead-switch latches: when the gateway is up but a toggle route is
   // absent (guaranteed failure), the switch disables with a plain reason
   // instead of inviting another doomed tap. A later success clears it.
@@ -1692,9 +1697,11 @@ export const SettingsTab: React.FC = () => {
       .then((res) => {
         setBlueprints(res.items);
         setBlueprintsState(listStateFrom(res.live, res.items.length));
+        setBlueprintsNote(res.error || '');
       })
       .catch(() => {
         setBlueprintsState(connected ? 'error' : 'offline');
+        setBlueprintsNote('');
       });
     return () => ctrl.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1752,13 +1759,36 @@ export const SettingsTab: React.FC = () => {
 
     const norm = normProvider(newProvType);
     const cleaned = newProvKey.trim();
-    const directBase = newProvBaseUrl.trim().replace(/\/+$/, '');
+    const directBase = (newProvBaseUrl.trim() || PROVIDER_DEFAULT_BASE_URL[norm] || '').replace(
+    /\/+$/,
+    ''
+  );
     // The on-device gateway has no key-validation route (POST
     // /api/providers/validate 404s there), so testing through it always
     // reports 'Hermes did not answer'. For OpenAI-compatible providers the
     // key is tested directly against the provider's own model catalog:
     // GET {baseUrl}/models with the key as bearer. 200 proves the key and
     // returns the real model list; 401/403 proves the key is refused.
+    // Direct provider GET that survives WebView CORS: CapacitorHttp runs on the
+    // native stack (no origin check); on web it falls back to fetch.
+    const directModelsFetch = async (url: string, key: string, signal: AbortSignal) => {
+      try {
+        const native = await CapacitorHttp.get({
+          url,
+          headers: { Authorization: `Bearer ${key}` },
+          connectTimeout: 15000,
+          readTimeout: 15000,
+        });
+        return {
+          ok: native.status >= 200 && native.status < 300,
+          status: native.status,
+          json: async () => native.data as unknown,
+        };
+      } catch {
+        const res = await fetch(url, { signal, headers: { Authorization: `Bearer ${key}` } });
+        return { ok: res.ok, status: res.status, json: () => res.json() };
+      }
+    };
     // Providers with their own auth scheme (Anthropic, Gemini) and an empty
     // base URL keep the gateway path below.
     const directEligible = !!directBase && norm !== 'anthropic' && norm !== 'gemini';
@@ -1766,10 +1796,7 @@ export const SettingsTab: React.FC = () => {
       try {
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), 15000);
-        const res = await fetch(`${directBase}/models`, {
-          signal: ctrl.signal,
-          headers: { Authorization: `Bearer ${cleaned}` },
-        });
+        const res = await directModelsFetch(`${directBase}/models`, cleaned, ctrl.signal);
         clearTimeout(timer);
         if (res.ok) {
           const data = await res.json().catch(() => null);
@@ -1918,7 +1945,7 @@ export const SettingsTab: React.FC = () => {
           ? t('skillEnabled')
           : t('skillDisabled')
         : connected
-          ? tx('toggleUnsupportedPlain', 'This server does not support that switch.')
+          ? `${tx('toggleUnsupportedPlain', 'This server does not support that switch.')}${service.lastToggleStatus ? ` (HTTP ${service.lastToggleStatus})` : ''}`
           : tx('opsUnreachablePlain', 'Hermes is not reachable, so that did not finish.'),
       ok ? 'info' : 'error'
     );
@@ -1940,7 +1967,7 @@ export const SettingsTab: React.FC = () => {
             ? tx('memoryEnabledToast', 'Memory enabled')
             : tx('memoryDisabledToast', 'Memory disabled')
           : connected
-            ? tx('toggleUnsupportedPlain', 'This server does not support that switch.')
+            ? `${tx('toggleUnsupportedPlain', 'This server does not support that switch.')}${service.lastToggleStatus ? ` (HTTP ${service.lastToggleStatus})` : ''}`
             : tx('opsUnreachablePlain', 'Hermes is not reachable, so that did not finish.'),
         ok ? 'info' : 'error'
       );
@@ -2026,7 +2053,7 @@ export const SettingsTab: React.FC = () => {
         <div
           role="status"
           aria-live="polite"
-          className={`fixed top-16 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[200] max-w-[min(90vw,28rem)] text-center px-4 py-2 r-sm elev-2 hairline t-label pointer-events-none animate-in fade-in slide-in-from-top-2 ${
+          className={`fixed top-[calc(4rem+env(safe-area-inset-top,0px))] start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[200] max-w-[min(90vw,28rem)] text-center px-4 py-2 r-sm elev-2 hairline t-label pointer-events-none animate-in fade-in slide-in-from-top-2 ${
             toast.tone === 'error'
               ? 'bg-[var(--app-danger-subtle)] text-[var(--app-danger)]'
               : toast.tone === 'success'
@@ -2972,7 +2999,7 @@ export const SettingsTab: React.FC = () => {
             <Switch
               checked={Boolean(memory?.enabled)}
               onChange={() => void handleToggleMemory(!memory?.enabled)}
-              disabled={memoryToggling || memoryState === 'loading' || memoryToggleDead}
+              disabled={memoryToggling || memoryToggleDead || memoryState !== 'ready'}
               ariaLabel={`${tx('memoryTitlePlain', 'Memory')}: ${memory?.enabled ? t('active') : t('disabled')}`}
             />
           </div>
@@ -3009,6 +3036,7 @@ export const SettingsTab: React.FC = () => {
               state={blueprintsState}
               message={
                 blueprintsState === 'loading' ? tx('routinesLoadingPlain', 'Loading routines…') :
+                blueprintsState === 'empty' && blueprintsNote ? blueprintsNote :
                 blueprintsState === 'empty' ? tx('routinesEmptyPlain', 'No routines available.') :
                 blueprintsState === 'offline' ? tx('routinesOfflinePlain', 'Hermes is offline. Routines may be out of date.') :
                 blueprintsState === 'error' ? tx('routinesErrorPlain', 'Routines could not load.') :

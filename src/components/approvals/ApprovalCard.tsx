@@ -76,14 +76,14 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
 
   const neutralBtn = 'bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] text-[var(--app-text-muted)] edge';
   const denyCls = destructive
-    ? 'bg-[var(--app-danger)] hover:brightness-110 text-[var(--app-bg)]'
+    ? 'bg-[var(--app-danger)] hover:brightness-110 text-[var(--app-on-danger)]'
     : neutralBtn;
   const allowOnceCls = destructive
     ? neutralBtn
     : 'bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)]';
   const allowSessionCls = destructive
     ? neutralBtn
-    : 'bg-[var(--app-success)] hover:brightness-110 text-[var(--app-bg)]';
+    : 'bg-[var(--app-success)] hover:brightness-110 text-[var(--app-on-success)]';
 
   return (
     <div

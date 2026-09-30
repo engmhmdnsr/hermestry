@@ -269,7 +269,7 @@ export const App: React.FC = () => {
     () => typeof window !== 'undefined' && window.matchMedia('(min-width: 1280px)').matches
   );
   // Keyboard open = hide the bottom nav so it never crowds the composer.
-  // Same 80px floor ChatTab uses: URL bar shifts are not a keyboard.
+  // Same 120px floor the keyboard detector uses: URL bar shifts are not a keyboard.
   const [keyboardOpen, setKeyboardOpen] = useState(false);
 
   useEffect(() => {
@@ -407,7 +407,7 @@ export const App: React.FC = () => {
 
   return (
     <div
-      className="h-screen h-[100dvh] w-screen flex overflow-hidden font-sans bg-[var(--app-bg)] text-[var(--app-text)] selection:bg-[var(--app-accent-subtle)] selection:text-[var(--app-accent-text)]"
+      className="h-screen h-[100dvh] w-full flex overflow-hidden font-sans bg-[var(--app-bg)] text-[var(--app-text)] selection:bg-[var(--app-accent-subtle)] selection:text-[var(--app-accent-text)]"
     >
       {/* Desktop 3-Panel: Left Sidebar */}
       {isDesktop && (

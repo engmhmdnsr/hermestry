@@ -1,5 +1,10 @@
 @import "tailwindcss";
 
+/* data-mode is the single source of truth for light/dark (see
+   applyTheme): remap Tailwind's `dark:` variant onto it, otherwise
+   `dark:` follows prefers-color-scheme and ignores the in-app theme. */
+@custom-variant dark (&:where([data-mode='dark'], [data-mode='dark'] *));
+
 /* ==========================================================================
    DESIGN VOCABULARY: USAGE CONTRACT (read this before styling anything)
    Text: .t-* only (display/title/heading/body/label/caption/micro). Never

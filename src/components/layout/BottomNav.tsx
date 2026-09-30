@@ -152,7 +152,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentTab, onSelectTab })
                 // 4 columns on a 360dp screen is ~88px each: a long translated
                 // label must ellipsis inside its own column instead of running
                 // under the neighbouring tab.
-                className={`font-mono text-[11px] leading-none tracking-tight mt-1 whitespace-nowrap truncate transition-colors ${
+                className={`font-mono text-[0.6875rem] leading-none tracking-tight mt-1 whitespace-nowrap truncate transition-colors ${
                   isActive ? 'font-bold' : 'font-medium text-[var(--app-text-muted)]'
                 }`}
                 style={isActive ? { color: tab.hue } : undefined}
