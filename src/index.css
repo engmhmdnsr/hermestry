@@ -7,6 +7,19 @@
    every border, .elev-0..3 for every shadow, .pill-* for every status badge.
    Color: var(--app-*) tokens only. Never a raw hex, never a Tailwind palette
    color (indigo rose amber emerald sky teal cyan violet red). Space in 4px.
+
+   FROZEN TYPE SCALE: one hierarchy, seven steps, rem only, every step follows
+   the html font-size that --font-scale drives:
+     t-display  1.75rem   / 2.125rem  700
+     t-title    1.375rem  / 1.75rem   600
+     t-heading  1.0625rem / 1.5rem    600
+     t-body     0.9375rem / 1.375rem  400
+     t-label    0.8125rem / 1.125rem  500
+     t-caption  0.75rem   / 1rem      500
+     t-micro    0.6875rem / 16px      600  (uppercase microlabel)
+   No eighth step, no px font sizes, no text-xs, no text-[Npx]. The full
+   frozen spec (type, spacing, shape, colour roles, depth) is repeated at the
+   end of this file.
    ========================================================================== */
 
 @layer base {
@@ -17,17 +30,28 @@
        documentElement once settings load; they exist so the first frame is
        already correct instead of flashing. Every token below is also defined
        for light in the [data-mode="light"] block, so nothing is dark-only. */
+    /* Surface ladder, measured against --app-bg with WCAG relative luminance:
+       bg 1.00, card 1.25, card-subtle 1.35, card-hover 1.44, .edge (indigo at
+       0.30 alpha) 1.59. The rungs stop at the luminance ceiling where
+       --app-text-dim still clears 4.5:1 (4.51 on card-hover), so no surface
+       can push secondary text below AA. Depth comes from this tone ladder plus
+       the 1px top hairline inside .elev-*, never from a drop shadow: black
+       over this bg measures 1.03:1. Values are mirrored in themes.ts
+       (THEME_PALETTES[0].dark). */
     --app-bg: #090B14;
     --app-sidebar: #06070E;
-    --app-card: #0E1222;
-    --app-card-subtle: #14182E;
-    --app-card-hover: #1B203C;
-    --app-border: rgba(129, 140, 248, 0.16);
+    --app-card: #1A2140;
+    --app-card-subtle: #1F2749;
+    --app-card-hover: #232B52;
+    --app-border: rgba(129, 140, 248, 0.30);
     --app-border-subtle: rgba(255, 255, 255, 0.06);
-    --app-accent: #6366F1;
-    --app-accent-hover: #4F46E5;
-    --app-accent-subtle: rgba(99, 102, 241, 0.16);
-    --app-accent-border: rgba(99, 102, 241, 0.45);
+    /* accent is a FILL token (primary buttons, bars, rings). Its text and
+       active-nav counterpart is --app-accent-text. White on this fill is
+       6.29:1, which is what clears AA for a 13px/600 label. */
+    --app-accent: #4F46E5;
+    --app-accent-hover: #4338CA;
+    --app-accent-subtle: rgba(79, 70, 229, 0.16);
+    --app-accent-border: rgba(79, 70, 229, 0.5);
     --app-accent-text: #A5B4FC;
     --app-text: #F8FAFC;
     --app-text-muted: #94A3B8;
@@ -45,6 +69,56 @@
     --app-info: #7DD3FC;
     --app-info-subtle: rgba(125, 211, 252, 0.12);
     --app-info-border: rgba(125, 211, 252, 0.35);
+    /* Chat thread identity, ported from the Control app: replies sit on a
+       dark teal card with a muted teal edge, your turns on a deep plum card
+       with a vivid purple edge, and the thread itself on pure black so both
+       bubble hues pop. Palette-independent on purpose: the thread always
+       reads as the same product. Light mirrors are powder tints. */
+    --app-chat-bg: #000000;
+    --app-chat-agent-bg: #0D2231;
+    --app-chat-agent-border: rgba(6, 182, 212, 0.35);
+    --app-chat-user-bg: #23143F;
+    --app-chat-user-border: rgba(139, 92, 246, 0.5);
+    --app-chat-violet: #8B5CF6;
+    --app-chat-violet-light: #A78BFA;
+    --app-chat-you: #06B6D4;
+    /* Composer and chrome identity, ported from the Control app: the input
+       card, its chips and pills, the send-off state, and the bottom nav
+       strip. Fixed product hues, not palette accents. */
+    --app-composer-bg: #131823;
+    --app-composer-border: #263345;
+    --app-chip-bg: #1B2332;
+    --app-chip-border: #323F54;
+    --app-chip-border-strong: #384961;
+    --app-send-off-bg: #1C2230;
+    --app-send-off-border: #2E384D;
+    --app-nav-bg: #11161D;
+    --app-nav-border: #1F2937;
+    --app-tab-home: #06B6D4;
+    --app-tab-home-soft: rgba(6, 182, 212, 0.2);
+    --app-tab-chat: #8B5CF6;
+    --app-tab-chat-soft: rgba(139, 92, 246, 0.2);
+    --app-tab-jobs: #F59E0B;
+    --app-tab-jobs-soft: rgba(245, 158, 11, 0.2);
+    --app-tab-settings: #06B6D4;
+    --app-tab-settings-soft: rgba(6, 182, 212, 0.2);
+    --app-tab-terminal: #34D399;
+    --app-tab-terminal-soft: rgba(52, 211, 153, 0.2);
+    /* Terminal surface identity, ported from the Control app's terminal
+       screen: near-black stack (page, header, console, cards) with hacker
+       green prompt text and cyan quick pills. */
+    --app-term-bg: #080B10;
+    --app-term-header-bg: #070B12;
+    --app-term-console: #05080C;
+    --app-term-card: #090E18;
+    --app-term-card-border: #161F30;
+    --app-term-divider: #141C2B;
+    --app-term-green: #34D399;
+    --app-term-output: #D1D5DB;
+    --app-term-pill-bg: #161E30;
+    --app-term-pill-border: #23304A;
+    --app-term-key-bg: #121826;
+    --app-term-key-border: #202C42;
 
     /* Solid status surfaces plus the text/icon that sits on them, the
        on-accent ink, and the modal backdrop. These existed only as hand
@@ -53,7 +127,7 @@
        --app-on-accent, shared for the solid status set) and every one is
        defined for both modes. Contrast, WCAG AA for text on its own fill:
        #FFFFFF on #E11D48 4.70, on #047857 5.48, on #0369A1 5.93, on #B45309
-       5.02; #FFFFFF on this palette's accent #6366F1 is 4.47 (see themes.ts).
+       5.02; #FFFFFF on this palette's accent #4F46E5 is 6.29 (see themes.ts).
        --app-scrim is the one backdrop wash for every overlay: soft neutral on
        dark surfaces, a stronger slightly blue-black wash on light pages so a
        cream page never looks broken behind a modal. */
@@ -107,7 +181,11 @@
     --app-accent-text: #4338CA;
     --app-text: #0F172A;
     --app-text-muted: #475569;
-    --app-text-dim: #64748B;
+    /* Dim is the tertiary step and must still clear AA on the light bg:
+       #5F6E85 is 4.73:1 here (5.18 on card, 4.60 on card-hover), where the
+       old #64748B was 4.34:1. It stays lighter than text-muted, so the
+       three-step text hierarchy keeps its order. */
+    --app-text-dim: #5F6E85;
     --app-input-bg: #FFFFFF;
     --app-success: #047857;
     --app-success-subtle: #ECFDF5;
@@ -121,6 +199,45 @@
     --app-info: #0369A1;
     --app-info-subtle: #F0F9FF;
     --app-info-border: #BAE6FD;
+    --app-chat-bg: #FFFFFF;
+    --app-chat-agent-bg: #E6F2F5;
+    --app-chat-agent-border: #9AC7D4;
+    --app-chat-user-bg: #F1E9FB;
+    --app-chat-user-border: #C4B5FD;
+    --app-chat-violet: #7C3AED;
+    --app-chat-violet-light: #8B5CF6;
+    --app-chat-you: #0E7490;
+    --app-composer-bg: #FFFFFF;
+    --app-composer-border: #CBD5E1;
+    --app-chip-bg: #F1F5F9;
+    --app-chip-border: #CBD5E1;
+    --app-chip-border-strong: #94A3B8;
+    --app-send-off-bg: #F1F5F9;
+    --app-send-off-border: #E2E8F0;
+    --app-nav-bg: #FFFFFF;
+    --app-nav-border: #E2E8F0;
+    --app-tab-home: #0891B2;
+    --app-tab-home-soft: rgba(8, 145, 178, 0.14);
+    --app-tab-chat: #7C3AED;
+    --app-tab-chat-soft: rgba(124, 58, 237, 0.12);
+    --app-tab-jobs: #D97706;
+    --app-tab-jobs-soft: rgba(217, 119, 6, 0.14);
+    --app-tab-settings: #0891B2;
+    --app-tab-settings-soft: rgba(8, 145, 178, 0.14);
+    --app-tab-terminal: #059669;
+    --app-tab-terminal-soft: rgba(5, 150, 105, 0.14);
+    --app-term-bg: #F8FAFC;
+    --app-term-header-bg: #FFFFFF;
+    --app-term-console: #FFFFFF;
+    --app-term-card: #F1F5F9;
+    --app-term-card-border: #E2E8F0;
+    --app-term-divider: #E2E8F0;
+    --app-term-green: #059669;
+    --app-term-output: #334155;
+    --app-term-pill-bg: #F1F5F9;
+    --app-term-pill-border: #CBD5E1;
+    --app-term-key-bg: #F1F5F9;
+    --app-term-key-border: #CBD5E1;
     /* Light mirrors of the solid status set. Same hues as dark on purpose (a
        destructive red and a success green must read the same in both modes and
        on every palette), but the backdrop wash is stronger here so a light
@@ -141,6 +258,19 @@
 
   [data-mode="dark"] {
     color-scheme: dark;
+  }
+
+  /* Brand mark: black diamond on light theme, white diamond on dark theme.
+     Both <img> render; data-mode (single source of truth, see themes.ts)
+     decides which one shows. */
+  .brand-logo-dark {
+    display: none;
+  }
+  html[data-mode="dark"] .brand-logo-light {
+    display: none;
+  }
+  html[data-mode="dark"] .brand-logo-dark {
+    display: block;
   }
 
   html {
@@ -176,10 +306,11 @@
 
 /* ==========================================================================
    VOCABULARY: TYPE SCALE
-   One hierarchy, seven steps. The rem values are deliberate: they inherit the
-   html font-size set from --font-scale, so the Chat font scale setting keeps
-   working for all app text. .t-micro is the one fixed step (11px) because it
-   is a fixed-purpose uppercase microlabel. No text-xs / text-[Npx].
+   One hierarchy, seven steps, frozen in the file header comment above. Every
+   step is a rem value, so all of them inherit the html font-size set from
+   --font-scale and the Chat font scale setting keeps working for ALL app text
+   including .t-micro (0.6875rem, which used to be a fixed 11px that ignored
+   font scaling). No text-xs / text-[Npx].
    ========================================================================== */
 .t-display {
   font-size: 1.75rem;
@@ -213,8 +344,8 @@
   font-weight: 500;
 }
 .t-micro {
-  font-size: 11px;
-  line-height: 16px;
+  font-size: 0.6875rem;
+  line-height: 1rem;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -223,8 +354,14 @@
 /* ==========================================================================
    VOCABULARY: RADIUS, BORDERS, ELEVATION
    Four radii, two borders, four depths. Depth follows stacking order: resting
-   surfaces elev-0/elev-1, raised menus and sheets elev-2, overlays, modals and
-   toasts elev-3.
+   surfaces elev-0, panels that need a separation edge elev-1, raised menus and
+   toast internals elev-2, overlays, modals and sheets elev-3.
+
+   Shadow physics: a black drop shadow over --app-bg #090B14 measures 1.03:1,
+   so on dark a shadow alone never showed an edge. Each raised step therefore
+   carries two signals: a deeper dark drop shadow (it reads on light pages) and
+   a 1px top hairline highlight (it reads on dark, 1.19 to 1.35 against
+   --app-card). The surface tone ladder in the token block carries the rest.
    ========================================================================== */
 .r-xs { border-radius: var(--r-xs); }
 .r-sm { border-radius: var(--r-sm); }
@@ -240,9 +377,62 @@
 }
 
 .elev-0 { box-shadow: none; }
-.elev-1 { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18); }
-.elev-2 { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
-.elev-3 { box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6); }
+.elev-1 {
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+.elev-2 {
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.10);
+}
+.elev-3 {
+  box-shadow:
+    0 24px 64px rgba(0, 0, 0, 0.7),
+    0 2px 8px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.10);
+}
+
+/* Glassmorphism surfaces aligned to the design mockup (code.html) */
+.glass-nav {
+  background: color-mix(in srgb, var(--app-bg) 88%, transparent);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.glass-input-card {
+  background: color-mix(in srgb, var(--app-composer-bg) 92%, transparent);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--app-border-subtle);
+}
+
+.shadow-glow-purple {
+  box-shadow: 0 0 20px -2px color-mix(in srgb, var(--app-chat-violet) 45%, transparent);
+}
+
+.shadow-glow-cyan {
+  box-shadow: 0 0 16px -2px color-mix(in srgb, var(--app-chat-you) 30%, transparent);
+}
+
+/* Composer never draws a focus frame: no border shift, no ring, no glow. */
+.glass-input-card:focus-within {
+  border-color: var(--app-border-subtle);
+  box-shadow: none;
+  outline: none;
+}
+.glass-input-card textarea:focus {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: transparent !important;
+}
+
+/* Hacker-style suggestion chip: terminal prompt marker before the label. */
+.hack-chip::before {
+  content: '> ';
+  opacity: 0.7;
+}
 
 /* ==========================================================================
    VOCABULARY: STATUS PILLS
@@ -250,6 +440,9 @@
    Colors come from the --app-*-subtle / --app-* / --app-*-border triples; the
    neutral pill uses the card-subtle / text-muted / border-subtle triple and is
    the ONLY pill for Off, Disabled, Idle and unknown states (never green).
+   Geometry is on the 4px grid: 0.25rem 0.625rem padding (4px vertical was
+   3px, which broke the grid; 10px horizontal) and the same rem size as the
+   other micro text so pills track html font scaling.
    ========================================================================== */
 .pill-success,
 .pill-warning,
@@ -260,14 +453,17 @@
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  padding: 0.1875rem 0.5rem;
+  padding: 0.25rem 0.625rem;
   border-radius: var(--r-full);
   border: 1px solid transparent;
-  font-size: 11px;
+  font-size: 0.6875rem;
   line-height: 1rem;
   font-weight: 600;
   letter-spacing: 0.02em;
   white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .pill-success {
   background-color: var(--app-success-subtle);
@@ -371,9 +567,37 @@
   margin-left: auto !important;
 }
 
-/* Mirror directional icons */
+/* Mirror directional icons. `scale`, not `transform`, so a Tailwind rotate on
+   the same element survives: ThinkingBlock and ToolExecutionsBlock combine
+   -rotate-90 with rtl-flip, and two `transform` values would cascade with the
+   flip erasing the rotation. `rotate` and `scale` are independent properties
+   that compose (verified: v4 compiles rotate-* to the `rotate` property), so
+   the collapsed chevron still mirrors from right to left under RTL. */
 [dir="rtl"] .rtl-flip {
-  transform: scaleX(-1);
+  scale: -1 1;
+}
+
+/* Tracking and case: Arabic is a connected script with no letter case, so
+   letter-spacing reads as broken joins and uppercase invents spacing that is
+   not there. Everything under RTL drops tracking (this rule is unlayered, so
+   it also beats any Tailwind tracking-* utility, and inline styles still win
+   by design), and the helpers that force uppercase drop the transform too,
+   along with the .uppercase utility when it rides on translated labels. */
+[dir="rtl"] :where(*) {
+  letter-spacing: 0;
+}
+[dir="rtl"] .t-micro,
+[dir="rtl"] .pill-success,
+[dir="rtl"] .pill-warning,
+[dir="rtl"] .pill-danger,
+[dir="rtl"] .pill-info,
+[dir="rtl"] .pill-accent,
+[dir="rtl"] .pill-neutral {
+  letter-spacing: 0;
+  text-transform: none;
+}
+[dir="rtl"] :where(.uppercase) {
+  text-transform: none;
 }
 
 /* ==========================================================================
@@ -382,6 +606,20 @@
    entrance classes. These minimal keyframes plus utilities make those
    classes actually animate. Entrance only, 150 to 200ms.
    ========================================================================== */
+@keyframes hm-status-pulse {
+  0% { transform: scale(1); opacity: 0.75; }
+  70% { transform: scale(2.4); opacity: 0; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+
+.status-pulse {
+  animation: hm-status-pulse 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-pulse { animation: none; opacity: 0; }
+}
+
 @keyframes hm-fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -474,6 +712,52 @@
 }
 [dir="rtl"] .slide-in-from-right {
   animation-name: hm-slide-in-from-left;
+}
+
+/* Reduced motion: every entrance above becomes an instant state change.
+   The instant-switch tab rule is folded into this single block. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-in,
+  .fade-in,
+  .fade-out,
+  .slide-in-from-top-2,
+  .slide-in-from-bottom,
+  .slide-in-from-bottom-2,
+  .slide-in-from-bottom-4,
+  .slide-in-from-left,
+  .slide-in-from-right,
+  .animate-shake,
+  #main-content > * {
+    animation: none;
+  }
+  .transition,
+  #main-content {
+    transition: none;
+  }
+}
+
+/* Error shake for the PIN gate (AppLockGate animate-shake, which had no
+   keyframes until now). Kept beside the other keyframes so every animation
+   in the app has exactly one definition. */
+@keyframes hm-shake {
+  10%, 90% { transform: translateX(-1px); }
+  20%, 80% { transform: translateX(2px); }
+  30%, 50%, 70% { transform: translateX(-4px); }
+  40%, 60% { transform: translateX(4px); }
+}
+.animate-shake {
+  animation: hm-shake 0.5s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+
+/* Infinite working indicators (streaming dots, spinners, the PIN shake)
+   stop under reduced motion. Unlayered, so this beats the layered Tailwind
+   animate-* utilities without needing !important. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse,
+  .animate-spin,
+  .animate-shake {
+    animation: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -591,7 +875,9 @@
    backdrop-blur-xl -> blur-md, and remove blur from stacked modal/scrim
    backdrops (SessionsDrawer x3, JobsTab x2, SettingsTab x4, ChatTab x1). */
 @media (prefers-reduced-transparency: reduce) {
-  :where([class*="backdrop-blur"]) {
+  :where([class*="backdrop-blur"]),
+  .glass-nav,
+  .glass-input-card {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
@@ -652,6 +938,24 @@ body {
 .hm-rail::-webkit-scrollbar {
   display: none;
 }
+/* Masks are direction-blind: mirror the fade for RTL so the leading edge
+   is never clipped on the wrong side. */
+[dir='rtl'] .hm-rail {
+  -webkit-mask-image: linear-gradient(
+    to left,
+    transparent 0,
+    #000 12px,
+    #000 calc(100% - 20px),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to left,
+    transparent 0,
+    #000 12px,
+    #000 calc(100% - 20px),
+    transparent 100%
+  );
+}
 
 .hm-rail > * {
   scroll-snap-align: start;
@@ -682,3 +986,82 @@ body {
   position: absolute;
   inset: -8px;
 }
+
+/* Short landscape phones: the chat transcript keeps its own scroll and
+   compacts its rhythm so more of the conversation fits the height. The
+   transcript is the only surface using --app-chat-bg, so the substring
+   selector reaches it from here without touching ChatTab. Unlayered, so it
+   beats the layered space-y utility on the same property. */
+@media (max-height: 500px) and (orientation: landscape) {
+  #main-content [class*="app-chat-bg"] > :not([hidden]) ~ :not([hidden]) {
+    margin-block-start: 0.5rem;
+  }
+}
+
+/* ==========================================================================
+   FROZEN TOKEN SPEC (design token pass, 2026-09-29)
+   The contract components align to in the next pass. Contrast figures are
+   WCAG 2.x ratios, measured against the dark Midnight surface with the light
+   values in brackets where the two modes differ.
+   ---------------------------------------------------------------------------
+
+   TYPE SCALE: seven steps, rem only, every step follows html font-size, so
+   the Chat font scale setting scales all app text. Nothing else exists: no
+   text-xs, no text-[Npx], no 11px anywhere.
+     t-display  1.75rem   / 2.125rem  700
+     t-title    1.375rem  / 1.75rem   600
+     t-heading  1.0625rem / 1.5rem    600
+     t-body     0.9375rem / 1.375rem  400
+     t-label    0.8125rem / 1.125rem  500
+     t-caption  0.75rem   / 1rem      500
+     t-micro    0.6875rem / 16px      600  uppercase, 0.06em tracking
+   Under [dir="rtl"] every tracking value is 0 and uppercase is dropped, so
+   Arabic stays joined and case-free.
+
+   SPACING: 4px grid, the steps are 4, 8, 12, 16, 20, 24, 32px
+   (0.25, 0.5, 0.75, 1, 1.25, 1.5, 2rem).
+     card padding p-4 for lists, p-5 for hero surfaces, never p-6 on r-md
+     .pill-* padding 0.25rem 0.625rem (4px vertical, 10px horizontal)
+     hit targets: 44px minimum, 48px for wizard primaries, .hm-hit under 36px
+     controls
+
+   SHAPE: four radii plus full.
+     --r-xs 8px (icon boxes), --r-sm 12px (buttons, inputs, list rows),
+     --r-md 16px (cards, menus, dialogs), --r-lg 24px (bottom sheets),
+     --r-full 9999px (pills, dots, avatars). --radius-* aliases are legacy
+     only.
+
+   COLOUR ROLES: one job each, never a raw hex in a component.
+     --app-bg            page field, the 1.00 reference
+     --app-card          raised surface, 1.25 on bg [1.09 in light]
+     --app-card-subtle   quiet fill, 1.35 on bg
+     --app-card-hover    hover and selected fill, 1.44 on bg. This is also the
+                         luminance ceiling: --app-text-dim still clears 4.51
+                         on it, and no surface may go lighter than this until
+                         the dim token is re-checked
+     --app-border        .edge, 0.30 alpha indigo, 1.59 on bg [solid in light]
+     --app-border-subtle .hairline and dividers, 0.06 white
+     --app-accent        solid fill only: primary buttons, progress bars,
+                         rings. White on it is 6.29 in both modes
+     --app-accent-hover  one step deeper fill, white 7.90 in dark
+     --app-accent-text   accent used as TEXT and for active nav on dark
+                         surfaces, #A5B4FC, 7.89 on card. Never a fill
+     --app-accent-subtle tint fill, --app-accent-border its edge
+     --app-on-accent     ink on --app-accent (white on indigo), never on dark
+     --app-text          primary text, 15.03 on card
+     --app-text-muted    secondary text, 6.13 on card, 5.32 on card-hover
+     --app-text-dim      tertiary text, AA floor 4.5 on every surface: 6.49
+                         on bg dark, 4.73 on bg light (was 4.34)
+     --app-success/-warning/-danger/-info with their -subtle and -border
+                         siblings: status colour triplets, always paired with
+                         text, never a bare dot. The -solid plus --app-on-*
+                         pair is for filled banners only
+     --app-input-bg      field interior only
+     --app-scrim         the one overlay wash
+
+   DEPTH: elev-0 resting, elev-1 panels, elev-2 raised menus and tooltips,
+   elev-3 sheets, modals and toasts. Every raised step is a dark drop shadow
+   (it reads on light pages) plus a 1px top hairline (it reads on dark, 1.19
+   to 1.35 on card). A shadow alone measures 1.03 on this bg and cannot carry
+   depth; the surface ladder does that.
+   ========================================================================== */

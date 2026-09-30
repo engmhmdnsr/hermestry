@@ -67,6 +67,8 @@ export interface TextFileResult {
 
 export interface BatchOptions {
   imageCountAlreadyAttached?: number;
+  /** Compressed payload bytes already staged, so the total cap accumulates across batches. */
+  imagePayloadBytesAlreadyAttached?: number;
   textMaxChars?: number;
   allowTextIncludeAll?: boolean;
   signal?: AbortSignal;
@@ -141,7 +143,7 @@ export function validateTextFile(file: File): { ok: true } | { ok: false; reason
   if (desc.kind !== 'text') {
     return {
       ok: false,
-      reason: `Unsupported file type: ${file.name} (images and .txt/.md/.csv/.json only)`,
+      reason: `Unsupported file type: ${file.name} (images and .txt/.md/.markdown/.csv/.json only)`,
     };
   }
   if (!Number.isFinite(file.size) || file.size <= 0) {
@@ -390,7 +392,9 @@ export async function processAttachBatch(
           continue;
         }
         const img = await processImageFile(file, opts.signal);
-        const running = totalPayloadBytes([...out.images.map((i) => i.dataUrl), img.dataUrl]);
+        const running =
+          (opts.imagePayloadBytesAlreadyAttached ?? 0) +
+          totalPayloadBytes([...out.images.map((i) => i.dataUrl), img.dataUrl]);
         if (running > MAX_TOTAL_IMAGE_PAYLOAD_BYTES) {
           out.errors.push(
             `${file.name} would exceed the total image payload cap (${formatBytes(MAX_TOTAL_IMAGE_PAYLOAD_BYTES)})`

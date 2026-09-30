@@ -1,14 +1,21 @@
 package ee.oversight.hermes.mobile;
 
 import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
     private static final String TAG = "HermesMain";
+    private static final int REQ_POST_NOTIFICATIONS = 9001;
+    private static final String PREFS = "hermes_mobile";
+    private static final String KEY_NOTIF_ASKED = "notif_permission_asked";
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -40,6 +47,26 @@ public class MainActivity extends BridgeActivity {
         } catch (Exception e) {
             if (isDebuggable()) {
                 Log.d(TAG, "setWebContentsDebuggingEnabled failed", e);
+            }
+        }
+        // R1: approval/job alerts need POST_NOTIFICATIONS on Android 13+.
+        // Asked once, on launch, with the system dialog carrying the context.
+        // A denial is final until the user flips it in system settings (the
+        // Settings tab shows that state with a deep link).
+        try {
+            if (Build.VERSION.SDK_INT >= 33
+                    && ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS)
+                            != PackageManager.PERMISSION_GRANTED
+                    && !getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(KEY_NOTIF_ASKED, false)) {
+                getSharedPreferences(PREFS, MODE_PRIVATE).edit().putBoolean(KEY_NOTIF_ASKED, true).apply();
+                ActivityCompat.requestPermissions(
+                        this,
+                        new String[]{ android.Manifest.permission.POST_NOTIFICATIONS },
+                        REQ_POST_NOTIFICATIONS);
+            }
+        } catch (Exception e) {
+            if (isDebuggable()) {
+                Log.d(TAG, "notification permission request failed", e);
             }
         }
     }

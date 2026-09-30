@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Lock, Delete, Shield, LogIn } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
+import { plainResultLine } from '../../services/plainFailure';
+import { isNativeGateway, nativeSecretGet, nativeSecretSet } from '../../services/nativeGateway';
 
 interface AppLockGateProps {
   onUnlocked: () => void;
@@ -9,7 +11,7 @@ interface AppLockGateProps {
 const MAX_ATTEMPTS = 5;
 const LOCKOUT_BASE_SECONDS = 30;
 const LOCKOUT_MAX_SECONDS = 300;
-const MIN_PIN_LEN = 4;
+const MIN_PIN_LEN = 6;
 const MAX_PIN_LEN = 8;
 
 // Escalating backoff: 30s, 60s, 120s, 240s, capped at 300s. Persisted so a
@@ -43,6 +45,49 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
   const [lockoutLeft, setLockoutLeft] = useState(0);
   const [busy, setBusy] = useState(false);
   const [lockoutCycles, setLockoutCycles] = useState(readLockoutCycles);
+  // S2: the cycle counter also lives in the encrypted native store, so
+  // wiping localStorage cannot reset the penalty. Native wins when higher;
+  // localStorage stays as the web fallback.
+  // The running deadline is persisted too (lockout.until, epoch ms): without
+  // it a reload during lockout, or after 4 fails, resets the countdown and
+  // reopens brute force. Restored on mount below.
+  useEffect(() => {
+    let cancelled = false;
+    const restore = async () => {
+      try {
+        const local = Number(localStorage.getItem('hermes_lockout_until')) || 0;
+        let nativeUntil = 0;
+        if (isNativeGateway()) {
+          nativeUntil = Number(await nativeSecretGet('lockout.until')) || 0;
+        }
+        const until = Math.max(local, nativeUntil);
+        const left = Math.ceil((until - Date.now()) / 1000);
+        if (!cancelled && left > 0) {
+          setLockoutLeft(left);
+          setAttempts(MAX_ATTEMPTS);
+          attemptsRef.current = MAX_ATTEMPTS;
+        }
+      } catch {}
+    };
+    void restore();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    if (!isNativeGateway()) return;
+    void nativeSecretGet('lockout.cycles').then((v) => {
+      const nativeCycles = Number(v) || 0;
+      if (nativeCycles > (cyclesRef.current ?? 0)) {
+        cyclesRef.current = nativeCycles;
+        setLockoutCycles(nativeCycles);
+      } else if ((cyclesRef.current ?? 0) > nativeCycles) {
+        void nativeSecretSet('lockout.cycles', String(cyclesRef.current ?? 0));
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // Coarse (10s granularity) lockout copy for the polite live region. The
   // visible countdown ticks every second; announcing that would spam the
   // screen reader, so only this throttled string is announced.
@@ -115,7 +160,13 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
   const flashError = (msg: string) => {
     setError(msg);
     if (clearTimer.current) clearTimeout(clearTimer.current);
-    clearTimer.current = setTimeout(() => setPin(''), 600);
+    // Only wipe the PIN that failed: if the user already started retyping,
+    // clearing blind would delete digits entered after the error.
+    const failed = pinRef.current;
+    clearTimer.current = setTimeout(
+      () => setPin((current) => (current === failed ? '' : current)),
+      600,
+    );
   };
 
   const failAttempt = () => {
@@ -129,6 +180,11 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
       setLockoutCycles(cycles + 1);
       try {
         localStorage.setItem('hermes_lockouts', String(cycles + 1));
+        localStorage.setItem('hermes_lockout_until', String(Date.now() + duration * 1000));
+        if (isNativeGateway()) {
+          void nativeSecretSet('lockout.cycles', String(cycles + 1));
+          void nativeSecretSet('lockout.until', String(Date.now() + duration * 1000));
+        }
       } catch {}
       setLockoutLeft(duration);
       setPin('');
@@ -145,6 +201,11 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
     setLockoutCycles(0);
     try {
       localStorage.removeItem('hermes_lockouts');
+      localStorage.removeItem('hermes_lockout_until');
+      if (isNativeGateway()) {
+        void nativeSecretSet('lockout.cycles', '');
+        void nativeSecretSet('lockout.until', '');
+      }
     } catch {}
   };
 
@@ -186,7 +247,11 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
           // fault is not a wrong PIN, so no attempt is spent here.
           busyRef.current = false;
           setBusy(false);
-          const detail = e instanceof Error && e.message ? e.message : '';
+          const detail = plainResultLine(
+            e instanceof Error && e.message ? e.message : '',
+            '',
+            tx
+          );
           const base = tx('unlockFailedPlain', 'The PIN could not be checked, so the app stayed locked. Nothing was lost. Try again.');
           setError(detail ? `${base} ${detail}` : base);
         });

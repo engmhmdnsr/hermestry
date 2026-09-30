@@ -92,15 +92,25 @@ export interface MigrationResult {
 
 // Detect the stored version (unversioned payloads are v1) and run every
 // pending migration in ascending order. Pure: no storage access.
+// A stored version NEWER than this build is returned untouched: stamping it
+// with the current version would silently downgrade a newer payload.
 export function migrateSettings(parsed: SettingsRecord): MigrationResult {
   const rawVersion = parsed.schemaVersion;
   const from = typeof rawVersion === 'number' && Number.isInteger(rawVersion) ? rawVersion : 1;
+  if (from > CURRENT_SCHEMA_VERSION) return { data: { ...parsed }, migratedFrom: from, applied: [] };
   let data = { ...parsed };
   const applied: number[] = [];
   for (let v = from + 1; v <= CURRENT_SCHEMA_VERSION; v++) {
     const fn = MIGRATIONS[v];
     if (!fn) continue;
-    data = fn(data);
+    try {
+      data = fn(data);
+    } catch {
+      // One bad migration must never nuke the whole settings object: keep
+      // the pre-migration copy and stop instead of throwing into the init
+      // fallback that resets everything to defaults.
+      return { data: { ...parsed }, migratedFrom: from, applied };
+    }
     applied.push(v);
   }
   data.schemaVersion = CURRENT_SCHEMA_VERSION;
@@ -109,10 +119,13 @@ export function migrateSettings(parsed: SettingsRecord): MigrationResult {
 
 // Read + migrate the stored settings payload. Returns null when nothing
 // is stored or the payload is corrupt (caller falls back to defaults).
-// `persist` lets the caller write back the migrated payload.
+// `persist` lets the caller write back the migrated payload; `onCorrupt`
+// receives the raw string when JSON parsing fails so the caller can
+// quarantine it instead of re-parsing a dead payload on every launch.
 export function loadMigratedSettings(
   storage: Pick<Storage, 'getItem'>,
-  persist?: (raw: string) => void
+  persist?: (raw: string) => void,
+  onCorrupt?: (raw: string) => void
 ): MigrationResult | null {
   let raw: string | null = null;
   try {
@@ -125,6 +138,9 @@ export function loadMigratedSettings(
   try {
     parsed = JSON.parse(raw) as SettingsRecord;
   } catch {
+    try {
+      onCorrupt?.(raw);
+    } catch {}
     return null;
   }
   if (typeof parsed !== 'object' || parsed === null) return null;

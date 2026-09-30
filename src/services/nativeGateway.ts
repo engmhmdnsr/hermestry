@@ -2,6 +2,8 @@
 // "HermesGateway"). Present only inside the Android APK; on plain web
 // every helper reports unavailable and callers use their web fallback.
 
+import { plainResultLine } from './plainFailure';
+
 export interface NativeGatewayStatus {
   running: boolean;
   state: string;
@@ -48,6 +50,11 @@ interface HermesGatewayPlugin {
   startupInfo(): Promise<Partial<NativeStartupInfo>>;
   preflight(): Promise<Partial<NativePreflight>>;
   serverKey(): Promise<{ serverKey: string }>;
+  secretGet?(options: { key: string }): Promise<{ value: string }>;
+  secretSet?(options: { key: string; value: string }): Promise<unknown>;
+  notifState?(): Promise<{ granted: boolean }>;
+  requestNotifAlerts?(): Promise<unknown>;
+  notifyAlert?(options: { title: string; body: string }): Promise<unknown>;
   setServerKey?(options: { serverKey: string }): Promise<unknown>;
   setProvider(options: {
     provider: string;
@@ -81,27 +88,65 @@ export function isNativeGateway(): boolean {
   return getPlugin() !== null;
 }
 
+// The Capacitor bridge registers its plugins asynchronously while the
+// WebView boots, so an early call can read a null plugin even though the
+// native side is healthy. Poll the registry for a moment instead of failing
+// on the first empty lookup: a late bridge must not be reported as
+// "bridge unavailable", and it must not leave install/start/status stuck in
+// their previous state.
+const BRIDGE_WAIT_ATTEMPTS = 20;
+const BRIDGE_WAIT_MS = 100;
+// serverKey() may answer with an empty string before SecurePrefs finished
+// minting the key. Retry a few times rather than returning "no key" and
+// leaving the WebView keyless while the native side already holds one.
+const SERVER_KEY_ATTEMPTS = 4;
+const SERVER_KEY_RETRY_MS = 250;
+
+function waitMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function waitForBridge(): Promise<HermesGatewayPlugin | null> {
+  let plugin = getPlugin();
+  for (let attempt = 0; attempt < BRIDGE_WAIT_ATTEMPTS && !plugin; attempt += 1) {
+    await waitMs(BRIDGE_WAIT_MS);
+    plugin = getPlugin();
+  }
+  return plugin;
+}
+
 export async function nativeInstall(
   onLog: (line: string) => void,
   onProgress: (downloaded: number, total: number) => void,
   onPhase?: (phase: string) => void
 ): Promise<{ ok: boolean; error?: string }> {
-  const plugin = getPlugin();
+  const plugin = await waitForBridge();
   if (!plugin) return { ok: false, error: 'native bridge unavailable' };
-  const subs = await Promise.all([
-    plugin.addListener('installLog', (info) => {
-      const line = String(info.line ?? '');
-      if (line) onLog(line);
-    }),
-    plugin.addListener('installProgress', (info) => {
-      onProgress(Number(info.downloaded ?? 0), Number(info.total ?? 100));
-    }),
-    plugin.addListener('installPhase', (info) => {
-      const phase = String(info.phase ?? '');
-      if (phase && onPhase) onPhase(phase);
-    }),
-  ]);
+  // Subscriptions live inside the try so a rejected addListener() rejects
+  // this call as a normal { ok: false } result instead of as an unhandled
+  // rejection that leaves the caller sitting in the installing state, and
+  // so every listener that did register is removed on every exit path.
+  const subs: Array<{ remove: () => void }> = [];
   try {
+    subs.push(
+      await plugin.addListener('installLog', (info) => {
+        const line = String(info.line ?? '');
+        if (line) onLog(line);
+      })
+    );
+    subs.push(
+      await plugin.addListener('installProgress', (info) => {
+        onProgress(Number(info.downloaded ?? 0), Number(info.total ?? 100));
+      })
+    );
+    subs.push(
+      await plugin.addListener('installPhase', (info) => {
+        const phase = String(info.phase ?? '');
+        if (phase && onPhase) onPhase(phase);
+      })
+    );
     let done: { ok: boolean; error?: string } | null = null;
     const doneSub = await plugin.addListener('installDone', (info) => {
       done = { ok: info.ok === true, error: String(info.error ?? '') || undefined };
@@ -125,19 +170,19 @@ export async function nativeInstall(
 }
 
 export async function nativeStart(): Promise<void> {
-  const plugin = getPlugin();
+  const plugin = await waitForBridge();
   if (!plugin) throw new Error('native bridge unavailable');
   await plugin.start();
 }
 
 export async function nativeStop(): Promise<void> {
-  const plugin = getPlugin();
+  const plugin = await waitForBridge();
   if (!plugin) throw new Error('native bridge unavailable');
   await plugin.stop();
 }
 
 export async function nativeStatus(): Promise<NativeGatewayStatus> {
-  const plugin = getPlugin();
+  const plugin = await waitForBridge();
   if (!plugin) throw new Error('native bridge unavailable');
   return plugin.status();
 }
@@ -175,6 +220,9 @@ export async function nativeSetProvider(opts: {
   serverKey?: string;
   tgToken?: string;
   discordToken?: string;
+  // Active profile id (prov_<slug>_<rand>), so the native side can tell a
+  // per-profile secret write for the ACTIVE profile apart from the rest.
+  activeProfileId?: string;
 }): Promise<void> {
   const plugin = getPlugin();
   if (!plugin || typeof plugin.setProvider !== 'function') return;
@@ -191,12 +239,16 @@ export async function nativeSetProvider(opts: {
     serverKey?: string;
     tgToken?: string;
     discordToken?: string;
+    activeProfileId?: string;
   } = {
     provider: opts.provider ?? '',
     apiKey: opts.apiKey ?? '',
     baseUrl: opts.baseUrl ?? '',
     model: opts.model ?? '',
   };
+  if (typeof opts.activeProfileId === 'string' && opts.activeProfileId !== '') {
+    payload.activeProfileId = opts.activeProfileId;
+  }
   if (typeof opts.serverKey === 'string' && opts.serverKey !== '') {
     payload.serverKey = opts.serverKey;
   }
@@ -217,13 +269,77 @@ export async function nativeSetAutostart(enabled: boolean): Promise<void> {
 // can never guess it, so sync it once at boot: without it every /api/*
 // call fails auth and sessions, jobs and model lists stay empty.
 export async function nativeServerKey(): Promise<string> {
-  const plugin = getPlugin();
+  const plugin = await waitForBridge();
   if (!plugin || typeof plugin.serverKey !== 'function') return '';
+  for (let attempt = 0; attempt < SERVER_KEY_ATTEMPTS; attempt += 1) {
+    try {
+      const res = await plugin.serverKey();
+      const key = typeof res?.serverKey === 'string' ? res.serverKey.trim() : '';
+      if (key) return key;
+    } catch {
+      // The bridge answered with an error; a later attempt may succeed.
+    }
+    if (attempt + 1 < SERVER_KEY_ATTEMPTS) await waitMs(SERVER_KEY_RETRY_MS);
+  }
+  return '';
+}
+
+// Encrypted secret slots (SecurePrefs). Present only in the APK; on plain
+// web these reject and the caller falls back to the vault/localStorage path.
+// Keys are allowlisted native-side; anything else rejects.
+export async function nativeSecretGet(key: string): Promise<string | null> {
+  const plugin = await waitForBridge();
+  if (!plugin || typeof plugin.secretGet !== 'function') return null;
   try {
-    const res = await plugin.serverKey();
-    return typeof res.serverKey === 'string' ? res.serverKey : '';
+    const res = await plugin.secretGet({ key });
+    return typeof res?.value === 'string' ? res.value : null;
   } catch {
-    return '';
+    return null;
+  }
+}
+
+export async function nativeSecretSet(key: string, value: string): Promise<boolean> {
+  const plugin = await waitForBridge();
+  if (!plugin || typeof plugin.secretSet !== 'function') return false;
+  try {
+    await plugin.secretSet({ key, value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Alert notifications (R1). Best-effort: rejections never surface, the
+// in-app approvals queue stays authoritative.
+export async function nativeNotifGranted(): Promise<boolean | null> {
+  const plugin = await waitForBridge();
+  if (!plugin || typeof plugin.notifState !== 'function') return null;
+  try {
+    const res = await plugin.notifState();
+    return res?.granted === true;
+  } catch {
+    return null;
+  }
+}
+
+export async function nativeRequestNotifAlerts(): Promise<boolean> {
+  const plugin = await waitForBridge();
+  if (!plugin || typeof plugin.requestNotifAlerts !== 'function') return false;
+  try {
+    await plugin.requestNotifAlerts();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function nativeNotifyAlert(title: string, body: string): Promise<void> {
+  const plugin = await waitForBridge();
+  if (!plugin || typeof plugin.notifyAlert !== 'function') return;
+  try {
+    await plugin.notifyAlert({ title, body });
+  } catch {
+    // Best-effort by design.
   }
 }
 
@@ -231,7 +347,7 @@ export async function nativeServerKey(): Promise<string> {
 // verified is true only when process exit + port closed + health false hold.
 // nativeStop() keeps its void signature; use this when the UI must gate on it.
 export async function nativeStopVerified(): Promise<NativeStopVerification> {
-  const plugin = getPlugin();
+  const plugin = await waitForBridge();
   if (!plugin) throw new Error('native bridge unavailable');
   const res = await plugin.stop();
   const verified = res?.verified === true;
@@ -284,18 +400,26 @@ export async function nativePreflight(): Promise<NativePreflight> {
 export async function nativeSetServerKey(serverKey: string): Promise<NativeServerKeyAck> {
   const plugin = getPlugin();
   if (!plugin || typeof plugin.setServerKey !== 'function') {
-    return { ok: false, error: 'setServerKey unavailable' };
+    return { ok: false, error: plainResultLine('setServerKey unavailable', '') };
   }
   try {
     await plugin.setServerKey({ serverKey });
     return { ok: true };
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+    // The ack error is rendered by the settings screen, so the native
+    // exception text must not ride along: plainResultLine keeps an honest
+    // sentence and returns an empty string for machine text, which makes the
+    // caller fall back to its own copy.
+    return { ok: false, error: plainResultLine(e instanceof Error ? e.message : String(e), '') };
   }
 }
 
-// Stop then start the on-device gateway.
+// Stop then start the on-device gateway with verified stop.
 export async function nativeRestart(): Promise<void> {
-  await nativeStop();
+  try {
+    await nativeStopVerified();
+  } catch {
+    await nativeStop();
+  }
   await nativeStart();
 }

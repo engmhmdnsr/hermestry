@@ -103,9 +103,10 @@ export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChan
         className="p-3 r-md elev-0 edge bg-[var(--app-card)] space-y-3"
       >
         <div className="flex items-center gap-2">
-          {/* ON reads through the shared badge vocabulary: success for the
-              enabled state, neutral for the scopes it covers. */}
-          <span className="pill-success t-caption font-semibold inline-flex items-center gap-1">
+          {/* ON reads through the shared badge vocabulary: the warning tone
+               carries the AlertTriangle this pill shows (a warning icon in a
+               success pill is a lie), neutral for the scopes it covers. */}
+          <span className="pill-warning t-caption font-semibold inline-flex items-center gap-1">
             <AlertTriangle className="w-4 h-4 shrink-0" />
             {tr('gateOnFor')}{' '}
             {policy.scopes.length > 0

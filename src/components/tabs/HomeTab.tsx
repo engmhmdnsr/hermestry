@@ -4,19 +4,23 @@ import {
   Terminal,
   CalendarClock,
   RefreshCw,
-  SlidersHorizontal,
   CheckCircle2,
   ChevronRight,
   ChevronDown,
   Download,
   KeyRound,
+  Play,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import { resolveListUiState } from '../../services/pagination';
 import { plainGatewayFailure } from '../../services/plainFailure';
+import { deriveUiFlags, type GatewayState } from '../../services/gatewayState';
+import { isNativeGateway } from '../../services/nativeGateway';
+import { modelLabel } from '../../services/modelLabel';
 import { AgentStatus } from '../../types/hermes';
 import { formatHomeAgo } from '../../constants/languages';
 import { scheduleSummary } from '../../utils/jobTime';
+import { AUTH_FAILURE_RE } from '../../constants/tabs';
 
 interface HomeTabProps {
   onGoChat: () => void;
@@ -37,8 +41,8 @@ export function homeAgo(ts: number, lang: string = 'en'): string {
 
 // Auth-shape failures on authenticated endpoints (401/403 or an explicit
 // "auth failed" message) while /health itself may still be green. Matched
-// against the per-list sync envelopes the context already publishes.
-const AUTH_FAILURE_RE = /401|403|auth/i;
+// against the per-list sync envelopes the context already publishes. The
+// pattern itself is shared with the header in constants/tabs.ts.
 
 // List sync envelope shape (subset) read out of context.listsMeta.
 interface ListMetaLike {
@@ -64,6 +68,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     sessions,
     jobs,
     chat,
+    gatewayState,
     gatewayFailed,
     gatewayFailureReason,
     gatewayFailureKind,
@@ -112,12 +117,19 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   );
   const authFailure = gatewayFailureKind === 'unauthorized' || authFailureFromLists;
 
+  // One rule, shared with the header status pill: a connection counts only
+  // when the health check answers AND no failure is on record. `connected`
+  // on its own stays true while the key is rejected or a start failed, so
+  // every status colour and every "is it up" gate below reads this helper
+  // instead. Green means health, and nothing else.
+  const effectivelyConnected = connected && !gatewayFailed && !gatewayFailureKind;
+
   // Worst subsystem wins, and connectivity is tested BEFORE approvals: with a
   // dead gateway the cached approval count is not actionable, so Home must
   // never claim "Action Required" while every resolve would fail.
   const agentStatus: AgentStatus = useMemo(() => {
-    if (gatewayFailed || install === 'FAILED' || authFailure) return 'ERROR';
-    if (!connected) {
+    if (gatewayFailed || gatewayFailureKind || install === 'FAILED' || authFailure) return 'ERROR';
+    if (!effectivelyConnected) {
       if (install === 'INSTALLING' || install === 'RUNNING') return 'CONNECTING';
       return 'OFFLINE';
     }
@@ -130,13 +142,15 @@ export const HomeTab: React.FC<HomeTabProps> = ({
       return 'EXECUTING';
     }
     return 'ONLINE';
-  }, [gatewayFailed, install, authFailure, connected, approvals.length, streaming, chat]);
+  }, [gatewayFailed, gatewayFailureKind, install, authFailure, effectivelyConnected, approvals.length, streaming, chat]);
 
   // Status is carried by the semantic status tokens (dot) plus plain copy,
   // never a decorative palette wash. The dot keeps the motion it had before:
   // pulse while waiting to connect, ping while a turn is running.
   const statusConfig = {
     ONLINE: {
+      // Green is health only: ONLINE is unreachable unless the shared
+      // effectivelyConnected helper says the gateway is really up.
       dot: 'bg-[var(--app-success)]',
       dotAnim: 'animate-pulse',
       title: tx('agentStatusOnlinePlain', 'Hermes is running'),
@@ -205,11 +219,15 @@ export const HomeTab: React.FC<HomeTabProps> = ({
 
   // The hero chip names the model the way a person reads it, never as a bare
   // provider token: the live catalog name when the gateway offered one, else
-  // words built from the id ("deepseek-v4.1-flash" -> "DeepSeek V4.1 Flash").
+  // the shared resolver (src/services/modelLabel.ts) that Chat uses too, so
+  // Home and Chat can never print two names for one model. An empty result
+  // means there is no model to name, and the chip stays out of the way.
   const modelName = useMemo(() => {
-    const entry = models.find((m) => m.id === settings.modelId);
-    return modelDisplayName(settings.modelId, entry?.displayName);
-  }, [models, settings.modelId]);
+    const id = (settings.modelId || '').trim();
+    const catalog = (models.find((m) => m.id === settings.modelId)?.displayName || '').trim();
+    if (catalog && catalog.toLowerCase() !== id.toLowerCase()) return catalog;
+    return modelLabel(settings);
+  }, [models, settings]);
 
   // Session described by the hero strip: always the selected session, so the
   // strip and the highlighted list row never disagree.
@@ -241,6 +259,10 @@ export const HomeTab: React.FC<HomeTabProps> = ({
 
   const [actionError, setActionError] = useState<string | null>(null);
   const [gatewayBusy, setGatewayBusy] = useState(false);
+  // newSession() is a live gateway call, so the two "start a chat" entry points
+  // below share one in-flight flag: a double tap must not create two chats or
+  // post the same chip prompt twice.
+  const [isStartingChat, setIsStartingChat] = useState(false);
 
   // A rejected key cannot be fixed by starting or restarting anything, so the
   // button never spins on that attempt: the moment the failure is known the
@@ -253,33 +275,53 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   // rejected API key) turns the status card into the failure card with its
   // fix. A clean offline state (never started / stopped) gets a friendly
   // setup card instead, with no localhost details leaked.
-  const isError = gatewayFailed || install === 'FAILED' || authFailure;
+  const isError = gatewayFailed || !!gatewayFailureKind || install === 'FAILED' || authFailure;
   const isInstalling = install === 'INSTALLING';
   const needsInstall = install === 'NOT_INSTALLED';
-  const showSetupCard = !connected && !isError && !streaming && !isInstalling;
+  const showSetupCard = !effectivelyConnected && !isError && !streaming && !isInstalling;
 
   // newSession throws truthfully when the gateway is unreachable: surface it
   // instead of navigating to a chat that was never created.
   const handleNewSessionGoChat = async () => {
+    if (isStartingChat) return;
+    setIsStartingChat(true);
     setActionError(null);
+    // Empty-model fast path: creating the session would throw deep in the
+    // gateway call and surface as 'not reachable'. Name the real blocker.
+    if (!(settings.modelId || '').trim()) {
+      setActionError(tx('sendNeedsModel', 'Select a model first. Tap send to open the model list.'));
+      setIsStartingChat(false);
+      return;
+    }
     try {
       await newSession();
       onGoChat();
     } catch {
       setActionError(tx('chatStartFailed', 'Could not start a new chat. Hermes is not reachable.'));
+    } finally {
+      setIsStartingChat(false);
     }
   };
 
   // Try-asking chips: a new session is created first, then the chip prompt
   // is sent as the opening message so the tap is never a blank chat.
   const handleChipPromptGoChat = async (prompt: string) => {
+    if (isStartingChat) return;
+    setIsStartingChat(true);
     setActionError(null);
+    if (!(settings.modelId || '').trim()) {
+      setActionError(tx('sendNeedsModel', 'Select a model first. Tap send to open the model list.'));
+      setIsStartingChat(false);
+      return;
+    }
     try {
       await newSession();
       sendMessage(prompt);
       onGoChat();
     } catch {
       setActionError(tx('chatStartFailed', 'Could not start a new chat. Hermes is not reachable.'));
+    } finally {
+      setIsStartingChat(false);
     }
   };
 
@@ -336,6 +378,15 @@ export const HomeTab: React.FC<HomeTabProps> = ({
       : jobsListState === 'stale' || jobsListState === 'offline'
         ? 'stale'
         : 'error';
+
+  // Green means health, nothing else: a job row may claim "Active" only while
+  // the gateway is genuinely healthy (effectivelyConnected) and the jobs list
+  // itself is not failing or rejected, otherwise the row contradicts the error
+  // card above it. Below that the switch position alone is still true, so the
+  // row says "Enabled" (the same fact and tone JobsTab shows) and never a
+  // second colour for the same word.
+  const jobsRunningNow =
+    jobsPanelState === null && effectivelyConnected && !jobMeta?.error && !authFailure;
 
   const sessionsSyncedLabel = sessionMeta?.lastSyncedAt
     ? `${tx('lastSyncedAt', 'Updated')} ${homeAgo(sessionMeta.lastSyncedAt, settings.language || 'en')}`
@@ -405,7 +456,37 @@ export const HomeTab: React.FC<HomeTabProps> = ({
     }
   };
 
-  const errorCardCta = needsInstall || install === 'FAILED' ? 'install' : 'restart';
+  // The failure card's ONE action comes from the lifecycle machine, the same
+  // source Settings derives Start and Stop from (GATEWAY-03). NOT_INSTALLED
+  // is the only state with an install action, so only it offers setup; an
+  // installed service that can start offers Start, and a running or degraded
+  // service is stopped first and restarted. This used to send every case
+  // except NOT_INSTALLED to the install path, so a start failure after a
+  // successful 305MB install offered "Try setup again" for a setup that had
+  // already worked, while Settings could start the very same state.
+  const effectiveGatewayState: GatewayState = isNativeGateway()
+    ? gatewayState
+    : connected
+      ? 'RUNNING'
+      : needsInstall
+        ? 'NOT_INSTALLED'
+        : install === 'FAILED'
+          ? 'FAILED'
+          : 'STOPPED';
+  const uiFlags = deriveUiFlags(effectiveGatewayState);
+  const errorCardCta: 'install' | 'start' | 'restart' =
+    needsInstall || uiFlags.canInstall
+      ? 'install'
+      : uiFlags.canStop && !uiFlags.canStart
+        ? 'restart'
+        : 'start';
+
+  // One entry point, so the button cannot drift from the label above it.
+  const runErrorCardCta = (): Promise<void> => {
+    if (errorCardCta === 'install') return handleInstallGateway();
+    if (errorCardCta === 'start') return handleStartGateway();
+    return handleRestartGateway();
+  };
 
   return (
     <div className="mx-auto flex max-w-2xl flex-col gap-6 px-4 pt-4 hm-tab-bottom">
@@ -420,34 +501,42 @@ export const HomeTab: React.FC<HomeTabProps> = ({
       >
         <div className="flex items-start justify-between gap-4">
           <div className="flex min-w-0 flex-col gap-3">
+            {/* The status title owns its own line and is free to wrap, so it
+                never clips to "Hermes is run" next to a width-hungry pill. */}
             <div className="flex min-w-0 items-center gap-2">
               <span
                 className={`h-2 w-2 shrink-0 rounded-full ${statusConfig.dot} ${statusConfig.dotAnim}`}
               />
               <span
-                className={`t-title truncate ${
+                className={`t-heading min-w-0 break-words ${
                   isError ? 'text-[var(--app-danger)]' : 'text-[var(--app-text)]'
                 }`}
               >
                 {statusConfig.title}
               </span>
-              <span className="shrink-0 text-[var(--app-text-dim)]">·</span>
-              <ExpandablePill
-                value={modelName}
-                full={settings.modelId}
-                label={tx('modelLabel', 'Model')}
-                expandHint={tx('tapToExpand', 'Tap to expand')}
-                collapseHint={tx('tapToCollapse', 'Tap to collapse')}
-                className="max-w-[140px]"
-              />
             </div>
+            {/* The model sits below the status on its own row, so the status
+                and the model name each get the full card width and neither is
+                ever clipped. */}
+            {modelName && (
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <ExpandablePill
+                  value={modelName}
+                  full={settings.modelId}
+                  label={tx('modelLabel', 'Model')}
+                  expandHint={tx('tapToExpand', 'Tap to expand')}
+                  collapseHint={tx('tapToCollapse', 'Tap to collapse')}
+                  className="max-w-full"
+                />
+              </div>
+            )}
             <p className="t-body pe-2 text-[var(--app-text-muted)]">{heroDesc}</p>
           </div>
 
           {agentStatus === 'WAITING' && (
             <button
               onClick={onGoChat}
-              className="r-sm flex min-h-[36px] shrink-0 items-center gap-1 border border-[var(--app-warning-border)] bg-[var(--app-warning-subtle)] px-3 t-label text-[var(--app-warning)] transition cursor-pointer active:scale-95"
+              className="hm-hit r-sm flex min-h-[44px] shrink-0 items-center gap-1 border border-[var(--app-warning-border)] bg-[var(--app-warning-subtle)] px-3 t-label text-[var(--app-warning)] transition cursor-pointer active:scale-95"
             >
               <span>{tx('review', 'Review')} ({approvals.length})</span>
               <ChevronRight className="h-3.5 w-3.5 rtl-flip" />
@@ -463,21 +552,21 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             {authFailure ? (
               <button
                 onClick={onGoSettings}
-                className="r-sm flex min-h-[40px] flex-1 items-center justify-center gap-2 bg-[var(--app-accent)] px-4 t-label text-[var(--app-text)] transition cursor-pointer hover:bg-[var(--app-accent-hover)]"
+                className="r-sm flex min-h-[40px] flex-1 items-center justify-center gap-2 bg-[var(--app-accent)] px-4 t-label text-[var(--app-on-accent)] transition cursor-pointer hover:bg-[var(--app-accent-hover)]"
               >
                 <KeyRound className="h-4 w-4" />
                 <span>{tx('fixApiKeyAction', 'Add or fix the key')}</span>
               </button>
             ) : (
               <button
-                onClick={() =>
-                  void (errorCardCta === 'install' ? handleInstallGateway() : handleRestartGateway())
-                }
+                onClick={() => void runErrorCardCta()}
                 disabled={gatewayBusy}
-                className="r-sm flex min-h-[40px] flex-1 items-center justify-center gap-2 bg-[var(--app-accent)] px-4 t-label text-[var(--app-text)] transition cursor-pointer hover:bg-[var(--app-accent-hover)] disabled:opacity-60"
+                className="r-sm flex min-h-[40px] flex-1 items-center justify-center gap-2 bg-[var(--app-accent)] px-4 t-label text-[var(--app-on-accent)] transition cursor-pointer hover:bg-[var(--app-accent-hover)] disabled:opacity-60"
               >
                 {errorCardCta === 'install' ? (
                   <Download className={`h-4 w-4 ${gatewayBusy ? 'animate-pulse' : ''}`} />
+                ) : errorCardCta === 'start' ? (
+                  <Play className={`h-4 w-4 ${gatewayBusy ? 'animate-pulse' : ''}`} />
                 ) : (
                   <RefreshCw className={`h-4 w-4 ${gatewayBusy ? 'animate-spin' : ''}`} />
                 )}
@@ -485,12 +574,12 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                   {errorCardCta === 'install'
                     ? gatewayBusy
                       ? t('installing')
-                      : install === 'FAILED'
-                        ? tx('retrySetupPlain', 'Try setup again')
-                        : tx('setupHermesAction', 'Set up Hermes')
+                      : tx('setupHermesAction', 'Set up Hermes')
                     : gatewayBusy
                       ? `${t('starting')}…`
-                      : tx('restartHermes', 'Restart Hermes')}
+                      : errorCardCta === 'start'
+                        ? tx('startService', 'Start')
+                        : tx('restartHermes', 'Restart Hermes')}
                 </span>
               </button>
             )}
@@ -510,7 +599,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               on its own zero-height rule element rather than on the strip. */}
           <div className="mt-4 hairline" aria-hidden="true" />
           <div className="flex items-center justify-between gap-3 pt-4">
-            <div className="flex min-w-0 items-center gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
               <span className="t-label shrink-0 text-[var(--app-text-muted)]">
                 {taskStripLabel}:
               </span>
@@ -520,7 +609,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                 label={taskStripLabel}
                 expandHint={tx('tapToExpand', 'Tap to expand')}
                 collapseHint={tx('tapToCollapse', 'Tap to collapse')}
-                className="max-w-[280px]"
+                className="max-w-full"
               />
             </div>
             {streaming && (
@@ -555,7 +644,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             <button
               onClick={() => void (needsInstall ? handleInstallGateway() : handleStartGateway())}
               disabled={gatewayBusy}
-              className="r-sm flex min-h-[40px] flex-1 items-center justify-center gap-2 bg-[var(--app-accent)] px-4 t-label text-[var(--app-text)] transition cursor-pointer hover:bg-[var(--app-accent-hover)] disabled:opacity-60"
+              className="r-sm flex min-h-[40px] flex-1 items-center justify-center gap-2 bg-[var(--app-accent)] px-4 t-label text-[var(--app-on-accent)] transition cursor-pointer hover:bg-[var(--app-accent-hover)] disabled:opacity-60"
             >
               {needsInstall ? (
                 <Download className={`h-4 w-4 ${gatewayBusy ? 'animate-pulse' : ''}`} />
@@ -591,9 +680,10 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           {/* New Chat is the one primary action: accent surface. */}
           <button
             onClick={() => void handleNewSessionGoChat()}
-            className="r-sm edge elev-0 flex w-full items-center gap-3 bg-[var(--app-accent-subtle)] p-3 text-start transition cursor-pointer active:scale-[0.99]"
+            disabled={isStartingChat}
+            className="r-sm edge elev-0 flex w-full items-center gap-3 bg-[var(--app-accent-subtle)] p-3 text-start transition cursor-pointer active:scale-[0.99] disabled:opacity-50"
           >
-            <span className="r-sm flex h-10 w-10 shrink-0 items-center justify-center bg-[var(--app-accent)] text-[var(--app-text)]">
+            <span className="r-sm flex h-10 w-10 shrink-0 items-center justify-center bg-[var(--app-accent)] text-[var(--app-on-accent)]">
               <MessageSquare className="h-5 w-5" />
             </span>
             <span className="flex min-w-0 flex-1 flex-col">
@@ -647,25 +737,10 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             </span>
             <ChevronRight className="h-4 w-4 shrink-0 text-[var(--app-text-dim)] rtl-flip" />
           </button>
-
-          {/* Settings / Ops */}
-          <button
-            onClick={onGoSettings}
-            className="r-sm edge elev-0 flex w-full items-center gap-3 bg-[var(--app-card)] p-3 text-start transition cursor-pointer hover:bg-[var(--app-card-hover)] active:scale-[0.99]"
-          >
-            <span className="r-sm flex h-10 w-10 shrink-0 items-center justify-center bg-[var(--app-card-subtle)] text-[var(--app-text-muted)]">
-              <SlidersHorizontal className="h-5 w-5" />
-            </span>
-            <span className="flex min-w-0 flex-1 flex-col">
-              <span className="t-heading truncate text-[var(--app-text)]">
-                {tx('settingsTitle', 'Settings')}
-              </span>
-              <span className="t-caption truncate text-[var(--app-text-muted)]">
-                {tx('settingsActionDescPlain', 'Models, appearance, and connections')}
-              </span>
-            </span>
-            <ChevronRight className="h-4 w-4 shrink-0 text-[var(--app-text-dim)] rtl-flip" />
-          </button>
+          {/* Settings has no tile here: the Settings tab sits in the bottom
+              nav (and the desktop sidebar) at all times, so a fourth row
+              only duplicated an always-visible destination. The three rows
+              above keep the section balanced. */}
         </div>
       </section>
 
@@ -676,7 +751,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           {sessions.length > 0 && (
             <button
               onClick={onGoSessions}
-              className="inline-flex min-h-[36px] items-center px-2 t-label text-[var(--app-accent-text)] transition-colors cursor-pointer hover:text-[var(--app-accent)]"
+              className="hm-hit inline-flex min-h-[44px] items-center px-2 t-label text-[var(--app-accent-text)] transition-colors cursor-pointer hover:text-[var(--app-text)]"
             >
               {tx('viewAll', 'View all')}
             </button>
@@ -706,7 +781,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
         {recentListState === 'error' ? (
           <div
             role="alert"
-            className={`r-md elev-0 flex flex-col gap-4 border bg-[var(--app-card)] p-6 text-center ${
+            className={`r-md elev-0 flex flex-col gap-4 border bg-[var(--app-card)] p-4 text-center ${
               isError ? 'edge' : 'border-[var(--app-danger-border)]'
             }`}
           >
@@ -723,13 +798,13 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             </div>
             <button
               onClick={() => void handleRetrySessions()}
-              className="r-sm mx-auto flex min-h-[36px] items-center justify-center bg-[var(--app-accent)] px-4 t-label text-[var(--app-text)] transition cursor-pointer hover:bg-[var(--app-accent-hover)]"
+              className="hm-hit r-sm mx-auto flex min-h-[44px] items-center justify-center bg-[var(--app-accent)] px-4 t-label text-[var(--app-on-accent)] transition cursor-pointer hover:bg-[var(--app-accent-hover)]"
             >
               {t('refresh')}
             </button>
           </div>
         ) : recentSessions.length === 0 ? (
-          <div className="r-md edge elev-0 flex flex-col gap-4 bg-[var(--app-card)] p-6 text-center">
+          <div className="r-md edge elev-0 flex flex-col gap-4 bg-[var(--app-card)] p-4 text-center">
             <div className="r-md mx-auto flex h-12 w-12 items-center justify-center bg-[var(--app-card-subtle)] text-[var(--app-text-muted)]">
               <MessageSquare className="h-5 w-5" />
             </div>
@@ -743,7 +818,8 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             </div>
             <button
               onClick={() => void handleNewSessionGoChat()}
-              className="r-sm mx-auto flex min-h-[36px] items-center justify-center bg-[var(--app-accent)] px-4 t-label text-[var(--app-text)] transition cursor-pointer hover:bg-[var(--app-accent-hover)]"
+              disabled={isStartingChat}
+              className="hm-hit r-sm mx-auto flex min-h-[44px] items-center justify-center bg-[var(--app-accent)] px-4 t-label text-[var(--app-on-accent)] transition cursor-pointer hover:bg-[var(--app-accent-hover)] disabled:opacity-50"
             >
               {tx('newChat', 'New chat')}
             </button>
@@ -754,7 +830,8 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                   <button
                     key={prompt}
                     onClick={() => void handleChipPromptGoChat(prompt)}
-                    className="r-xs edge flex min-h-[36px] items-center bg-[var(--app-card-subtle)] px-3 t-caption text-[var(--app-text-muted)] transition cursor-pointer hover:text-[var(--app-text)]"
+                    disabled={isStartingChat}
+                    className="hm-hit r-xs edge flex min-h-[36px] items-center bg-[var(--app-card-subtle)] px-3 t-caption text-[var(--app-text-muted)] transition cursor-pointer hover:text-[var(--app-text)] disabled:opacity-50"
                   >
                     {prompt}
                   </button>
@@ -843,14 +920,14 @@ export const HomeTab: React.FC<HomeTabProps> = ({
             {jobsCountKnown ? (
               <button
                 onClick={onGoActivity}
-                className="inline-flex min-h-[36px] items-center px-2 t-label text-[var(--app-accent-text)] transition-colors cursor-pointer hover:text-[var(--app-accent)]"
+                className="hm-hit inline-flex min-h-[44px] items-center px-2 t-label text-[var(--app-accent-text)] transition-colors cursor-pointer hover:text-[var(--app-text)]"
               >
                 {jobsCountText}
               </button>
             ) : (
               <button
                 onClick={() => void handleRetryJobs()}
-                className="inline-flex min-h-[36px] items-center px-2 t-label text-[var(--app-accent-text)] transition-colors cursor-pointer hover:text-[var(--app-accent)]"
+                className="hm-hit inline-flex min-h-[44px] items-center px-2 t-label text-[var(--app-accent-text)] transition-colors cursor-pointer hover:text-[var(--app-text)]"
               >
                 {t('refresh')}
               </button>
@@ -882,7 +959,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
           {jobsPanelState === 'error' && (
             <div
               role="alert"
-              className="r-md elev-0 flex flex-col gap-4 border border-[var(--app-danger-border)] bg-[var(--app-card)] p-6 text-center"
+              className="r-md elev-0 flex flex-col gap-4 border border-[var(--app-danger-border)] bg-[var(--app-card)] p-4 text-center"
             >
               <div className="flex flex-col gap-1">
                 <p className="t-heading text-[var(--app-text)]">
@@ -894,14 +971,14 @@ export const HomeTab: React.FC<HomeTabProps> = ({
               </div>
               <button
                 onClick={() => void handleRetryJobs()}
-                className="r-sm mx-auto flex min-h-[36px] items-center justify-center bg-[var(--app-accent)] px-4 t-label text-[var(--app-text)] transition cursor-pointer hover:bg-[var(--app-accent-hover)]"
+                className="hm-hit r-sm mx-auto flex min-h-[44px] items-center justify-center bg-[var(--app-accent)] px-4 t-label text-[var(--app-on-accent)] transition cursor-pointer hover:bg-[var(--app-accent-hover)]"
               >
                 {t('refresh')}
               </button>
             </div>
           )}
 
-          {jobs.length > 0 && (
+          {jobs.length > 0 && jobsPanelState !== 'error' && (
             <div className="flex flex-col gap-2">
               {jobs.slice(0, 3).map((job) => (
                 <div
@@ -932,8 +1009,23 @@ export const HomeTab: React.FC<HomeTabProps> = ({
                       </p>
                     </div>
                   </div>
-                  <span className={job.enabled ? 'pill-success' : 'pill-neutral'}>
-                    {job.enabled ? t('active') : t('stopped')}
+                  {/* The word, not the colour, separates the states: "Active"
+                      (success) means confirmed running now, "Enabled"
+                      (accent) means the switch is on while health is not
+                      confirmed, "Stopped" (neutral) means off. Same fact,
+                      same tone everywhere: JobsTab labels its accent pill
+                      "Enabled" as well, so green and indigo never carry one
+                      shared meaning. */}
+                  <span
+                    className={
+                      job.enabled
+                        ? jobsRunningNow
+                          ? 'pill-success'
+                          : 'pill-accent'
+                        : 'pill-neutral'
+                    }
+                  >
+                    {job.enabled ? (jobsRunningNow ? t('active') : t('enabled')) : t('stopped')}
                   </span>
                 </div>
               ))}
@@ -953,37 +1045,9 @@ export function modelAlias(id: string): string {
   return seg.split(/[-_]/)[0] || seg;
 }
 
-// Tokens that must not be title-cased like ordinary words when a model id has
-// to be read out without the live catalog behind it.
-const MODEL_INITIALISMS: Record<string, string> = {
-  ai: 'AI',
-  api: 'API',
-  glm: 'GLM',
-  gpt: 'GPT',
-  llm: 'LLM',
-};
-
-// Human name for a model, so a status card never shows a bare raw id such as
-// "deepseek" or "deepseek-v4.1-flash". The live catalog name wins when it says
-// something the id does not; otherwise the last segment of the id becomes
-// words ("deepseek-v4.1-flash" -> "DeepSeek V4.1 Flash").
-export function modelDisplayName(id: string, catalogName?: string | null): string {
-  const raw = (id || '').trim();
-  const name = (catalogName || '').trim();
-  if (name && name.toLowerCase() !== raw.toLowerCase()) return name;
-  const seg = raw.split('/').pop() || '';
-  if (!seg) return '';
-  return seg
-    .replace(/[-_]/g, ' ')
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((word) => {
-      const known = MODEL_INITIALISMS[word.toLowerCase()];
-      if (known) return known;
-      return word.charAt(0).toUpperCase() + word.slice(1);
-    })
-    .join(' ');
-}
+// The model name is no longer formatted here: src/services/modelLabel.ts is
+// the one resolver Home and Chat both call, so one model id can never read
+// as two different names on two screens.
 
 const ExpandablePill: React.FC<{
   value: string;
@@ -1002,11 +1066,16 @@ const ExpandablePill: React.FC<{
       aria-expanded={expanded}
       title={full}
       aria-label={`${label}: ${full}. ${expanded ? collapseHint : expandHint}.`}
-      className={`r-sm edge elev-0 inline-flex min-h-[36px] min-w-0 items-center gap-1 bg-[var(--app-card-subtle)] px-3 t-caption text-[var(--app-text-muted)] cursor-pointer ${className}`}
+      className={`hm-hit r-sm edge elev-0 inline-flex min-h-[36px] min-w-0 items-center gap-1 bg-[var(--app-card-subtle)] px-3 t-caption text-[var(--app-text-muted)] cursor-pointer ${className}`}
     >
-      <span className={`min-w-0 font-mono ${expanded ? 'whitespace-normal break-all' : 'truncate'}`}>
+      {/* Sans, like the rest of this screen, and free to wrap: a session
+          title or a model name is copy, not a code token, and it must never
+          be cut off inside the pill. */}
+      <span className="min-w-0 whitespace-normal break-words">
         {expanded ? full : value}
       </span>
+      {/* The chevron follows the real expanded state, so it can never look
+          like a menu that opens while it only grows the text. */}
       <ChevronDown
         className={`h-3.5 w-3.5 shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`}
       />

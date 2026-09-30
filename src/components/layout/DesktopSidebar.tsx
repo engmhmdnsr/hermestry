@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   LayoutGrid,
   MessageSquare,
-  CalendarClock,
+  SquareTerminal,
   SlidersHorizontal,
   Plus,
   Star,
@@ -14,6 +14,7 @@ import { useHermes } from '../../context/HermesContext';
 import { resolveListUiState } from '../../services/pagination';
 // Same tab vocabulary as the bottom nav, so a tab never reads as two names.
 import { TAB_LABEL_KEYS, TAB_LABEL_FALLBACKS } from './BottomNav';
+import { formatBadgeCount } from '../../utils/badge';
 
 interface DesktopSidebarProps {
   currentTab: number;
@@ -38,7 +39,6 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
     pinnedIds,
     togglePin,
     approvals,
-    jobs,
     settings,
     refreshNow,
     t,
@@ -53,7 +53,11 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
 
   const [sessionSearch, setSessionSearch] = useState('');
   const [showAllRecent, setShowAllRecent] = useState(false);
-  const [listError, setListError] = useState<string | null>(null);
+  // Set after a Retry, cleared again as soon as the gateway answers: refreshNow
+  // resolves instead of throwing when the server is unreachable (it reports the
+  // failure through connected), so a try/catch here never fired and the Retry
+  // button looked dead. This flag is only ever read alongside the live state.
+  const [retryTried, setRetryTried] = useState(false);
 
   // Session list truthfulness: the context list is the cache; when the
   // gateway is unreachable it is stale, not live. Never render it as live.
@@ -69,20 +73,23 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
   );
 
   const handleRetrySessions = async () => {
-    setListError(null);
-    try {
-      await refreshNow();
-    } catch {
-      setListError(tx('listRetryFailed', 'Could not reach the Hermes server again. Check that it is running, then retry.'));
-    }
+    setRetryTried(false);
+    await refreshNow();
+    // Resolved without throwing whether the gateway answered or not, so the
+    // outcome is read from connected below rather than from a catch block.
+    setRetryTried(true);
   };
+
+  useEffect(() => {
+    if (connected) setRetryTried(false);
+  }, [connected]);
 
   const navItems = [
     { id: 0, label: tx(TAB_LABEL_KEYS[0], TAB_LABEL_FALLBACKS[0]), icon: LayoutGrid },
     // Approvals are actioned in Chat (ApprovalCard queue), so the pending
     // count lives here, not on Settings.
     { id: 1, label: tx(TAB_LABEL_KEYS[1], TAB_LABEL_FALLBACKS[1]), icon: MessageSquare, badge: approvals.length },
-    { id: 2, label: tx(TAB_LABEL_KEYS[2], TAB_LABEL_FALLBACKS[2]), icon: CalendarClock, badge: jobs.filter(j => j.enabled).length },
+    { id: 2, label: tx(TAB_LABEL_KEYS[2], TAB_LABEL_FALLBACKS[2]), icon: SquareTerminal, badge: 0 },
     { id: 3, label: tx(TAB_LABEL_KEYS[3], TAB_LABEL_FALLBACKS[3]), icon: SlidersHorizontal },
   ];
 
@@ -116,9 +123,17 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
             <img
               src="/ic_hermes_logo.png"
               alt={tx('appLogoAlt', 'Hermes logo')}
-              className="w-full h-full object-contain"
+              className="brand-logo-light w-full h-full object-contain"
               onError={(e) => {
-                (e.target as HTMLElement).style.display = 'none';
+                e.currentTarget.remove();
+              }}
+            />
+            <img
+              src="/ic_hermes_logo_dark.png"
+              alt={tx('appLogoAlt', 'Hermes logo')}
+              className="brand-logo-dark w-full h-full object-contain"
+              onError={(e) => {
+                e.currentTarget.remove();
               }}
             />
           </div>
@@ -150,10 +165,28 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
       </div>
 
       {/* 2. Primary Navigation. Same active vocabulary as BottomNav: an accent
-          surface tint plus an accent icon and label, one label size. */}
-      <div className={`p-2 space-y-1 ${collapsed ? '[&>button]:flex-col [&>button]:gap-1 [&>button]:px-1 [&>button]:py-2' : ''}`}>
+          surface tint plus an accent icon and label, one label size. Wrapped in
+          a labelled navigation landmark and marked with aria-current, so the
+          selected tab is not signalled by colour alone. */}
+      <nav
+        aria-label={tx('navMainLabel', 'Main navigation')}
+        className={`p-2 space-y-1 ${collapsed ? '[&>button]:flex-col [&>button]:gap-1 [&>button]:px-1 [&>button]:py-2' : ''}`}
+      >
         {navItems.map((item) => {
           const isActive = currentTab === item.id;
+          // The badge is a bare number on screen; the same meaning must reach
+          // the accessible name, exactly as BottomNav words it.
+          const badgeText =
+            item.badge && item.badge > 0
+              ? item.id === 1
+                ? item.badge === 1
+                  ? tx('approvalsWaitingOne', '1 approval waiting for you')
+                  : tx('approvalsWaitingMany', '{count} approvals waiting for you').replace(
+                      '{count}',
+                      String(item.badge),
+                    )
+                : tx('jobsTurnedOnCount', '{count} jobs turned on').replace('{count}', String(item.badge))
+              : '';
           return (
             <button
               key={item.id}
@@ -164,7 +197,8 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
                   : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)] border border-transparent'
               }`}
               title={item.label}
-              aria-label={item.label}
+              aria-label={badgeText ? `${item.label}, ${badgeText}` : item.label}
+              aria-current={isActive ? 'page' : undefined}
             >
               <item.icon
                 className={`w-4 h-4 shrink-0 transition-colors ${
@@ -180,13 +214,13 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
               {/* Badges: the same real badge as BottomNav. */}
               {item.badge !== undefined && item.badge > 0 && (
                 <span className="pill-danger font-mono font-semibold">
-                  {item.badge}
+                  {formatBadgeCount(item.badge)}
                 </span>
               )}
             </button>
           );
         })}
-      </div>
+      </nav>
 
       {/* 3. New Chat Button */}
       <div className="p-2">
@@ -220,9 +254,9 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
               </button>
             </div>
           )}
-          {listError && (
+          {retryTried && sidebarListState === 'error' && (
             <div role="alert" className="mx-1 px-3 py-2 r-sm t-caption border border-[var(--app-danger-border)] bg-[var(--app-danger-subtle)] text-[var(--app-danger)]">
-              <p>{listError}</p>
+              <p>{tx('listRetryFailed', 'Could not reach the Hermes server again. Check that it is running, then retry.')}</p>
             </div>
           )}
           {/* Quick Search */}
@@ -387,9 +421,13 @@ export const DesktopSidebar: React.FC<DesktopSidebarProps> = ({
                 <p className="t-caption font-medium text-[var(--app-text)] truncate">
                   {connected ? tx('connected', 'Connected') : tx('notConnected', 'Not connected')}
                 </p>
-                <p className="t-micro text-[var(--app-text-dim)] truncate font-mono">
-                  {tx('activeModel', 'Active model')}: {settings.modelId.split('/').pop()}
-                </p>
+                {/* Only shown when a model is named: an empty id used to print
+                    a dangling "Active model:" with nothing after it. */}
+                {(settings.modelId || '').trim() && (
+                  <p className="t-micro text-[var(--app-text-dim)] truncate font-mono">
+                    {tx('activeModel', 'Active model')}: {settings.modelId.split('/').pop()}
+                  </p>
+                )}
               </div>
             )}
           </div>

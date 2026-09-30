@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { RefObject } from 'react';
-import { registerOverlay } from '../services/overlayStack';
+import { isTopOverlay, registerOverlay } from '../services/overlayStack';
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -44,10 +44,15 @@ export function useOverlayBehavior(
   useEffect(() => {
     if (!open) return;
     restoreRef.current = document.activeElement as HTMLElement | null;
-    const unregister = backButton ? registerOverlay(() => closeRef.current()) : () => {};
+    const handler = () => closeRef.current();
+    const unregister = backButton ? registerOverlay(handler) : () => {};
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (escape && event.key === 'Escape') {
+        // Every open overlay listens on document, and stopPropagation does not
+        // suppress a sibling listener on the same node, so a stacked pair used
+        // to close on one keypress: only the top-most one reacts now.
+        if (backButton && !isTopOverlay(handler)) return;
         event.stopPropagation();
         closeRef.current();
         return;

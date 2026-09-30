@@ -1,5 +1,6 @@
 import React from 'react';
 import { TriangleAlert } from 'lucide-react';
+import { plainResultLine } from '../../services/plainFailure';
 
 /**
  * ErrorBoundary: the single recovery surface for the tab content area.
@@ -106,6 +107,10 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
     const details = labels.details ?? 'Technical details';
     const retry = labels.retry ?? 'Retry';
     const home = labels.home ?? 'Go home';
+    // The console keeps the real error (componentDidCatch); on screen the same
+    // text goes through the plain-failure filter, so transport and platform
+    // messages collapse this disclosure instead of reaching the user.
+    const detail = plainResultLine(error.message || String(error), '');
 
     return (
       <div role="alert" className="flex-1 min-h-0 w-full px-4 pt-4 hm-tab-bottom">
@@ -121,21 +126,23 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
             </div>
           </div>
 
-          <details className="r-sm hairline elev-0 bg-[var(--app-card-subtle)]">
-            <summary className="cursor-pointer px-3 py-2 t-micro text-[var(--app-text-dim)]">
-              {details}
-            </summary>
-            <p className="px-3 pb-3 t-micro font-mono text-[var(--app-text-muted)] break-words">
-              {error.message || String(error)}
-            </p>
-          </details>
+          {detail && (
+            <details className="r-sm hairline elev-0 bg-[var(--app-card-subtle)]">
+              <summary className="cursor-pointer px-3 py-2 t-micro text-[var(--app-text-dim)]">
+                {details}
+              </summary>
+              <p className="px-3 pb-3 t-micro font-mono text-[var(--app-text-muted)] break-words">
+                {detail}
+              </p>
+            </details>
+          )}
 
           <div className="flex flex-wrap gap-3">
             <button
               type="button"
               ref={this.retryRef}
               onClick={this.handleRetry}
-              className="min-h-[44px] px-4 r-sm elev-0 bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-bg)] t-label font-semibold cursor-pointer transition"
+              className="min-h-[44px] px-4 r-sm elev-0 bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)] t-label font-semibold cursor-pointer transition"
             >
               {retry}
             </button>

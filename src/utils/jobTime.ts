@@ -154,6 +154,11 @@ export const cronHint = (
   if (!v) return null;
   if (presetVals.includes(v)) return null;
   if (/^\S+\s+\S+\s+\S+\s+\S+\s+\S+$/.test(v)) return null;
+  // Gateway one-shot ('in 30m', 'in 2h'), ISO stamps and 'every …'
+  // intervals are valid but look nothing like cron: never warn on them.
+  if (/^in\s+\d+\s*[a-z]+$/i.test(v)) return null;
+  if (/^\d{4}-\d{2}-\d{2}/.test(v)) return null;
+  if (/^every\s+/i.test(v)) return null;
   return 'Unrecognized format. Presets and 5-field cron (e.g. 0 9 * * *) usually work, but the gateway decides.';
 };
 
@@ -248,7 +253,10 @@ export const formatTimezoneOption = (tz: string): string => {
 export const scheduleSummary = (schedule: string): string | null => {
   const v = schedule.trim().toLowerCase();
   if (!v) return null;
-  if (v === 'once')
+  // 'in Nm' / 'in Nh' is the explicit one-shot-by-duration form the gateway
+  // accepts (jobs.py parse_schedule); a bare 'once' is rejected server-side
+  // and must never be offered as if it runs.
+  if (/^in\s+\d+\s*(m(in(utes?)?)?|h((ou)?rs?)?)$/.test(v))
     return 'Runs a single time shortly after creation, then stops. No repeating schedule.';
   let m = v.match(/^every\s+(\d+)\s*(m|min|mins|minute|minutes)$/);
   if (m) {

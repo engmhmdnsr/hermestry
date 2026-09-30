@@ -307,20 +307,20 @@ export const DesktopInspector: React.FC<DesktopInspectorProps> = ({ isOpen, onCl
                 <div id="inspector-tech-details" className="px-3 pb-3 space-y-1 font-mono t-micro text-[var(--app-text-muted)]">
                   <div className="flex justify-between gap-2">
                     <span>{tx('inspectorTechModelId', 'Model ID')}</span>
-                    <span className="text-[var(--app-text)] break-all text-right">{settings.modelId}</span>
+                    <span className="text-[var(--app-text)] break-all text-end">{settings.modelId}</span>
                   </div>
                   <div className="flex justify-between gap-2">
                     <span>{tx('inspectorTechProviderId', 'Provider ID')}</span>
-                    <span className="text-[var(--app-text)] break-all text-right">{settings.provider}</span>
+                    <span className="text-[var(--app-text)] break-all text-end">{settings.provider}</span>
                   </div>
                   <div className="flex justify-between gap-2">
                     <span>{tx('inspectorTechEffort', 'Reasoning effort')}</span>
-                    <span className="text-[var(--app-text)] break-all text-right">{settings.reasoningEffort}</span>
+                    <span className="text-[var(--app-text)] break-all text-end">{settings.reasoningEffort}</span>
                   </div>
                   {(streaming || turnMeta) && (
                     <div className="flex justify-between gap-2">
                       <span>{tx('inspectorTechElapsed', 'Elapsed (s)')}</span>
-                      <span className="text-[var(--app-text)] text-right">{streamElapsed}</span>
+                      <span className="text-[var(--app-text)] text-end">{streamElapsed}</span>
                     </div>
                   )}
                 </div>

@@ -273,10 +273,16 @@ object Bootstrap {
       "storage:" in t || "needs_space" in t || "no space left" in t -> InstallPhase.CHECK_STORAGE
       "downloading" in t -> InstallPhase.DOWNLOAD
       "checksum" in t || "verifying" in t -> InstallPhase.VERIFY
-      "extracting" in t || "linking" in t || "clearing previous rootfs" in t -> InstallPhase.EXTRACT
-      "writing gateway config" in t || "proot" in t || "dns fixed" in t ||
-        "installing hermes-agent" in t || "debian rootfs ready" in t ||
-        "prebuilt image ready" in t || "proot ready" in t -> InstallPhase.CONFIGURE
+      "extracting" in t || "linking" in t -> InstallPhase.EXTRACT
+      // Exact phrases only. A bare "proot" match classified the very first
+      // step line ("proot: /data/.../files/proot", "proot ready") as
+      // CONFIGURE and "clearing previous rootfs" as EXTRACT, so the phase
+      // walked CHECK_STORAGE -> CONFIGURE -> DOWNLOAD -> VERIFY and back.
+      // Those lines are pre-download setup: no phase change.
+      "writing gateway config" in t || "dns fixed" in t ||
+        "installing hermes-agent" in t || "hermes-agent ready" in t ||
+        "debian rootfs ready" in t || "prebuilt image ready" in t ||
+        "rootfs check" in t -> InstallPhase.CONFIGURE
       line.trim() == "done" || "already installed" in t -> InstallPhase.DONE
       else -> null
     }
@@ -301,7 +307,10 @@ object Bootstrap {
       }
       c.connect()
       if (c.responseCode !in 200..299) return null
-      parseImageManifest(c.inputStream.bufferedReader().readText())
+      // use{}: readText() leaves the reader open, and an unclosed response
+      // stream never returns its socket, so every Start (and every retry of
+      // this call) leaked a connection until GC reaped it.
+      c.inputStream.bufferedReader().use { parseImageManifest(it.readText()) }
     } catch (_: Exception) { null }
   }
 
@@ -393,7 +402,12 @@ object Bootstrap {
           deb.delete()
         }
       }
-      proot.setExecutable(true)
+      if (!proot.setExecutable(true)) {
+        throw RuntimeException(
+          "chmod +x proot failed at ${proot.absolutePath} " +
+            "(SELinux exec denial? reinstall the app)"
+        )
+      }
     } else onStep("proot ready")
 
     // 2. rootfs (sentinel .rootfs_ok: the tar ships sh but NOT python3,
@@ -450,7 +464,7 @@ object Bootstrap {
           resolv.writeText("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
           onStep("dns fixed (8.8.8.8)")
         }
-      } catch (e: Exception) { onStep("dns write failed: ${e.message}") }
+      } catch (e: Exception) { onStep("dns write failed: ${stableFailure(e, "dns_write_failed")}") }
       val prep = runProot(
         app,
         "apt-get update && apt-get install -y python3 python3-pip && " +
@@ -573,7 +587,9 @@ object Bootstrap {
     c.connect()
     if (c.responseCode !in 200..299)
       throw RuntimeException("fetch failed HTTP ${c.responseCode} for $url")
-    return c.inputStream.bufferedReader().readText()
+    // use{}: readText() does not close, and an unclosed response stream keeps
+    // the socket out of the keep-alive pool (one leaked connection per call).
+    return c.inputStream.bufferedReader().use { it.readText() }
   }
 
   /** Re-renders config.yaml from the keys saved in the Setup tab. Called on every Start.
@@ -606,26 +622,33 @@ object Bootstrap {
       SecureRandom().nextBytes(rnd)
       serverKey = rnd.joinToString("") { "%02x".format(it) }
       SecurePrefs.putString(app, SecurePrefs.KEY_SERVER, serverKey)
+      // Re-read the store instead of trusting the in-memory mint (audit hardening):
+      // SecurePrefs can refuse the write (encrypted store unavailable) or drop it,
+      // and starting the gateway without API_SERVER_KEY would leave the local API
+      // unintentionally open. Blank here means "never persisted", never "no key".
+      val stored = SecurePrefs.getString(app, SecurePrefs.KEY_SERVER, "")
+      if (stored.isBlank())
+        throw IllegalStateException(
+          "server key was not saved to secure storage, refusing to start without API_SERVER_KEY"
+        )
+      serverKey = stored
     }
     // Fail-closed guard (audit hardening): never write a config with an empty
     // server key (that would leave the local API unintentionally open).
     if (serverKey.isBlank())
       throw IllegalStateException("server key mint failed, refusing to write config with empty key")
-    val cfg = configTemplate()
-      .replace("__PROVIDER__", provider)
-      .replace("__MODEL__", model)
-      // Registry ids read their key from env (service export); writing api_key
-      // for them is dead config plus a plaintext secret. Customs need it.
-      // NOTE: expand __API_KEY_LINE__ FIRST: its expansion contains a literal
-      // __API_KEY__ placeholder, so the key substitution must run after it,
-      // otherwise the literal key placeholder is baked into config.yaml.
-      .replace("__API_KEY_LINE__",
-        if (normProvider(provider) in REGISTRY_API_KEY_IDS) ""
-        else "\n        api_key: \"__API_KEY__\"")
-      .replace("__API_KEY__", key.replace("\\", "\\\\").replace("\"", "\\\"")
-        .replace("\n", "").replace("\r", ""))
-      .replace("__BASE_URL_LINE__", if (baseUrl.isNotBlank()) "\n        base_url: \"$baseUrl\"" else "")
-      .replace("__MODEL_BASE_URL_LINE__", if (baseUrl.isNotBlank()) "\n      base_url: \"$baseUrl\"" else "")
+    // YAML injection, quoting and indentation all live in
+    // renderGatewayConfig() (pure, unit-tested): provider, model, base URL and
+    // key are user input, and a raw " or newline in any of them used to be
+    // able to break, or rewrite, the whole gateway config.
+    val cfg = renderGatewayConfig(
+      configTemplate(),
+      provider = provider,
+      model = model,
+      baseUrl = baseUrl,
+      apiKey = key,
+      registryProvider = normProvider(provider) in REGISTRY_API_KEY_IDS
+    )
     File(rootDir(app), "config.yaml").writeText(cfg)
   }
 
@@ -637,8 +660,18 @@ object Bootstrap {
     val tmp = File(app.cacheDir, "proot-tmp").apply { mkdirs() }
     return mapOf("PROOT_NO_SECCOMP" to "1", "PROOT_TMP_DIR" to tmp.absolutePath)
   }
-  /** Runs a shell command inside the rootfs via proot. Returns exit code. */
-  fun runProot(app: Context, shellCmd: String, timeoutMs: Long = 30 * 60 * 1000): Int {
+  /**
+   * Runs a shell command inside the rootfs via proot. Returns exit code.
+   * [logFile] defaults to bootstrap_last.log; pass a dedicated file when the
+   * output is a diagnostic of its own (a compile probe must not clobber the
+   * install log that installFailureHint() reads).
+   */
+  fun runProot(
+    app: Context,
+    shellCmd: String,
+    timeoutMs: Long = 30 * 60 * 1000,
+    logFile: File? = null
+  ): Int {
     val proot = prootFile(app).absolutePath
     val pf = File(proot)
     // Fail loud with the real cause instead of a bare IOException up the stack.
@@ -669,10 +702,29 @@ object Bootstrap {
     prootLoader32File(app)?.let { pb.environment()["PROOT_LOADER_32"] = it.absolutePath }
     pb.redirectErrorStream(true)
     val proc = pb.start()
-    val out = File(rootDir(app), "bootstrap_last.log")
-    proc.inputStream.copyTo(out.outputStream())
+    val out = logFile ?: File(rootDir(app), "bootstrap_last.log")
+    // Drain on a daemon thread. Reading to EOF here, on the caller thread,
+    // made timeoutMs dead code: a wedged child blocked that read forever, so
+    // waitFor(timeoutMs) was never reached and the caller hung instead of
+    // failing. The pump also lets each caller keep its own log file.
+    val pump = Thread {
+      try {
+        // .use{}: the stream was previously left open, leaking one descriptor per
+        // probe (and leaving the tail of the log unflushed on some filesystems).
+        proc.inputStream.use { ins -> out.outputStream().use { ins.copyTo(it) } }
+      } catch (_: Exception) { }
+    }.apply {
+      isDaemon = true
+      name = "hermes-proot-log"
+    }
+    pump.start()
     val finished = proc.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
-    if (!finished) { proc.destroyForcibly(); return 124 }
+    if (!finished) {
+      proc.destroyForcibly()
+      try { pump.join(2_000) } catch (_: Exception) { }
+      return 124
+    }
+    try { pump.join(5_000) } catch (_: Exception) { }
     return proc.exitValue()
   }
 
@@ -729,7 +781,7 @@ object Bootstrap {
           val alt = try {
             fallback()
           } catch (e2: Exception) {
-            onLog("fallback lookup failed: ${e2.message}")
+            onLog("fallback lookup failed: ${stableFailure(e2, "fallback_lookup_failed")}")
             null
           }
           if (alt != null && alt.url != attemptUrl) {
@@ -748,12 +800,15 @@ object Bootstrap {
           }
         }
         if (attempt < 2) {
-          onLog("attempt ${attempt + 1} failed (${e.message}), retrying...")
+          onLog("attempt ${attempt + 1} failed (${stableFailure(e, "network error")}), retrying...")
           Thread.sleep((attempt + 1) * 3_000L)
         }
       }
     }
-    throw RuntimeException("download failed after 3 attempts: ${lastErr?.message}")
+    // The raw cause message is platform text (UnknownHostException, errno
+    // tails, ...); the log keeps it, the thrown copy gets a stable token.
+    val why = lastErr?.let { stableFailure(it, "network error") } ?: "network error"
+    throw RuntimeException("download failed after 3 attempts: $why")
   }
 
   private fun fetchUrl(url: String, dest: File, onPct: (Int) -> Unit) {
@@ -810,7 +865,7 @@ object Bootstrap {
     }
     c.connect()
     if (c.responseCode !in 200..299) return null
-    val text = c.inputStream.bufferedReader().readText()
+    val text = c.inputStream.bufferedReader().use { it.readText() }
     var wantFile: String? = null
     var inBlock = false
     for (line in text.lineSequence()) {
@@ -843,6 +898,62 @@ object Bootstrap {
     return null
   }
 
+  // ---------------------------------------------------------------------------
+  // Path primitives. java.nio.file (Files / Paths / File.toPath) is API 26+ but
+  // minSdk is 24, so on Android 7 an unguarded call kills the extract/verify
+  // path with NoClassDefFoundError. Every NIO body therefore lives in this
+  // holder: ART resolves classes lazily, so the references never load on API
+  // 24/25 as long as nothing calls them, and hasNio() is the single gate. The
+  // fallbacks use android.system.Os (API 21) with identical semantics.
+  // ---------------------------------------------------------------------------
+  private object NioPaths {
+    fun isSymlink(f: File): Boolean = java.nio.file.Files.isSymbolicLink(f.toPath())
+    fun readSymlink(f: File): String = java.nio.file.Files.readSymbolicLink(f.toPath()).toString()
+    fun createSymlink(link: File, rawTarget: String) {
+      java.nio.file.Files.createSymbolicLink(link.toPath(), java.nio.file.Paths.get(rawTarget))
+    }
+    fun createHardLink(link: File, target: File) {
+      java.nio.file.Files.createLink(link.toPath(), target.toPath())
+    }
+    fun copyFile(src: File, dst: File) {
+      java.nio.file.Files.copy(src.toPath(), dst.toPath())
+    }
+  }
+
+  private fun hasNio(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+
+  /** True when [f] is a symlink; never throws, an unreadable path reports false. */
+  private fun isSymlink(f: File): Boolean = try {
+    if (hasNio()) NioPaths.isSymlink(f)
+    else (android.system.Os.lstat(f.absolutePath).st_mode and android.system.OsConstants.S_IFMT) ==
+      android.system.OsConstants.S_IFLNK
+  } catch (_: Exception) { false }
+
+  /** Raw symlink target; throws when [f] is not a readable link (caller reports it). */
+  private fun readSymlink(f: File): String =
+    if (hasNio()) NioPaths.readSymlink(f) else android.system.Os.readlink(f.absolutePath)
+
+  /**
+   * Creates [link] pointing at [rawTarget], kept verbatim: tar link targets are
+   * usually relative (usr/lib/x.so) and absolutizing them would break them.
+   */
+  private fun createSymlink(link: File, rawTarget: String) {
+    if (hasNio()) NioPaths.createSymlink(link, rawTarget)
+    else android.system.Os.symlink(rawTarget, link.absolutePath)
+  }
+
+  /** Second hard link to [target] created at [link]. */
+  private fun createHardLink(link: File, target: File) {
+    if (hasNio()) NioPaths.createHardLink(link, target)
+    else android.system.Os.link(target.absolutePath, link.absolutePath)
+  }
+
+  /** Byte copy (Files.copy without attributes, which every caller sets by hand). */
+  private fun copyFile(src: File, dst: File) {
+    if (hasNio()) NioPaths.copyFile(src, dst)
+    else src.inputStream().use { ins -> dst.outputStream().use { out -> ins.copyTo(out) } }
+  }
+
   /**
    * Host-side rootfs health check (no proot needed): proves the guest loader
    * chain exists before we try to run anything. Returns missing entries.
@@ -871,84 +982,15 @@ object Bootstrap {
     // test isSymbolicLink first, then resolve the raw target by hand.
     for (rel in listOf("bin", "lib", "sbin", "lib64")) {
       val f = File(fs, rel)
-      if (!java.nio.file.Files.isSymbolicLink(f.toPath())) continue
+      if (!isSymlink(f)) continue
       try {
-        val link = java.nio.file.Files.readSymbolicLink(f.toPath()).toString()
+        val link = readSymlink(f)
         val ok = File(f.parentFile, link).exists() ||
           File(fs, link.removePrefix("/")).exists()
         if (!ok) missing += "$rel (dangling symlink -> $link)"
       } catch (_: Exception) { missing += "$rel (unreadable symlink)" }
     }
     return missing
-  }
-
-  /**
-   * Writes a support bundle to Download/hermes-install-log.txt: arch, proot
-   * path, rootfs verify, lib/link listing, and the full last proot output.
-   * Returns a short human message for the screen. pull via:
-   * adb pull /sdcard/Download/hermes-install-log.txt
-   */
-  fun exportInstallLog(app: Context): String {
-    val sb = StringBuilder()
-    sb.appendLine("arch=" + arch() + " abi=" + Build.SUPPORTED_ABIS.joinToString(","))
-    sb.appendLine("sdk=" + Build.VERSION.SDK_INT)
-    val proot = prootFile(app)
-    sb.appendLine("proot=" + proot.absolutePath + " exists=" + proot.exists() +
-      " exec=" + proot.canExecute())
-    val fs = rootfsDir(app)
-    sb.appendLine("rootfs=" + fs.absolutePath)
-    val bad = try { verifyRootfs(fs) } catch (e: Exception) {
-      listOf("verify crashed: ${e.message}")
-    }
-    if (bad.isEmpty()) sb.appendLine("verify: OK") else bad.forEach {
-      sb.appendLine("verify MISSING: $it")
-    }
-    fun describe(f: File): String {
-      val p = f.toPath()
-      val link = try {
-        if (java.nio.file.Files.isSymbolicLink(p))
-          " -> " + java.nio.file.Files.readSymbolicLink(p) else ""
-      } catch (e: Exception) { " (link? ${e.message})" }
-      return f.name + link + " size=" + f.length()
-    }
-    for (rel in listOf("", "lib", "usr/lib", "usr/bin", "bin")) {
-      val d = if (rel.isEmpty()) fs else File(fs, rel)
-      sb.appendLine("--- ls $rel ---")
-      try {
-        (d.listFiles()?.sortedBy { it.name }?.take(60) ?: emptyList())
-          .forEach { sb.appendLine(describe(it)) }
-      } catch (e: Exception) { sb.appendLine("ls failed: ${e.message}") }
-    }
-    sb.appendLine("--- bootstrap_last.log ---")
-    try {
-      sb.append(File(rootDir(app), "bootstrap_last.log").readText().take(20000))
-    } catch (e: Exception) { sb.appendLine("no log: ${e.message}") }
-    sb.appendLine("--- gateway.log (service) ---")
-    try {
-      // Reader matches the writer: the service drains proc output to
-      // rootDir/gateway.log (startGateway), not logs/gateway.log.
-      sb.append(File(rootDir(app), "gateway.log").readText().takeLast(8000))
-    } catch (e: Exception) { sb.appendLine("no gateway.log yet: ${e.message}") }
-    val text = sb.toString()
-    val name = "hermes-install-log.txt"
-    if (Build.VERSION.SDK_INT >= 29) {
-      val values = android.content.ContentValues().apply {
-        put(android.provider.MediaStore.Downloads.DISPLAY_NAME, name)
-        put(android.provider.MediaStore.Downloads.MIME_TYPE, "text/plain")
-      }
-      val uri = app.contentResolver.insert(
-        android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
-      ) ?: throw RuntimeException("media insert failed")
-      app.contentResolver.openOutputStream(uri)!!.bufferedWriter().use {
-        it.write(text)
-      }
-      return "log saved: Download/$name"
-    }
-    val out = File(
-      android.os.Environment.getExternalStoragePublicDirectory(
-        android.os.Environment.DIRECTORY_DOWNLOADS), name)
-    out.writeText(text)
-    return "log saved: ${out.absolutePath}"
   }
 
   /** Pulls data.tar.xz out of a Termux .deb and unpacks it under dest. */
@@ -1014,15 +1056,21 @@ object Bootstrap {
               if (name.isEmpty()) { entry = tar.nextEntry; continue }
             }
             val out = File(dest, name)
-            // zip-slip guard (real archives verified clean, latent only)
-            if (!out.canonicalPath.startsWith(destCanon)) { entry = tar.nextEntry; continue }
+            // zip-slip guard. Must compare against destCanon + separator:
+            // a bare prefix lets "../debian-evil/x" through when dest is
+            // ".../debian" (string prefix, no boundary), which is exactly
+            // what the guestFile() link guard below already rejects.
+            val canon = try { out.canonicalPath } catch (_: Exception) { "" }
+            if (canon.isEmpty() || !canon.startsWith(destCanon + File.separator)) {
+              entry = tar.nextEntry; continue
+            }
             if (entry.isDirectory) {
               out.mkdirs()
             } else if (entry.isSymbolicLink) {
               out.parentFile?.mkdirs()
               out.delete()
               try {
-                java.nio.file.Files.createSymbolicLink(out.toPath(), java.nio.file.Paths.get(entry.linkName))
+                createSymlink(out, entry.linkName)
               } catch (e: Exception) {
                 // Retry after the full pass (parent dirs may arrive later in the tar).
                 pending += PendingLink(out, guestFile(entry.linkName), true, entry.linkName, entry.mode)
@@ -1031,7 +1079,7 @@ object Bootstrap {
               out.parentFile?.mkdirs()
               out.delete()
               try {
-                java.nio.file.Files.createLink(out.toPath(), guestFile(entry.linkName).toPath())
+                createHardLink(out, guestFile(entry.linkName))
               } catch (e: Exception) {
                 // Classic tar-ordering failure: link target not extracted yet.
                 // Defer, do NOT abort 10k extracted files over one link.
@@ -1068,9 +1116,9 @@ object Bootstrap {
           p.out.parentFile?.mkdirs()
           p.out.delete()
           if (p.symlink) {
-            java.nio.file.Files.createSymbolicLink(p.out.toPath(), java.nio.file.Paths.get(p.rawTarget))
+            createSymlink(p.out, p.rawTarget)
           } else {
-            java.nio.file.Files.createLink(p.out.toPath(), p.target.toPath())
+            createHardLink(p.out, p.target)
           }
         } catch (e: Exception) {
           // Last resort for hardlinks: byte-copy the target (same content,
@@ -1078,7 +1126,7 @@ object Bootstrap {
           // Carry the entry's exec bit across the copy so copied binaries run.
           try {
             if (!p.symlink && p.target.isFile) {
-              java.nio.file.Files.copy(p.target.toPath(), p.out.toPath())
+              copyFile(p.target, p.out)
               if (p.mode and 0b001_000_000 != 0) p.out.setExecutable(true, false)
               if (p.mode and 0b100_000_000 != 0) p.out.setReadable(true, false)
             } else throw e

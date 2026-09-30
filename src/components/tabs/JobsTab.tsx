@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Play,
   Pause,
@@ -30,8 +30,18 @@ import {
   resolveDeviceTimezone,
   scheduleSummary,
 } from '../../utils/jobTime';
+import { resolveListUiState } from '../../services/pagination';
 
 const OVERDUE_GRACE_MS = 5 * 60 * 1000;
+
+// List sync envelope shape (subset) read out of context.listsMeta. Same
+// shape the Home tab reads, so both screens interpret one envelope.
+interface ListMetaLike {
+  live?: boolean;
+  stale?: boolean;
+  error?: string;
+  lastSyncedAt?: number | null;
+}
 
 type PendingAction = 'pause' | 'resume' | 'run' | 'delete' | 'stop';
 type ToastTone = 'success' | 'error';
@@ -112,6 +122,8 @@ const RUN_STATUS_KEYS: Record<string, { key: string; fallback: string }> = {
   failure: { key: 'runStatusFailed', fallback: 'Failed' },
   error: { key: 'runStatusFailed', fallback: 'Failed' },
   errored: { key: 'runStatusFailed', fallback: 'Failed' },
+  delivery_failed: { key: 'runStatusFailed', fallback: 'Failed' },
+  'delivery failed': { key: 'runStatusFailed', fallback: 'Failed' },
   timeout: { key: 'runStatusTimeout', fallback: 'Timed out' },
   'timed-out': { key: 'runStatusTimeout', fallback: 'Timed out' },
   'timed out': { key: 'runStatusTimeout', fallback: 'Timed out' },
@@ -185,9 +197,51 @@ const formatDuration = (startedAt: string, finishedAt: string): string => {
   return `${hrs}h ${mins % 60}m`;
 };
 
+// Toasts live in a module store, not in component state: App.tsx unmounts this
+// tab the moment another tab is picked, and an owner-scoped list died with it,
+// so a "Task created" confirmation vanished if the user switched tabs inside
+// the three seconds it was on screen. The timers belong to the store too, so
+// nothing is left running against an unmounted component.
+type JobsToast = { id: number; msg: string; tone: ToastTone };
+
+let toastStore: JobsToast[] = [];
+let toastSeq = 0;
+const toastTimers = new Map<number, ReturnType<typeof setTimeout>>();
+const toastListeners = new Set<(toasts: JobsToast[]) => void>();
+
+const emitToasts = (): void => {
+  const snapshot = [...toastStore];
+  for (const listener of toastListeners) listener(snapshot);
+};
+
+const pushToast = (msg: string, tone: ToastTone = 'success'): void => {
+  const id = ++toastSeq;
+  toastStore = [...toastStore.slice(-2), { id, msg, tone }];
+  emitToasts();
+  // Failures need reading time: they carry a cause and a next step, so
+  // they stay up longer than a confirmation.
+  const timer = setTimeout(() => {
+    toastTimers.delete(id);
+    toastStore = toastStore.filter((toastItem) => toastItem.id !== id);
+    emitToasts();
+  }, tone === 'error' ? 7000 : 3000);
+  toastTimers.set(id, timer);
+};
+
+// New listeners inherit whatever is still showing, so a tab that remounts
+// mid-display keeps the notice instead of starting blank.
+const subscribeToasts = (listener: (toasts: JobsToast[]) => void): (() => void) => {
+  toastListeners.add(listener);
+  listener([...toastStore]);
+  return () => {
+    toastListeners.delete(listener);
+  };
+};
+
 export const JobsTab: React.FC = () => {
   const hermes = useHermes();
-  const { jobs, createJob, jobAction, cronRuns, fetchRuns, refreshJobs, t } = hermes;
+  const { jobs, createJob, jobAction, cronRuns, fetchRuns, refreshJobs, connected, listsMeta, t } =
+    hermes;
   const updateJob = (hermes as unknown as {
     updateJob?: (id: string, patch: { name?: string; schedule?: string; prompt?: string }) => Promise<boolean>;
   }).updateJob;
@@ -219,10 +273,16 @@ export const JobsTab: React.FC = () => {
   const [createFieldErrors, setCreateFieldErrors] = useState<ServerFieldError[]>([]);
   const [createMissing, setCreateMissing] = useState<string[]>([]);
   const [isCreating, setIsCreating] = useState(false);
+  // Creation panel visibility. With tasks on screen the builder starts
+  // collapsed so the list leads; see createCardNode for where each state renders.
+  const [createOpen, setCreateOpen] = useState(false);
   // Stacked toasts so concurrent create/action/delete notices don't
   // overwrite each other (single-slot toasts lost all but the last). Tone is
-  // carried per toast so a failure never renders in the success style.
-  const [toasts, setToasts] = useState<{ id: number; msg: string; tone: ToastTone }[]>([]);
+  // carried per toast so a failure never renders in the success style. The
+  // list itself lives in the module store above, so switching tabs (which
+  // unmounts this component) no longer erases a notice in flight.
+  const [toasts, setToasts] = useState<JobsToast[]>(() => [...toastStore]);
+  useEffect(() => subscribeToasts(setToasts), []);
 
   // Edit form state (shares displayTz above; opening edit never resets it)
   const [editingJob, setEditingJob] = useState<CronJob | null>(null);
@@ -235,12 +295,10 @@ export const JobsTab: React.FC = () => {
   const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   // Jobs list sync state: distinguishes gateway error from a truly empty
-  // list (jobs.length === 0 alone cannot tell them apart). jobsLive tracks
-  // the envelope's live flag so cached rows are never presented as current.
-  const [jobsLoading, setJobsLoading] = useState(true);
-  const [jobsLive, setJobsLive] = useState(false);
-  const [jobsStale, setJobsStale] = useState(false);
-  const [jobsError, setJobsError] = useState('');
+  // list (jobs.length === 0 alone cannot tell them apart). The live/stale/
+  // error verdict itself comes from the shared envelope below, so this
+  // screen and Home can never describe the same rows differently.
+  const [jobsLoading, setJobsLoading] = useState(() => !listsMeta['jobs']);
 
   // Search & history
   const [query, setQuery] = useState('');
@@ -252,8 +310,6 @@ export const JobsTab: React.FC = () => {
   // labelled actions clipped; the two common actions stay inline and the rest
   // live in a bottom sheet.
   const [menuJobId, setMenuJobId] = useState<string | null>(null);
-  const toastTimeouts = useRef<ReturnType<typeof setTimeout>[]>([]);
-  const toastId = useRef(0);
 
   // JOB-04: optimistic overrides with rollback. Context jobs are the
   // source of truth; these layers apply instantly and roll back on failure.
@@ -267,15 +323,18 @@ export const JobsTab: React.FC = () => {
   // other sheet in the app.
   const menuRef = useOverlayBehavior(Boolean(menuJobId), () => setMenuJobId(null));
 
-  useEffect(() => {
-    const timeouts = toastTimeouts.current;
-    return () => {
-      for (const id of timeouts) clearTimeout(id);
-    };
-  }, []);
+  // The delete confirm and the edit form are overlays on the same contract:
+  // Escape, the Android back button and a focus trap go through the shared
+  // stack, so neither dialog can strand focus or ignore back navigation.
+  const deleteDialogRef = useOverlayBehavior(Boolean(pendingDeleteJob), () =>
+    setPendingDeleteJob(null)
+  );
+  const editDialogRef = useOverlayBehavior(Boolean(editingJob), () => setEditingJob(null));
 
   const presets = [
-    { label: tx('presetOnce', 'Run once'), val: 'once' },
+    // One-shot the gateway understands: 'once' is not a desktop schedule
+    // (parse_schedule rejects it), relative 'in 30m' fires a single run.
+    { label: tx('presetOnce', 'Run once'), val: 'in 30m' },
     { label: tx('presetDaily9', 'Daily at 9am'), val: 'every day 9am' },
     { label: tx('presetWeekdays9', 'Weekdays at 9am'), val: 'every weekday 9am' },
     { label: tx('presetHourly', 'Every hour'), val: 'every 1h' },
@@ -316,40 +375,60 @@ export const JobsTab: React.FC = () => {
   }, [deviceTz]);
 
   const showToast = (msg: string, tone: ToastTone = 'success') => {
-    const id = ++toastId.current;
-    setToasts((prev) => [...prev.slice(-2), { id, msg, tone }]);
-    // Failures need reading time: they carry a cause and a next step, so
-    // they stay up longer than a confirmation.
-    const timer = setTimeout(() => {
-      setToasts((prev) => prev.filter((toastItem) => toastItem.id !== id));
-    }, tone === 'error' ? 7000 : 3000);
-    toastTimeouts.current.push(timer);
+    pushToast(msg, tone);
   };
 
-  // Jobs list truthfulness: a live envelope check on mount. The envelope's
-  // live flag decides everything: a non-live result (cached rows or a bare
-  // failure) must surface as not live regardless of how many items it holds.
-  const applyJobsEnvelope = (live: boolean, stale: boolean, error: string | undefined) => {
-    setJobsLive(live);
-    setJobsStale(Boolean(live) ? false : stale);
-    setJobsError(live ? '' : friendlyGatewayError(error, lang));
-  };
+  // Jobs list truthfulness: the same context envelope the Home tab reads,
+  // resolved with the shared helper. The rows rendered here are context
+  // rows, so their liveness has to come from the same source: a private
+  // fetch could report "not confirmed" here while Home reports the very
+  // same list as live (or the reverse).
+  const jobMeta: ListMetaLike | undefined = listsMeta['jobs'];
+  const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+  const jobsListState = resolveListUiState(
+    {
+      live: jobMeta ? jobMeta.live === true : connected,
+      stale: jobMeta ? jobMeta.stale === true : !connected && jobs.length > 0,
+      error:
+        jobMeta?.error ||
+        (!connected ? tx('notReachable', 'Hermes is not reachable.') : undefined),
+    },
+    jobs.length,
+    { offline: browserOffline || !connected }
+  );
+  const jobsCountKnown =
+    jobsListState === 'live' || jobsListState === 'empty' || jobsListState === 'refreshing';
+  const jobsStale = jobMeta?.stale === true;
+  // Transport detail for the disclosures only; never the sentence on the card.
+  // Only a real envelope error qualifies: a list that is merely mid-refresh
+  // has no cause to disclose, and inventing one would claim a failure.
+  const jobsError = jobMeta?.error ? friendlyGatewayError(jobMeta.error, lang) : '';
+  // Never synced at all, or still fetching a first list, counts as loading
+  // rather than a failure.
+  const jobsPanelState: 'loading' | 'stale' | 'error' | null =
+    jobsLoading && jobs.length === 0
+      ? 'loading'
+      : jobsCountKnown
+        ? null
+        : !jobMeta
+          ? 'loading'
+          : jobsListState === 'stale' || jobsListState === 'offline'
+            ? 'stale'
+            : 'error';
 
   useEffect(() => {
+    // The context publishes the envelope on load and on every reconnect, but a
+    // list read while the tab was closed can still be stale: ask for a fresh one
+    // on mount so runs that finished in the background show up.
     let cancelled = false;
     setJobsLoading(true);
-    (async () => {
-      try {
-        const res = await hermes.service.jobsWithState();
-        if (cancelled) return;
-        applyJobsEnvelope(res.live, res.stale, res.error);
-      } catch (e) {
-        if (cancelled) return;
-        applyJobsEnvelope(false, false, e instanceof Error ? e.message : '');
-      } finally {
+    refreshJobs()
+      .catch(() => {
+        // refreshJobs writes the failure envelope itself.
+      })
+      .finally(() => {
         if (!cancelled) setJobsLoading(false);
-      }
-    })();
+      });
     return () => {
       cancelled = true;
     };
@@ -361,13 +440,7 @@ export const JobsTab: React.FC = () => {
     try {
       await refreshJobs();
     } catch {
-      // refreshJobs reports failure through the list state below.
-    }
-    try {
-      const res = await hermes.service.jobsWithState();
-      applyJobsEnvelope(res.live, res.stale, res.error);
-    } catch (e) {
-      applyJobsEnvelope(false, false, e instanceof Error ? e.message : '');
+      // refreshJobs reports failure through the list state above.
     } finally {
       setJobsLoading(false);
     }
@@ -403,6 +476,8 @@ export const JobsTab: React.FC = () => {
       setSchedule('');
       setPrompt('');
       setCreateMissing([]);
+      // The new row lands at the top of the list above, so fold the form away.
+      setCreateOpen(false);
       await handleRetryJobs();
       showToast(
         `${tx('taskCreated', 'Task scheduled.')} ${tx('timesShownIn', 'Times shown in')} ${timezoneLabel(displayTz)}.`
@@ -417,7 +492,7 @@ export const JobsTab: React.FC = () => {
   const openEdit = (j: CronJob) => {
     setEditingJob(j);
     setEditName(j.name);
-    setEditSchedule(j.scheduleDisplay);
+    setEditSchedule(j.scheduleRaw || j.scheduleDisplay);
     setEditPrompt(j.prompt);
     // displayTz is shared and deliberately left untouched here.
     setEditError('');
@@ -596,6 +671,20 @@ export const JobsTab: React.FC = () => {
     }
   };
 
+  // Live runs: while a history panel is open on a job with an in-flight
+  // run, re-fetch every 15s so the status cannot go stale behind the panel.
+  useEffect(() => {
+    if (!historyForId || !connected) return;
+    const id = historyForId;
+    const tick = () => {
+      const runs = cronRuns[id] || [];
+      const live = runs.some((r) => RUN_ACTIVE_STATUSES.has(String((r as CronRun).status || '').trim().toLowerCase()));
+      if (live) void fetchRuns(id);
+    };
+    const timer = setInterval(tick, 15000);
+    return () => clearInterval(timer);
+  }, [historyForId, connected, cronRuns, fetchRuns]);
+
   const handleToggleHistory = async (j: CronJob) => {
     if (historyForId === j.id) {
       setHistoryForId(null);
@@ -606,7 +695,11 @@ export const JobsTab: React.FC = () => {
   };
 
   const isOverdue = (nextRunAt: string, enabled: boolean, state: string) => {
-    if (!enabled || state.toLowerCase() === 'paused') return false;
+    const s = state.toLowerCase();
+    // Terminal jobs never fire again: a stale past next_run_at on them is a
+    // record, not a missed run. Grace stays a fixed 5 minutes client-side
+    // (desktop computes it from the period; the period is not exposed here).
+    if (!enabled || s === 'paused' || s === 'completed' || s === 'error') return false;
     if (!nextRunAt) return false;
     try {
       const target = new Date(nextRunAt).getTime();
@@ -626,7 +719,7 @@ export const JobsTab: React.FC = () => {
         return {
           ...j,
           enabled: override,
-          state: override ? 'active' : 'paused',
+          state: override ? 'scheduled' : 'paused',
         };
       });
   }, [jobs, hiddenIds, optimisticEnabled]);
@@ -674,6 +767,173 @@ export const JobsTab: React.FC = () => {
     );
   };
 
+  // Creation entry point: built once and rendered in exactly one place. With
+  // no tasks the builder sits above the list (the empty state points at "the
+  // form above"); once rows exist the list leads and creation collapses behind
+  // its own button, so statuses and next runs are what the screen opens on.
+  const canCollapseCreate = jobs.length > 0;
+  const createCardNode = (
+    <div id="job-create-card" className="r-md edge elev-0 bg-[var(--app-card)] p-5 space-y-4">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h2 className="t-heading text-[var(--app-text)]">{tx('jobsCreateTitle', 'Schedule a task')}</h2>
+          <p className="t-caption text-[var(--app-text-muted)] mt-1">
+            {tx('jobsCreateDesc', 'Choose when it runs and write what Hermes should do each time.')}
+          </p>
+        </div>
+        {canCollapseCreate && (
+          <button
+            type="button"
+            onClick={() => setCreateOpen(false)}
+            aria-label={tx('closeDialog', 'Close')}
+            className="w-11 h-11 -me-2 -mt-2 shrink-0 flex items-center justify-center r-sm text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)] cursor-pointer transition"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+
+      <div className="space-y-4">
+        <div>
+          <label htmlFor="job-name" className="block t-label text-[var(--app-text-muted)] mb-1">
+            {tx('taskNameLabel', 'Task name')}
+          </label>
+          <input
+            id="job-name"
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder={tx('taskNamePlaceholder', 'e.g. Morning briefing')}
+            aria-invalid={createMissing.includes('name')}
+            className={fieldClass(createMissing.includes('name'))}
+          />
+          {createMissing.includes('name') && (
+            <p className="t-caption text-[var(--app-danger)] mt-1">
+              {tx('taskNameRequired', 'Give this task a name.')}
+            </p>
+          )}
+        </div>
+
+        <div>
+          <label htmlFor="job-schedule" className="block t-label text-[var(--app-text-muted)] mb-1">
+            {tx('jobScheduleLabel', 'When should it run')}
+          </label>
+          <input
+            id="job-schedule"
+            type="text"
+            value={schedule}
+            onChange={(e) => setSchedule(e.target.value)}
+            placeholder={tx('jobSchedulePlaceholder', 'e.g. every day 9am')}
+            aria-invalid={createMissing.includes('schedule')}
+            className={fieldClass(createMissing.includes('schedule'))}
+          />
+          {createMissing.includes('schedule') && (
+            <p className="t-caption text-[var(--app-danger)] mt-1">
+              {tx('jobScheduleRequired', 'Add a timing for this task.')}
+            </p>
+          )}
+          {plainSummary(createSummary) && (
+            <p className="t-caption text-[var(--app-text-muted)] mt-1">
+              {plainSummary(createSummary)}
+            </p>
+          )}
+          {createHint && (
+            <p className="t-caption text-[var(--app-warning)] mt-1">{scheduleHintText}</p>
+          )}
+          {/* Quick presets: one scrollable rail of equal chips, so nothing
+              wraps and leaves a lone chip orphaned on a second row. */}
+          <div
+            className="hm-rail gap-2 mt-2 -mx-1 px-1"
+            role="group"
+            aria-label={tx('quickPresets', 'Quick presets')}
+          >
+            {presets.map((p) => (
+              <button
+                key={p.label}
+                type="button"
+                onClick={() => setSchedule(p.val)}
+                title={p.val === 'in 30m' ? tx('presetOnceNote', 'Runs one time, then stops.') : undefined}
+                className={presetChipClass}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <label htmlFor="job-tz" className="block t-label text-[var(--app-text-muted)] mb-1">
+            {tx('displayTimezone', 'Timezone for times shown')}
+          </label>
+          <select
+            id="job-tz"
+            value={displayTz}
+            onChange={(e) => setDisplayTz(e.target.value)}
+            className="w-full px-3 py-2 min-h-[44px] r-sm edge bg-[var(--app-input-bg)] t-body text-[var(--app-text)] focus:outline-none transition"
+          >
+            {timezoneOptions.map((tz) => (
+              <option key={tz} value={tz}>
+                {formatTimezoneOption(tz)}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => setShowTzNote((v) => !v)}
+            aria-expanded={showTzNote}
+            className="mt-1 inline-flex items-center gap-1 t-caption text-[var(--app-accent-text)] min-h-[40px] cursor-pointer"
+          >
+            {showTzNote ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            <span>{tx('timezoneNoteTitle', 'How times are shown')}</span>
+          </button>
+          {showTzNote && (
+            <p className="t-caption text-[var(--app-text-dim)]">
+              {tx(
+                'timezoneNote',
+                'This only changes how times look on this screen. The task keeps running on the time Hermes already uses.'
+              )}
+            </p>
+          )}
+        </div>
+
+        <div>
+          <label htmlFor="job-prompt" className="block t-label text-[var(--app-text-muted)] mb-1">
+            {tx('jobPromptLabel', 'What should it do')}
+          </label>
+          <textarea
+            id="job-prompt"
+            rows={3}
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder={tx(
+              'jobPromptPlaceholder',
+              'Write the message or instruction Hermes gets each time it runs.'
+            )}
+            aria-invalid={createMissing.includes('prompt')}
+            className={`${fieldClass(createMissing.includes('prompt'))} resize-none`}
+          />
+          {createMissing.includes('prompt') && (
+            <p className="t-caption text-[var(--app-danger)] mt-1">
+              {tx('jobPromptRequired', 'Write what Hermes should do.')}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {createError && <p className="t-caption text-[var(--app-danger)]">{createError}</p>}
+      {renderFieldErrors(createFieldErrors)}
+
+      <button
+        onClick={handleCreate}
+        disabled={isCreating}
+        className="w-full min-h-[48px] px-4 r-sm bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] disabled:opacity-50 text-[var(--app-on-accent)] t-body font-semibold transition cursor-pointer flex items-center justify-center gap-2"
+      >
+        <Plus className="w-4 h-4" />
+        <span>{isCreating ? tx('creating', 'Scheduling…') : tx('jobsCreateTitle', 'Schedule a task')}</span>
+      </button>
+    </div>
+  );
+
   return (
     <div className="space-y-6 max-w-2xl mx-auto px-4 pt-4 hm-tab-bottom">
       {/* Toast stack: overlays sit at elev-3, never a raw shadow. */}
@@ -684,10 +944,10 @@ export const JobsTab: React.FC = () => {
               key={toastItem.id}
               role={toastItem.tone === 'error' ? 'alert' : 'status'}
               aria-live={toastItem.tone === 'error' ? 'assertive' : 'polite'}
-              className={`px-4 py-2 r-sm elev-3 t-caption font-semibold text-center ${
+              className={`px-4 py-2 r-sm elev-3 t-caption font-semibold text-center break-words ${
                 toastItem.tone === 'error'
-                  ? 'bg-[var(--app-danger)] text-[var(--app-bg)]'
-                  : 'bg-[var(--app-accent)] text-[var(--app-bg)]'
+                  ? 'bg-[var(--app-danger-solid)] text-[var(--app-on-danger)]'
+                  : 'bg-[var(--app-accent)] text-[var(--app-on-accent)]'
               }`}
             >
               {toastItem.msg}
@@ -696,154 +956,9 @@ export const JobsTab: React.FC = () => {
         </div>
       )}
 
-      {/* 1. New task builder card */}
-      <div className="r-md edge elev-0 bg-[var(--app-card)] p-5 space-y-4">
-        <div>
-          <h2 className="t-heading text-[var(--app-text)]">{tx('jobsCreateTitle', 'Schedule a task')}</h2>
-          <p className="t-caption text-[var(--app-text-muted)] mt-1">
-            {tx('jobsCreateDesc', 'Choose when it runs and write what Hermes should do each time.')}
-          </p>
-        </div>
-
-        <div className="space-y-4">
-          <div>
-            <label htmlFor="job-name" className="block t-label text-[var(--app-text-muted)] mb-1">
-              {tx('taskNameLabel', 'Task name')}
-            </label>
-            <input
-              id="job-name"
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder={tx('taskNamePlaceholder', 'e.g. Morning briefing')}
-              aria-invalid={createMissing.includes('name')}
-              className={fieldClass(createMissing.includes('name'))}
-            />
-            {createMissing.includes('name') && (
-              <p className="t-caption text-[var(--app-danger)] mt-1">
-                {tx('taskNameRequired', 'Give this task a name.')}
-              </p>
-            )}
-          </div>
-
-          <div>
-            <label htmlFor="job-schedule" className="block t-label text-[var(--app-text-muted)] mb-1">
-              {tx('jobScheduleLabel', 'When should it run')}
-            </label>
-            <input
-              id="job-schedule"
-              type="text"
-              value={schedule}
-              onChange={(e) => setSchedule(e.target.value)}
-              placeholder={tx('jobSchedulePlaceholder', 'e.g. every day 9am')}
-              aria-invalid={createMissing.includes('schedule')}
-              className={fieldClass(createMissing.includes('schedule'))}
-            />
-            {createMissing.includes('schedule') && (
-              <p className="t-caption text-[var(--app-danger)] mt-1">
-                {tx('jobScheduleRequired', 'Add a timing for this task.')}
-              </p>
-            )}
-            {plainSummary(createSummary) && (
-              <p className="t-caption text-[var(--app-text-muted)] mt-1">
-                {plainSummary(createSummary)}
-              </p>
-            )}
-            {createHint && (
-              <p className="t-caption text-[var(--app-warning)] mt-1">{scheduleHintText}</p>
-            )}
-            {/* Quick presets: one scrollable rail of equal chips, so nothing
-                wraps and leaves a lone chip orphaned on a second row. */}
-            <div
-              className="hm-rail gap-2 mt-2 -mx-1 px-1"
-              role="group"
-              aria-label={tx('quickPresets', 'Quick presets')}
-            >
-              {presets.map((p) => (
-                <button
-                  key={p.label}
-                  type="button"
-                  onClick={() => setSchedule(p.val)}
-                  title={p.val === 'once' ? tx('presetOnceNote', 'Runs one time, then stops.') : undefined}
-                  className={presetChipClass}
-                >
-                  {p.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <label htmlFor="job-tz" className="block t-label text-[var(--app-text-muted)] mb-1">
-              {tx('displayTimezone', 'Timezone for times shown')}
-            </label>
-            <select
-              id="job-tz"
-              value={displayTz}
-              onChange={(e) => setDisplayTz(e.target.value)}
-              className="w-full px-3 py-2 min-h-[44px] r-sm edge bg-[var(--app-input-bg)] t-body text-[var(--app-text)] focus:outline-none transition"
-            >
-              {timezoneOptions.map((tz) => (
-                <option key={tz} value={tz}>
-                  {formatTimezoneOption(tz)}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              onClick={() => setShowTzNote((v) => !v)}
-              aria-expanded={showTzNote}
-              className="mt-1 inline-flex items-center gap-1 t-caption text-[var(--app-accent-text)] min-h-[40px] cursor-pointer"
-            >
-              {showTzNote ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-              <span>{tx('timezoneNoteTitle', 'How times are shown')}</span>
-            </button>
-            {showTzNote && (
-              <p className="t-caption text-[var(--app-text-dim)]">
-                {tx(
-                  'timezoneNote',
-                  'This only changes how times look on this screen. The task keeps running on the time Hermes already uses.'
-                )}
-              </p>
-            )}
-          </div>
-
-          <div>
-            <label htmlFor="job-prompt" className="block t-label text-[var(--app-text-muted)] mb-1">
-              {tx('jobPromptLabel', 'What should it do')}
-            </label>
-            <textarea
-              id="job-prompt"
-              rows={3}
-              value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
-              placeholder={tx(
-                'jobPromptPlaceholder',
-                'Write the message or instruction Hermes gets each time it runs.'
-              )}
-              aria-invalid={createMissing.includes('prompt')}
-              className={`${fieldClass(createMissing.includes('prompt'))} resize-none`}
-            />
-            {createMissing.includes('prompt') && (
-              <p className="t-caption text-[var(--app-danger)] mt-1">
-                {tx('jobPromptRequired', 'Write what Hermes should do.')}
-              </p>
-            )}
-          </div>
-        </div>
-
-        {createError && <p className="t-caption text-[var(--app-danger)]">{createError}</p>}
-        {renderFieldErrors(createFieldErrors)}
-
-        <button
-          onClick={handleCreate}
-          disabled={isCreating}
-          className="w-full min-h-[48px] px-4 r-sm bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] disabled:opacity-50 text-[var(--app-bg)] t-body font-semibold transition cursor-pointer flex items-center justify-center gap-2"
-        >
-          <Plus className="w-4 h-4" />
-          <span>{isCreating ? tx('creating', 'Scheduling…') : tx('jobsCreateTitle', 'Schedule a task')}</span>
-        </button>
-      </div>
+      {/* First run has no list to lead with, and the empty state points at
+          "the form above", so the builder stays above it until a task exists. */}
+      {jobs.length === 0 && createCardNode}
 
       {/* 2. Search & filter bar */}
       {jobs.length > 0 && (
@@ -862,7 +977,7 @@ export const JobsTab: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setQuery('')}
-                aria-label="Clear job search"
+                aria-label={tx('clearSearch', 'Clear the search')}
                 className="absolute end-0 top-1/2 -translate-y-1/2 w-11 h-11 flex items-center justify-center r-sm text-[var(--app-text-dim)] hover:text-[var(--app-text)] transition"
               >
                 <X className="w-3.5 h-3.5" />
@@ -902,7 +1017,7 @@ export const JobsTab: React.FC = () => {
           {/* Count is only meaningful for a live list: a failed load must not
               print a fabricated (0) next to an "unavailable" message. */}
           {tx('scheduledTasksHeading', 'Scheduled tasks')}
-          {jobsLive
+          {jobsCountKnown
             ? ` (${visibleJobs.length} ${
                 visibleJobs.length === 1 ? tx('taskWord', 'task') : tx('tasksWord', 'tasks')
               })`
@@ -911,7 +1026,7 @@ export const JobsTab: React.FC = () => {
 
         {/* Not live with rows on screen: the list is a cached snapshot. The
             transport detail stays behind the disclosure. */}
-        {!jobsLive && !jobsLoading && jobs.length > 0 && (
+        {jobsPanelState === 'stale' && (
           <div
             role="status"
             className="p-3 r-md bg-[var(--app-warning-subtle)] border border-[var(--app-warning-border)] space-y-1"
@@ -932,14 +1047,14 @@ export const JobsTab: React.FC = () => {
           </div>
         )}
 
-        {jobsLoading && jobs.length === 0 ? (
+        {jobsPanelState === 'loading' ? (
           <div
             className="p-6 r-md edge elev-0 bg-[var(--app-card)] text-center t-caption text-[var(--app-text-muted)]"
             role="status"
           >
             {tx('jobsLoading', 'Loading your tasks…')}
           </div>
-        ) : !jobsLive && jobs.length === 0 ? (
+        ) : jobsPanelState === 'error' ? (
           <div
             className="p-6 r-md bg-[var(--app-danger-subtle)] border border-[var(--app-danger-border)] text-center space-y-3"
             role="alert"
@@ -948,8 +1063,13 @@ export const JobsTab: React.FC = () => {
               {tx('tasksUnavailableTitle', 'Could not load your scheduled tasks')}
             </p>
             <p className="t-caption text-[var(--app-text-muted)]">
-              {tx('tasksUnavailableBody', 'Nothing was lost. Check that Hermes is running, then try again.')}
+              {tx('tasksUnavailableBody', 'Nothing was lost. Refresh to try again.')}
             </p>
+            {/404|not found|no route/i.test(jobsError) && (
+              <p className="t-caption text-[var(--app-text-muted)]">
+                {tx('jobsDesktopOnlyPlain', 'Scheduled tasks live on the desktop gateway. This server does not have them.')}
+              </p>
+            )}
             {jobsError && (
               <details className="r-sm text-start">
                 <summary className="cursor-pointer t-caption text-[var(--app-text-dim)]">
@@ -962,14 +1082,14 @@ export const JobsTab: React.FC = () => {
               type="button"
               onClick={() => void handleRetryJobs()}
               disabled={jobsLoading}
-              className="px-4 min-h-[44px] r-sm bg-[var(--app-danger)] disabled:opacity-50 text-[var(--app-bg)] t-caption font-semibold cursor-pointer transition"
+              className="px-4 min-h-[44px] r-sm bg-[var(--app-danger-solid)] disabled:opacity-50 text-[var(--app-on-danger)] t-caption font-semibold cursor-pointer transition"
             >
               {jobsLoading ? tx('retrying', 'Retrying…') : tx('retry', 'Retry')}
             </button>
           </div>
         ) : jobs.length === 0 ? (
           <div className="p-6 r-md edge elev-0 bg-[var(--app-card)] text-center space-y-2">
-            <p className="t-body font-semibold text-[var(--app-text)]">
+            <p className="t-heading text-[var(--app-text)]">
               {tx('jobsEmptyTitle', 'No scheduled tasks yet')}
             </p>
             <p className="t-caption text-[var(--app-text-muted)]">
@@ -986,6 +1106,7 @@ export const JobsTab: React.FC = () => {
             const isFailed =
               j.lastStatus.toLowerCase() === 'failed' ||
               j.lastStatus.toLowerCase() === 'error' ||
+              j.lastStatus.toLowerCase() === 'delivery_failed' ||
               Boolean(j.lastError);
             const isHistoryOpen = historyForId === j.id;
             const runsRaw = cronRuns[j.id];
@@ -1009,7 +1130,7 @@ export const JobsTab: React.FC = () => {
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <h4 className="t-body font-semibold text-[var(--app-text)] truncate">
+                      <h4 className="t-heading text-[var(--app-text)] truncate">
                         {j.name}
                       </h4>
                       {overdue && <span className="pill-danger">{tx('overdue', 'Overdue')}</span>}
@@ -1238,6 +1359,24 @@ export const JobsTab: React.FC = () => {
         )}
       </div>
 
+      {/* With rows on screen the list leads. Creation sits behind a single
+          button so statuses and next runs stay above the fold. */}
+      {jobs.length > 0 &&
+        (createOpen ? (
+          createCardNode
+        ) : (
+          <button
+            type="button"
+            onClick={() => setCreateOpen(true)}
+            aria-expanded={false}
+            className="w-full min-h-[48px] px-4 r-md edge elev-0 bg-[var(--app-card)] hover:bg-[var(--app-card-hover)] text-[var(--app-accent-text)] t-body font-semibold flex items-center justify-center gap-2 cursor-pointer transition"
+          >
+            <Plus className="w-4 h-4" />
+            <span>{tx('jobsCreateTitle', 'Schedule a task')}</span>
+            <ChevronDown className="w-4 h-4" />
+          </button>
+        ))}
+
       {/* Per-row action overflow sheet. Bottom sheet so every item is a full
           48px target and the destructive action is set off on its own. */}
       {menuJob && (
@@ -1330,6 +1469,7 @@ export const JobsTab: React.FC = () => {
       {/* Delete confirm modal */}
       {pendingDeleteJob && (
         <div
+          ref={deleteDialogRef}
           role="dialog"
           aria-modal="true"
           aria-label={`${tx('deleteTaskTitle', 'Delete this task')}: ${pendingDeleteJob.name}`}
@@ -1343,7 +1483,7 @@ export const JobsTab: React.FC = () => {
             onClick={(e) => e.stopPropagation()}
           >
             <h3 className="t-heading text-[var(--app-text)]">
-              {tx('deleteTaskTitle', 'Delete this task?')}
+              {tx('deleteTaskTitle', 'Delete this task')}
             </h3>
             <p className="t-body text-[var(--app-text-muted)]">
               {tx('deleteTaskBody', 'This removes the task for good, so it cannot be undone.')}{' '}
@@ -1358,7 +1498,7 @@ export const JobsTab: React.FC = () => {
               </button>
               <button
                 onClick={() => handleDeleteConfirm(pendingDeleteJob)}
-                className="px-4 min-h-[44px] r-sm bg-[var(--app-danger)] hover:opacity-90 text-[var(--app-bg)] t-caption font-semibold cursor-pointer transition"
+                className="px-4 min-h-[44px] r-sm bg-[var(--app-danger-solid)] hover:opacity-90 text-[var(--app-on-danger)] t-caption font-semibold cursor-pointer transition"
               >
                 {t('delete')}
               </button>
@@ -1370,6 +1510,7 @@ export const JobsTab: React.FC = () => {
       {/* Edit modal */}
       {editingJob && (
         <div
+          ref={editDialogRef}
           role="dialog"
           aria-modal="true"
           aria-label={`Edit ${editingJob.name}`}
@@ -1450,7 +1591,7 @@ export const JobsTab: React.FC = () => {
                       key={p.label}
                       type="button"
                       onClick={() => setEditSchedule(p.val)}
-                      title={p.val === 'once' ? tx('presetOnceNote', 'Runs one time, then stops.') : undefined}
+                      title={p.val === 'in 30m' ? tx('presetOnceNote', 'Runs one time, then stops.') : undefined}
                       className={presetChipClass}
                     >
                       {p.label}
@@ -1508,7 +1649,7 @@ export const JobsTab: React.FC = () => {
               <button
                 onClick={handleSaveEdit}
                 disabled={isSavingEdit}
-                className="px-4 min-h-[44px] r-sm bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] disabled:opacity-50 text-[var(--app-bg)] t-caption font-semibold cursor-pointer transition"
+                className="px-4 min-h-[44px] r-sm bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] disabled:opacity-50 text-[var(--app-on-accent)] t-caption font-semibold cursor-pointer transition"
               >
                 {isSavingEdit ? tx('saving', 'Saving…') : tx('saveShort', 'Save')}
               </button>

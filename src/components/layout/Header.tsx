@@ -6,10 +6,13 @@ import {
   SidebarOpen,
   PanelRightClose,
   PanelRightOpen,
-  MoreVertical,
+  Zap,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
+import { useOverlayBehavior } from '../../hooks/useOverlayBehavior';
 import { localizedMessage, toAppError } from '../../services/appErrors';
+import { AUTH_FAILURE_RE, TAB_HASHES } from '../../constants/tabs';
+import { formatBadgeCount } from '../../utils/badge';
 
 interface HeaderProps {
   onOpenDrawer: () => void;
@@ -28,21 +31,10 @@ interface HeaderProps {
   title?: string;
 }
 
-// Extra failure-flag spellings, probed in addition to the typed context
-// fields. HomeTab probes the same variants, and the two screens must never
-// answer differently about one connection.
-interface GatewayFailureSignals {
-  gatewayUnauthorized?: boolean;
-  gatewayAuthFailed?: boolean;
-  gatewayAuthRejected?: boolean;
-  unauthorized?: boolean;
-  authFailed?: boolean;
-}
-
-// Exactly the rule HomeTab applies to the list sync envelopes: an
-// authenticated list call rejected (HTTP 401/403 while health stayed green)
-// means the stored key is stale, not that the server is offline.
-const AUTH_FAILURE_RE = /401|403|auth/i;
+// The stored-key rejection signal itself is shared with HomeTab, it lives in
+// constants/tabs.ts so both banners can never disagree about what counts as
+// an auth failure. This broader pattern is only for localised failure *text*,
+// which may name the key in words instead of carrying a status code.
 const AUTH_FAILURE_PATTERN = /401|403|unauthori[sz]ed|forbidden|rejected the key|invalid (api )?key|server key/i;
 
 const APP_TITLE = 'Hermes Agent';
@@ -52,7 +44,7 @@ const APP_TITLE = 'Hermes Agent';
 const SCREEN_TITLE: Record<number, { key: string; fallback: string }> = {
   0: { key: 'tabHome', fallback: 'Home' },
   1: { key: 'tabChat', fallback: 'Chat' },
-  2: { key: 'tabJobs', fallback: 'Jobs' },
+  2: { key: 'tabTerminal', fallback: 'Terminal' },
   3: { key: 'tabSettings', fallback: 'Settings' },
 };
 
@@ -60,13 +52,13 @@ const SCREEN_TITLE: Record<number, { key: string; fallback: string }> = {
 // localStorage). When no title/activeTab prop is passed the header reads the
 // same read-only signal so the screen name still tracks navigation instead of
 // being stuck on the app name. The prop always wins when it is supplied.
-const TAB_HASHES = ['#/home', '#/chat', '#/jobs', '#/settings'];
+// TAB_HASHES comes from constants/tabs.ts, the one list both files use.
 const TAB_STORAGE_KEY = 'hermes_current_tab';
 
 function readPersistedTab(): number | null {
   if (typeof window === 'undefined') return null;
   try {
-    const fromHash = TAB_HASHES.indexOf(window.location.hash);
+    const fromHash = (TAB_HASHES as readonly string[]).indexOf(window.location.hash);
     if (fromHash >= 0) return fromHash;
     const saved = parseInt(localStorage.getItem(TAB_STORAGE_KEY) || '', 10);
     if (Number.isInteger(saved) && saved >= 0 && saved < TAB_HASHES.length) return saved;
@@ -118,29 +110,33 @@ export const Header: React.FC<HeaderProps> = ({
   };
   const lang = settings?.language || 'en';
 
-  const isHealthy = connected;
+  // One rule, shared with the Home status card: a connection counts only
+  // when the health check answers AND no failure is on record. `connected`
+  // alone is not enough, because a rejected key and a failed start both
+  // leave it true, so the pill would read green while the key is refused.
+  const effectivelyConnected = connected && !gatewayFailed && !gatewayFailureKind;
+  const isHealthy = effectivelyConnected;
   const isConnecting = install === 'RUNNING' || install === 'INSTALLING';
 
-  // The pill and the Home status card describe ONE connection, so this reads
-  // the same signals in the same order HomeTab does: a reachable server that
-  // rejects the key is a failure (not connected), a failed install or start
-  // is a failure, and neither may ever be reported as connected just because
-  // the health check happens to answer.
-  const signals = hermes as unknown as GatewayFailureSignals;
+  // The pill and the Home status card describe ONE connection: a reachable
+  // server that rejects the key is a failure (not connected), a failed
+  // install or start is a failure, and neither may ever be reported as
+  // connected just because the health check happens to answer. The typed
+  // context fields are the whole contract here; the five untyped probe
+  // spellings this used to read were never set by any module and are gone.
   const failureText = `${gatewayFailureReason || ''} ${gatewayStatus?.detail || ''}`;
   const authFailureFromLists = [listsMeta['sessions'], listsMeta['jobs']].some(
     (meta) => !!meta?.error && AUTH_FAILURE_RE.test(meta.error)
   );
   const isUnauthorized =
     gatewayFailureKind === 'unauthorized' ||
-    signals.gatewayUnauthorized === true ||
-    signals.gatewayAuthFailed === true ||
-    signals.gatewayAuthRejected === true ||
-    signals.unauthorized === true ||
-    signals.authFailed === true ||
     AUTH_FAILURE_PATTERN.test(failureText) ||
     authFailureFromLists;
-  const isFailed = gatewayFailed === true || install === 'FAILED' || isUnauthorized;
+  const isFailed =
+    gatewayFailed === true ||
+    !!gatewayFailureKind ||
+    install === 'FAILED' ||
+    isUnauthorized;
 
   const statusState: 'connected' | 'starting' | 'failed' | 'offline' = isFailed
     ? 'failed'
@@ -163,24 +159,27 @@ export const Header: React.FC<HeaderProps> = ({
 
   // The single status pill reads the real gateway state through the shared
   // badge vocabulary: connected success, starting warning, failed and
-  // key-rejected danger, offline neutral.
-  const statusPillClass =
-    statusState === 'connected'
-      ? 'pill-success'
-      : statusState === 'starting'
-        ? 'pill-warning'
-        : statusState === 'failed'
-          ? 'pill-danger'
-          : 'pill-neutral';
-
-  const statusDotColor =
-    statusState === 'connected'
-      ? 'var(--app-success)'
-      : statusState === 'starting'
-        ? 'var(--app-warning)'
-        : statusState === 'failed'
-          ? 'var(--app-danger)'
-          : 'var(--app-text-dim)';
+  // key-rejected danger, offline neutral. Green is health only, because
+  // statusState can only reach 'connected' through effectivelyConnected
+  // above, and a stopped gateway keeps the neutral pill (text carries the
+  // state, never the colour alone).
+  // Connection lamp: a green/red dot only, never a text badge. Tapping it
+  // shows a floating tooltip (Connected / Not connected) that auto-hides
+  // after a few seconds. The aria label always carries the full state so
+  // the colour is never the only signal.
+  const [statusTipOpen, setStatusTipOpen] = useState(false);
+  const statusTipTimer = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (statusTipTimer.current !== null) window.clearTimeout(statusTipTimer.current);
+    };
+  }, []);
+  const lampColor = statusState === 'connected' ? 'var(--app-success)' : 'var(--app-danger)';
+  const toggleStatusTip = () => {
+    if (statusTipTimer.current !== null) window.clearTimeout(statusTipTimer.current);
+    setStatusTipOpen(true);
+    statusTipTimer.current = window.setTimeout(() => setStatusTipOpen(false), 2500);
+  };
 
   const statusTitle =
     statusState === 'failed'
@@ -218,6 +217,9 @@ export const Header: React.FC<HeaderProps> = ({
         : tx(screenEntry.key, screenEntry.fallback)
       : APP_TITLE;
   const isHomeTitle = screenTitle === APP_TITLE;
+  // Mockup header (chat tab): a live dot + "Hermes Chat" title with the
+  // active model as a mono subtitle below. Other tabs keep the plain screen
+  // name; an explicit title prop always wins.
 
   // The chip used to print settings.modelId straight out, so a bare provider
   // id read as if it were a model name and an unset model left a dangling
@@ -236,6 +238,7 @@ export const Header: React.FC<HeaderProps> = ({
     return tail;
   }, [models, settings?.modelId, settings?.provider]);
 
+  const isChatTitle = !hasTitle && tabIndex === 1;
   const approvalCount = approvals.length;
   // The badge says what it counts, so a bare "3" can never read as unread
   // messages.
@@ -257,18 +260,13 @@ export const Header: React.FC<HeaderProps> = ({
   // collapses into a single control with one menu.
   const [menuOpen, setMenuOpen] = useState(false);
   const menuWrapRef = useRef<HTMLDivElement | null>(null);
+  // The overflow menu is an overlay like every other popup: Escape, the
+  // Android back button and Tab containment come from the shared stack, and
+  // focus returns to the trigger when it closes.
+  const menuOverlayRef = useOverlayBehavior(menuOpen, () => setMenuOpen(false));
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.stopPropagation();
-        setMenuOpen(false);
-      }
-    };
-    document.addEventListener('keydown', onKeyDown, true);
-    return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [menuOpen]);
+  // Escape is handled once, by useOverlayBehavior above. A second capture
+  // listener here would be a duplicate that fires alongside it.
 
   // Close the menu whenever the screen changes out from under it.
   useEffect(() => {
@@ -277,9 +275,8 @@ export const Header: React.FC<HeaderProps> = ({
 
   return (
     <header
-      className="sticky top-0 z-30 backdrop-blur-xl border-b elev-2 edge flex items-center justify-between gap-2 px-3 sm:px-4 py-2"
+      className="glass-nav sticky top-0 z-30 border-b border-[var(--app-border)]/70 flex items-center justify-between gap-2 px-3 sm:px-4 py-2.5"
       style={{
-        backgroundColor: 'var(--app-bg)',
         // Edge-to-edge (viewport-fit=cover, targetSdk 36): the status bar and
         // notch overlay the top of the viewport, so the header must inset
         // itself or its content sits under the system bar. minHeight reserves
@@ -293,15 +290,15 @@ export const Header: React.FC<HeaderProps> = ({
           With the app name on stage this group never shrinks, so no squeeze
           from the right can reach the name; a screen name may shrink and clip
           instead of pushing the controls out of reach. */}
-      <div className={`flex items-center gap-2 ${isHomeTitle ? 'shrink-0' : 'min-w-0'}`}>
+      <div className={`flex items-center gap-2 sm:gap-3 ${isHomeTitle ? 'shrink-0' : 'min-w-0'}`}>
         {!isDesktop ? (
           <button
             onClick={onOpenDrawer}
-            className="min-w-[44px] min-h-[44px] r-xs edge flex items-center justify-center shrink-0 text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)] active:scale-95 transition-all"
+            className="w-10 h-10 min-w-[40px] rounded-xl bg-[var(--app-card)] hover:bg-[var(--app-card-hover)] border border-[var(--app-border)] flex items-center justify-center shrink-0 text-[var(--app-text-muted)] hover:text-[var(--app-text)] active:scale-95 transition-all shadow-sm"
             title={tx('openChats', 'Open chats')}
             aria-label={tx('openChats', 'Open chats')}
           >
-            <Menu className="w-4 h-4" />
+            <Menu className="w-5 h-5" />
           </button>
         ) : (
           <button
@@ -310,7 +307,7 @@ export const Header: React.FC<HeaderProps> = ({
             title={sidebarCollapsed ? tx('expandSidebar', 'Expand sidebar') : tx('collapseSidebar', 'Collapse sidebar')}
             aria-label={sidebarCollapsed ? tx('expandSidebar', 'Expand sidebar') : tx('collapseSidebar', 'Collapse sidebar')}
           >
-            {sidebarCollapsed ? <SidebarOpen className="w-4 h-4 rtl-flip" /> : <SidebarClose className="w-4 h-4 rtl-flip" />}
+            {sidebarCollapsed ? <SidebarOpen className="w-5 h-5 rtl-flip" /> : <SidebarClose className="w-5 h-5 rtl-flip" />}
           </button>
         )}
 
@@ -327,9 +324,17 @@ export const Header: React.FC<HeaderProps> = ({
               <img
                 src="/ic_hermes_logo.png"
                 alt={tx('appLogoAlt', 'Hermes logo')}
-                className="w-full h-full object-contain"
+                className="brand-logo-light w-full h-full object-contain"
                 onError={(e) => {
-                  (e.target as HTMLElement).style.display = 'none';
+                  e.currentTarget.remove();
+                }}
+              />
+              <img
+                src="/ic_hermes_logo_dark.png"
+                alt={tx('appLogoAlt', 'Hermes logo')}
+                className="brand-logo-dark w-full h-full object-contain"
+                onError={(e) => {
+                  e.currentTarget.remove();
                 }}
               />
             </div>
@@ -338,6 +343,59 @@ export const Header: React.FC<HeaderProps> = ({
             {/* The app name is never truncated: it keeps its full width and the
                 row gives up space elsewhere. A screen name may truncate, since
                 it is a label for the tab you just picked, not an identity. */}
+            {isChatTitle ? (
+              <span className="relative flex flex-col min-w-0 leading-tight" aria-live="polite">
+                <span className="flex items-center gap-2 min-w-0">
+                  {/* Mockup: the live dot carries the connection state, so on
+                      this tab it IS the status control (tap = state tooltip)
+                      and the duplicate lamp button is hidden. The pulsing ring
+                      is decorative, the dot colour is the signal, the aria
+                      label names it outright. */}
+                  <button
+                    type="button"
+                    onClick={toggleStatusTip}
+                    role="status"
+                    aria-label={`${tx('connectionStatus', 'Connection status')}: ${statusLabel}`}
+                    aria-expanded={statusTipOpen}
+                    title={statusTitle}
+                    className="relative flex h-2.5 w-2.5 shrink-0 cursor-pointer hm-hit"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="status-pulse absolute inline-flex h-full w-full rounded-full"
+                      style={{ backgroundColor: lampColor, opacity: 0.75 }}
+                    />
+                    <span
+                      aria-hidden="true"
+                      className="relative inline-flex rounded-full h-2.5 w-2.5"
+                      style={{
+                        backgroundColor: lampColor,
+                        boxShadow: `0 0 8px ${lampColor}`,
+                      }}
+                    />
+                  </button>
+                  <h1 className="text-[15px] font-bold tracking-tight text-[var(--app-text)] truncate">
+                    {tx('hermesChat', 'Hermes Chat')}
+                  </h1>
+                </span>
+                {activeModelLabel && (
+                  <span className="t-micro font-mono text-[var(--app-text-muted)] tracking-tight ps-[18px] truncate min-w-0">
+                    <span dir="ltr" className="inline-block truncate max-w-full">
+                      {activeModelLabel}
+                    </span>
+                  </span>
+                )}
+                {statusTipOpen && (
+                  <span
+                    role="status"
+                    className="absolute start-4 top-full mt-2 z-50 px-3 py-2 r-sm edge elev-2 t-caption font-medium whitespace-nowrap"
+                    style={{ backgroundColor: 'var(--app-card)', color: 'var(--app-text)' }}
+                  >
+                    {statusLabel}
+                  </span>
+                )}
+              </span>
+            ) : (
             <span
               className={`t-title font-semibold tracking-tight text-[var(--app-text)] ${
                 isHomeTitle ? 'whitespace-nowrap shrink-0' : 'truncate'
@@ -346,6 +404,7 @@ export const Header: React.FC<HeaderProps> = ({
             >
               {screenTitle}
             </span>
+            )}
             {isHomeTitle && activeModelLabel && (
               <span className="t-micro font-mono text-[var(--app-text-dim)] hidden sm:block truncate min-w-0">
                 {tx('activeModel', 'Active model')}: {activeModelLabel}
@@ -360,53 +419,62 @@ export const Header: React.FC<HeaderProps> = ({
           the app name does: the colour, the dot, the title and the aria label
           all still carry the full state. */}
       <div className="flex items-center gap-2 min-w-0">
-        {/* Connection status indicator. role=status + aria-label so the colour
-            dot is never the only signal, and the text label stays visible at
-            every width, including the failed/unauthorized honesty states. */}
-        <div
-          role="status"
-          aria-live="polite"
-          aria-label={`${tx('connectionStatus', 'Connection status')}: ${statusLabel}`}
-          title={statusTitle}
-          className={`flex items-center gap-1 min-w-0 h-6 px-2 ${statusPillClass}`}
-        >
-          <span
-            className="w-2 h-2 rounded-full shrink-0"
-            aria-hidden="true"
-            style={{
-              backgroundColor: statusDotColor,
-              boxShadow:
-                statusState === 'connected' || statusState === 'failed'
-                  ? `0 0 8px ${statusDotColor}`
-                  : undefined,
-            }}
-          />
-          <span className="t-caption font-medium truncate">
-            {statusLabel}
-          </span>
+        {/* Connection lamp: a green/red dot. Tap shows a floating tooltip
+            with the state; it auto-hides after a few seconds. role=status +
+            aria-label so the colour is never the only signal. */}
+        <div className={`relative shrink-0 ${isChatTitle ? 'hidden' : ''}`}>
+          <button
+            type="button"
+            onClick={toggleStatusTip}
+            role="status"
+            aria-live="polite"
+            aria-label={`${tx('connectionStatus', 'Connection status')}: ${statusLabel}`}
+            aria-expanded={statusTipOpen}
+            title={statusTitle}
+            className="min-w-[44px] min-h-[44px] r-xs edge flex items-center justify-center cursor-pointer hover:bg-[var(--app-card-hover)] active:scale-95 transition-all"
+          >
+            <span
+              className="w-3 h-3 rounded-full shrink-0"
+              aria-hidden="true"
+              style={{
+                backgroundColor: lampColor,
+                boxShadow: `0 0 8px ${lampColor}`,
+              }}
+            />
+          </button>
+          {statusTipOpen && (
+            <div
+              role="status"
+              className="absolute end-0 top-full mt-2 z-50 px-3 py-2 r-sm edge elev-2 t-caption font-medium whitespace-nowrap"
+              style={{ backgroundColor: 'var(--app-card)', color: 'var(--app-text)' }}
+            >
+              {statusLabel}
+            </div>
+          )}
         </div>
 
-        {/* Overflow menu: token telemetry, approvals and the inspector toggle. */}
+        {/* Overflow menu: token telemetry, approvals and the inspector toggle */}
         <div className="relative shrink-0" ref={menuWrapRef}>
           <button
             onClick={() => setMenuOpen((prev) => !prev)}
-            className={`relative min-w-[44px] min-h-[44px] r-xs edge flex items-center justify-center transition cursor-pointer ${
-              menuOpen
-                ? 'bg-[var(--app-card-hover)] text-[var(--app-text)]'
-                : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)]'
+            className={`relative flex items-center gap-1.5 font-mono text-[11px] text-[var(--app-warning)] tracking-tight font-medium rounded-full border border-[var(--app-warning-border)] bg-[var(--app-card)] px-2.5 py-1.5 min-h-[36px] shadow-[0_0_12px_var(--app-warning-subtle)] hover:bg-[var(--app-card-hover)] transition active:scale-95 cursor-pointer hm-hit ${
+              menuOpen ? 'bg-[var(--app-card-hover)] ring-1 ring-[var(--app-warning-border)]' : ''
             }`}
             title={moreOptionsLabel}
             aria-label={moreOptionsLabel}
             aria-haspopup="menu"
             aria-expanded={menuOpen}
           >
-            <MoreVertical className="w-4 h-4" />
+            <Zap className="w-3.5 h-3.5 text-[var(--app-warning)] animate-pulse shrink-0 fill-current" />
+            <span className="text-[var(--app-warning)] font-semibold">↑ {fmtTok(usageIn)}</span>
+            <span className="text-[var(--app-text-dim)]">·</span>
+            <span className="text-[var(--app-success)] font-semibold">↓ {fmtTok(usageOut)}</span>
             {approvalCount > 0 && (
               <span
                 className="absolute -top-1 -end-1 pill-danger font-mono font-semibold"
                 aria-hidden="true"
               >
-                {approvalCount}
+                {formatBadgeCount(approvalCount)}
               </span>
             )}
           </button>
@@ -419,6 +487,7 @@ export const Header: React.FC<HeaderProps> = ({
                 aria-hidden="true"
               />
               <div
+                ref={menuOverlayRef}
                 role="menu"
                 aria-label={tx('moreOptions', 'More options')}
                 className="absolute end-0 top-full mt-2 z-50 w-56 r-sm edge elev-2 p-1"

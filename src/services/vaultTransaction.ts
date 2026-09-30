@@ -91,11 +91,29 @@ export function secretsEqual(a: SecretMap, b: SecretMap): boolean {
  * Transactional vault save. Resolves only after the new cipher is committed
  * AND verified readable at its final key. Rejects with VaultWriteError on
  * any failure, leaving the previous vault value intact.
+ *
+ * Saves are serialized through one FIFO chain. Two saves that overlap in
+ * flight would otherwise interleave the backup/stage/commit steps: the OLDER
+ * payload could commit last and clobber the newer secrets, and both saves
+ * would write the shared tmp/backup slots at the same time. Queueing keeps
+ * commit order equal to call order, so the last caller wins.
  */
-export async function transactionalVaultSave(
+let saveChain: Promise<unknown> = Promise.resolve();
+
+export function transactionalVaultSave(
   payload: SecretMap,
   storage: VaultStorage | null = defaultStorage(),
 ): Promise<void> {
+  const run = () => commitVault(payload, storage);
+  const queued = saveChain.then(run, run);
+  saveChain = queued.then(
+    () => undefined,
+    () => undefined,
+  );
+  return queued;
+}
+
+async function commitVault(payload: SecretMap, storage: VaultStorage | null): Promise<void> {
   if (!storage) {
     throw new VaultWriteError('STORAGE_FAILED', 'Vault storage is unavailable');
   }

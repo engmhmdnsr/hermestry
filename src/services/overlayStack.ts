@@ -49,3 +49,8 @@ export function closeTopOverlay(): boolean {
 export function overlayCount(): number {
   return stack.length;
 }
+
+/** True when this exact close handler is the most recently opened overlay. */
+export function isTopOverlay(close: OverlayCloseHandler): boolean {
+  return stack.length > 0 && stack[stack.length - 1].close === close;
+}

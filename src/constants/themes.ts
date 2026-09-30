@@ -23,19 +23,33 @@ export interface ThemePalette {
 export interface PaletteColors {
   bg: string;
   sidebar: string;
+  /** Raised surface. Target contrast against bg: 1.25:1. */
   card: string;
+  /** Quiet fill (neutral pills, disabled buttons). Target 1.35:1 on bg. */
   cardSubtle: string;
+  /** Hover and selected fill. Target 1.44:1 on bg, and the luminance
+      ceiling: textDim must still clear 4.5:1 on it in that mode. */
   cardHover: string;
+  /** The .edge border. Dark mode uses an alpha so it composites onto the
+      surface below; target about 1.6:1 on bg. */
   border: string;
   borderSubtle: string;
+  /** Solid accent FILL: primary buttons, progress bars, rings, active dots.
+      Never used as a text color; pair with onAccent for its label. */
   accent: string;
+  /** One step deeper fill for the accent hover and active state. */
   accentHover: string;
+  /** Tint fill for accent surfaces (icon tiles, selected cards, focus). */
   accentSubtle: string;
   /** Border color for accent surfaces (pills, selected chips, focus fills). */
   accentBorder: string;
+  /** Accent used as TEXT and for active nav on dark surfaces, so the
+      accent role stays readable without a fill behind it (AA 4.5:1). */
   accentText: string;
   text: string;
   textMuted: string;
+  /** Tertiary text: must clear 4.5:1 on bg AND on every surface token that
+      can sit behind it, cardHover included. */
   textDim: string;
   inputBg: string;
   /**
@@ -111,8 +125,8 @@ const SCRIM_LIGHT = 'rgba(10, 14, 30, 0.72)';
  * #A7C080 9.58, Solarized #2AA198 6.07, Nous Alt #F59E0B 8.93, Ember #F97316
  * 6.84, Mono #E5E5E5 15.23; light: Everforest #8DA101 6.60, Solarized
  * #268BD2 5.21, Nous Alt #D97706 6.02, Ember #EA580C 5.39). Midnight keeps
- * white: white on its #6366F1 accent is 4.47 and the ink there is worse at
- * 4.29, so white stays (unchanged from the old hardcoded text-white look).
+ * white: white on its #4F46E5 accent is 6.29 and the dark ink there is worse
+ * at 3.05, so white stays (unchanged from the old hardcoded text-white look).
  */
 const ON_ACCENT_INK = '#0B0F17';
 
@@ -126,20 +140,27 @@ export const THEME_PALETTES: ThemePalette[] = [
       sidebar: '#070913',
       bar1: '#C4B5FD',
       bar2: '#818CF8',
-      pill: '#6366F1',
+      pill: '#4F46E5',
     },
+    /* Surface ladder and accent pair, WCAG contrast measured against bg:
+       card 1.25, cardSubtle 1.35, cardHover 1.44, border (0.30 alpha) 1.59.
+       cardHover is the lightest rung on purpose: --app-text-dim still clears
+       4.5:1 on it (4.51), so every surface keeps secondary text at AA. accent
+       is the FILL and accentText is the TEXT/active-nav role: white on the
+       fill is 6.29 (AA for a 13px/600 label), accentText on card is 7.89.
+       Mirrored by the pre-paint defaults in src/index.css. */
     dark: {
       bg: '#090B14',
       sidebar: '#06070E',
-      card: '#0E1222',
-      cardSubtle: '#14182E',
-      cardHover: '#1B203C',
-      border: 'rgba(129, 140, 248, 0.16)',
+      card: '#1A2140',
+      cardSubtle: '#1F2749',
+      cardHover: '#232B52',
+      border: 'rgba(129, 140, 248, 0.30)',
       borderSubtle: 'rgba(255, 255, 255, 0.06)',
-      accent: '#6366F1',
-      accentHover: '#4F46E5',
-      accentSubtle: 'rgba(99, 102, 241, 0.16)',
-      accentBorder: 'rgba(99, 102, 241, 0.45)',
+      accent: '#4F46E5',
+      accentHover: '#4338CA',
+      accentSubtle: 'rgba(79, 70, 229, 0.16)',
+      accentBorder: 'rgba(79, 70, 229, 0.5)',
       accentText: '#A5B4FC',
       onAccent: '#FFFFFF',
       ...SOLID_STATUS_SURFACE,
@@ -167,7 +188,10 @@ export const THEME_PALETTES: ThemePalette[] = [
       scrim: SCRIM_LIGHT,
       text: '#0F172A',
       textMuted: '#475569',
-      textDim: '#64748B',
+      /* Tertiary step, AA floor on bg: #5F6E85 is 4.73:1 on #F1F5F9 (5.18
+         on card, 4.60 on cardHover) where #64748B was 4.34:1. It stays
+         lighter than textMuted, so the text hierarchy keeps its order. */
+      textDim: '#5F6E85',
       inputBg: '#FFFFFF',
     },
   },
@@ -221,7 +245,8 @@ export const THEME_PALETTES: ThemePalette[] = [
       scrim: SCRIM_LIGHT,
       text: '#0F172A',
       textMuted: '#475569',
-      textDim: '#64748B',
+      /* Floor on cardHover #E2E8F0: 4.59, was 3.86. */
+      textDim: '#5A687D',
       inputBg: '#FFFFFF',
     },
   },
@@ -269,13 +294,13 @@ export const THEME_PALETTES: ThemePalette[] = [
       accentHover: '#1A7F37',
       accentSubtle: 'rgba(31, 136, 61, 0.12)',
       accentBorder: '#B7E4C7',
-      accentText: '#1F883D',
+      accentText: '#1C7B37',
       onAccent: '#FFFFFF',
       ...SOLID_STATUS_SURFACE,
       scrim: SCRIM_LIGHT,
       text: '#1F2328',
-      textMuted: '#656D76',
-      textDim: '#656D76',
+      textMuted: '#646C75',
+      textDim: '#646C75',
       inputBg: '#F6F8FA',
     },
   },
@@ -323,13 +348,13 @@ export const THEME_PALETTES: ThemePalette[] = [
       accentHover: '#7287FD',
       accentSubtle: 'rgba(136, 57, 239, 0.12)',
       accentBorder: '#DDD0F7',
-      accentText: '#8839EF',
+      accentText: '#7F35DF',
       onAccent: '#FFFFFF',
       ...SOLID_STATUS_SURFACE,
       scrim: SCRIM_LIGHT,
       text: '#4C4F69',
-      textMuted: '#6C6F85',
-      textDim: '#6C6F85',
+      textMuted: '#5E6174',
+      textDim: '#5E6174',
       inputBg: '#FFFFFF',
     },
   },
@@ -382,8 +407,8 @@ export const THEME_PALETTES: ThemePalette[] = [
       ...SOLID_STATUS_SURFACE,
       scrim: SCRIM_LIGHT,
       text: '#3C4841',
-      textMuted: '#5C6A72',
-      textDim: '#5C6A72',
+      textMuted: '#515E65',
+      textDim: '#515E65',
       inputBg: '#FFFFFF',
     },
   },
@@ -436,8 +461,8 @@ export const THEME_PALETTES: ThemePalette[] = [
       ...SOLID_STATUS_SURFACE,
       scrim: SCRIM_LIGHT,
       text: '#073642',
-      textMuted: '#586E75',
-      textDim: '#586E75',
+      textMuted: '#53676E',
+      textDim: '#53676E',
       inputBg: '#FFFFFF',
     },
   },
@@ -490,8 +515,8 @@ export const THEME_PALETTES: ThemePalette[] = [
       ...SOLID_STATUS_SURFACE,
       scrim: SCRIM_LIGHT,
       text: '#082F49',
-      textMuted: '#0369A1',
-      textDim: '#1970A2',
+      textMuted: '#03679F',
+      textDim: '#176897',
       inputBg: '#FFFFFF',
     },
   },
@@ -539,13 +564,13 @@ export const THEME_PALETTES: ThemePalette[] = [
       accentHover: '#C2410C',
       accentSubtle: 'rgba(234, 88, 12, 0.12)',
       accentBorder: '#FDD0A2',
-      accentText: '#9A3412',
+      accentText: '#943211',
       onAccent: ON_ACCENT_INK,
       ...SOLID_STATUS_SURFACE,
       scrim: SCRIM_LIGHT,
       text: '#431407',
-      textMuted: '#9A3412',
-      textDim: '#C2410C',
+      textMuted: '#943211',
+      textDim: '#943211',
       inputBg: '#FFFFFF',
     },
   },
@@ -599,7 +624,7 @@ export const THEME_PALETTES: ThemePalette[] = [
       scrim: SCRIM_LIGHT,
       text: '#171717',
       textMuted: '#525252',
-      textDim: '#737373',
+      textDim: '#666666',
       inputBg: '#FAFAFA',
     },
   },

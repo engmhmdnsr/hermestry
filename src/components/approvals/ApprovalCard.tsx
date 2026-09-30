@@ -152,13 +152,18 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
         >
           {tx('apprAllowOnce', 'Allow once')}
         </button>
-        <button
-          onClick={() => onAllow(approval, 'session')}
-          disabled={disabled}
-          className={`flex-1 min-h-[44px] py-2 r-md t-caption font-semibold transition cursor-pointer disabled:opacity-50 ${allowSessionCls}`}
-        >
-          {tx('apprAllowSession', 'Allow for this chat')}
-        </button>
+        {/* The gateway advertises which modes it accepts (smart-denied or
+            session-disabled approvals are once-only): a mode it did not offer
+            is hidden, never a dead button. Absent list means no constraint. */}
+        {(!approval.choices || approval.choices.includes('session')) && (
+          <button
+            onClick={() => onAllow(approval, 'session')}
+            disabled={disabled}
+            className={`flex-1 min-h-[44px] py-2 r-md t-caption font-semibold transition cursor-pointer disabled:opacity-50 ${allowSessionCls}`}
+          >
+            {tx('apprAllowSession', 'Allow for this chat')}
+          </button>
+        )}
       </div>
     </div>
   );

@@ -39,6 +39,8 @@ import type { ListSyncResult, ListUiState, PagedResult, SyncMeta } from './syncS
 
 export const DEFAULT_SESSIONS_PAGE_SIZE = 50;
 export const MAX_SESSIONS_PAGE_SIZE = 100;
+export const DEFAULT_RUNS_PAGE_SIZE = 50;
+export const MAX_RUNS_PAGE_SIZE = 100;
 export const DEFAULT_MESSAGES_PAGE_SIZE = 50;
 export const MAX_MESSAGES_PAGE_SIZE = 200;
 export const MESSAGE_RETENTION_CAP = 200;
@@ -69,12 +71,15 @@ export const clampPage = (
   return out;
 };
 
-/** Build `?limit=&offset=` (or `&cursor=`) query string. */
-export const buildPageQuery = (page: ResolvedPage): string => {
+/** Build `?limit=&offset=` (or `&cursor=`) query string. Message lists always
+    ask for latest-first: the gateway returns oldest-first for an explicit
+    limit without order, which would show a 200+ message chat from the top. */
+export const buildPageQuery = (page: ResolvedPage, order?: 'latest'): string => {
   const q = new URLSearchParams();
   q.set('limit', String(page.limit));
   if (page.cursor) q.set('cursor', page.cursor);
   else q.set('offset', String(page.offset));
+  if (order) q.set('order', order);
   return `?${q.toString()}`;
 };
 

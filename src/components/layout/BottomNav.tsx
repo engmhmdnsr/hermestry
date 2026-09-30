@@ -1,6 +1,7 @@
 import React from 'react';
-import { LayoutGrid, MessageSquare, CalendarClock, SlidersHorizontal } from 'lucide-react';
+import { LayoutGrid, MessageSquare, SquareTerminal, SlidersHorizontal } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
+import { formatBadgeCount } from '../../utils/badge';
 
 interface BottomNavProps {
   currentTab: number;
@@ -10,16 +11,16 @@ interface BottomNavProps {
 /**
  * Canonical tab label i18n keys. Exported so the header title, the bottom nav
  * and every aria-label read the same word for the same tab. Index order must
- * stay in sync with TAB_HASHES in App.tsx (0 Home, 1 Chat, 2 Jobs, 3 Settings).
+ * stay in sync with TAB_HASHES in constants/tabs.ts (0 Home, 1 Chat, 2 Terminal, 3 Settings).
  *
  * Short labels on purpose: the phone is 360dp and four long, jargon-heavy
  * labels clip into two lines. One word per tab, one line each.
  */
-export const TAB_LABEL_KEYS = ['tabHome', 'tabChat', 'tabJobs', 'tabSettings'] as const;
-export const TAB_LABEL_FALLBACKS = ['Home', 'Chat', 'Jobs', 'Settings'] as const;
+export const TAB_LABEL_KEYS = ['tabHome', 'tabChat', 'tabTerminal', 'tabSettings'] as const;
+export const TAB_LABEL_FALLBACKS = ['Home', 'Chat', 'Terminal', 'Settings'] as const;
 
 export const BottomNav: React.FC<BottomNavProps> = ({ currentTab, onSelectTab }) => {
-  const { approvals, jobs, t } = useHermes();
+  const { approvals, t } = useHermes();
 
   // English fallback for keys a locale bundle does not ship yet, so a missing
   // translation never renders a raw key name or a clipped long label.
@@ -29,7 +30,6 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentTab, onSelectTab })
   };
 
   const approvalCount = approvals.length;
-  const enabledJobs = jobs.filter((j) => j.enabled).length;
 
   // Badge meaning (audit item 4): the pending-approvals count stays on the Chat
   // tab, because that is where the ApprovalCard queue is actioned and where the
@@ -44,26 +44,34 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentTab, onSelectTab })
       icon: LayoutGrid,
       count: 0,
       badgeLabel: '',
+      hue: 'var(--app-tab-home)',
+      soft: 'var(--app-tab-home-soft)',
     },
     {
       id: 1,
       label: tx(TAB_LABEL_KEYS[1], TAB_LABEL_FALLBACKS[1]),
       icon: MessageSquare,
       count: approvalCount,
-      badgeLabel: tx('approvalsWaitingMany', '{count} approvals waiting for you').replace(
-        '{count}',
-        String(approvalCount)
-      ),
+      hue: 'var(--app-tab-chat)',
+      soft: 'var(--app-tab-chat-soft)',
+      // Singular when there is exactly one, so the badge never says
+      // "1 approvals waiting for you".
+      badgeLabel:
+        approvalCount === 1
+          ? tx('approvalsWaitingOne', '1 approval waiting for you')
+          : tx('approvalsWaitingMany', '{count} approvals waiting for you').replace(
+              '{count}',
+              String(approvalCount)
+            ),
     },
     {
       id: 2,
       label: tx(TAB_LABEL_KEYS[2], TAB_LABEL_FALLBACKS[2]),
-      icon: CalendarClock,
-      count: enabledJobs,
-      badgeLabel: tx('jobsTurnedOnCount', '{count} jobs turned on').replace(
-        '{count}',
-        String(enabledJobs)
-      ),
+      icon: SquareTerminal,
+      count: 0,
+      badgeLabel: '',
+      hue: 'var(--app-tab-terminal)',
+      soft: 'var(--app-tab-terminal-soft)',
     },
     {
       id: 3,
@@ -71,15 +79,16 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentTab, onSelectTab })
       icon: SlidersHorizontal,
       count: 0,
       badgeLabel: '',
+      hue: 'var(--app-tab-settings)',
+      soft: 'var(--app-tab-settings-soft)',
     },
   ];
 
   return (
     <nav
       aria-label={tx('navMainLabel', 'Main navigation')}
-      className="shrink-0 z-30 w-full backdrop-blur-xl border-t elev-2 edge"
+      className="glass-nav shrink-0 z-30 w-full border-t border-[var(--app-nav-border)]"
       style={{
-        backgroundColor: 'var(--app-bg)',
         // Edge-to-edge (targetSdk 36): the tab strip clears the home indicator.
         paddingBottom: 'calc(0.25rem + var(--safe-bottom, 0px))',
       }}
@@ -94,7 +103,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentTab, onSelectTab })
           const Icon = tab.icon;
           const isActive = currentTab === tab.id;
           const hasBadge = tab.count > 0;
-          const badgeText = tab.count > 99 ? '99+' : String(tab.count);
+          const badgeText = formatBadgeCount(tab.count);
 
           return (
             <button
@@ -103,24 +112,26 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentTab, onSelectTab })
               onClick={() => onSelectTab(tab.id)}
               aria-label={hasBadge ? `${tab.label}, ${tab.badgeLabel}` : tab.label}
               aria-current={isActive ? 'page' : undefined}
-              className={`flex-1 min-w-0 flex flex-col items-center justify-center h-full cursor-pointer min-h-[44px] min-w-[44px] transition-colors duration-150 ${
+              className={`flex-1 min-w-0 flex flex-col items-center justify-center h-full cursor-pointer min-h-[44px] transition-colors duration-150 ${
                 isActive
                   ? ''
                   : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
               }`}
-              style={isActive ? { color: 'var(--app-accent-text)' } : undefined}
+              style={isActive ? { color: tab.hue } : undefined}
             >
               <div className="relative flex items-center justify-center">
-                {/* One visual language for all four tabs: icon plus label always
-                    visible. The active tab reads as selected through a surface
-                    tint behind the icon plus the accent icon and label, with no
-                    scale jump and no per-tab hue. The pill reserves the same
-                    box when inactive so nothing shifts on tap. */}
+                {/* Mockup active tab pill: 20% wash, subtle border, and glow */}
                 <span
                   aria-hidden="true"
-                  className="flex items-center justify-center w-14 h-7 r-sm transition-colors duration-150"
+                  className="flex items-center justify-center px-3.5 py-1 rounded-full transition-all duration-150"
                   style={{
-                    backgroundColor: isActive ? 'var(--app-accent-subtle)' : 'transparent',
+                    backgroundColor: isActive ? tab.soft : 'transparent',
+                    border: isActive
+                      ? `1px solid color-mix(in srgb, ${tab.hue} 30%, transparent)`
+                      : '1px solid transparent',
+                    boxShadow: isActive
+                      ? `0 0 12px color-mix(in srgb, ${tab.hue} 30%, transparent)`
+                      : 'none',
                   }}
                 >
                   <Icon className="w-5 h-5" />
@@ -138,9 +149,13 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentTab, onSelectTab })
                 )}
               </div>
               <span
-                className={`t-micro leading-none tracking-tight mt-1 whitespace-nowrap transition-colors ${
-                  isActive ? 'font-semibold' : 'font-normal'
+                // 4 columns on a 360dp screen is ~88px each: a long translated
+                // label must ellipsis inside its own column instead of running
+                // under the neighbouring tab.
+                className={`font-mono text-[11px] leading-none tracking-tight mt-1 whitespace-nowrap truncate transition-colors ${
+                  isActive ? 'font-bold' : 'font-medium text-[var(--app-text-muted)]'
                 }`}
+                style={isActive ? { color: tab.hue } : undefined}
               >
                 {tab.label}
               </span>

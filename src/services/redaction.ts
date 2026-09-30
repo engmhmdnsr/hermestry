@@ -112,10 +112,28 @@ export const redactText = (input: string, knownSecrets: string[] = []): string =
   return out;
 };
 
+// Live vault values registered by the settings layer (LOG-01): gateway
+// log/doctor/debug-share paths call redactSecrets with no explicit list,
+// so every registered value is scrubbed there too. Registration only ever
+// widens scrubbing; values are never read back out.
+let registeredSecrets: string[] = [];
+export const registerKnownSecrets = (values: Array<string | undefined | null>): void => {
+  const fresh = (values || []).filter((v): v is string => typeof v === 'string' && v.length >= 4);
+  if (fresh.length === 0) return;
+  const seen = new Set(registeredSecrets);
+  for (const v of fresh) {
+    if (!seen.has(v)) {
+      seen.add(v);
+      registeredSecrets.push(v);
+    }
+  }
+  if (registeredSecrets.length > 24) registeredSecrets = registeredSecrets.slice(-24);
+};
+
 // Deep-clone a value with secrets redacted by key name AND by content.
 // Strings are passed through redactText; object keys use isSensitiveKey;
 // knownSecrets lets callers also scrub live vault values (LOG-01).
-export const redactSecrets = <T>(value: T, knownSecrets: string[] = []): T => {
+export const redactSecrets = <T>(value: T, knownSecrets: string[] = registeredSecrets): T => {
   if (typeof value === 'string') {
     return redactText(value, knownSecrets) as unknown as T;
   }
@@ -207,8 +225,8 @@ export const REDACTION_SELF_TESTS: RedactionSelfTest[] = [
   },
   {
     name: 'aws akia key',
-    input: 'deploy key AKIAQWERTYUIOPASDFGH leaked in log',
-    mustNotContain: ['AKIAQWERTYUIOPASDFGH'],
+    input: 'deploy key AKIAIOSFODNN7EXAMPLE leaked in log',
+    mustNotContain: ['AKIAIOSFODNN7EXAMPLE'],
   },
   {
     name: 'truncated pem',

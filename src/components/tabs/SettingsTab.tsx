@@ -23,6 +23,8 @@ import {
   MoreVertical,
   Pencil,
   Trash2,
+  Bell,
+  BellOff,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import {
@@ -38,6 +40,8 @@ import { toAppError, localizedMessage } from '../../services/appErrors';
 import {
   isNativeGateway,
   nativeHealth,
+  nativeNotifGranted,
+  nativeRequestNotifAlerts,
   nativeSetProvider,
   nativeSetServerKey,
   nativeStatus,
@@ -45,10 +49,14 @@ import {
 import { deriveUiFlags, type GatewayState } from '../../services/gatewayState';
 import { validationFingerprint } from '../../services/providerValidation';
 import { plainGatewayFailure, plainResultLine } from '../../services/plainFailure';
+import { assertNoPlaintextSecrets } from '../../services/debugSafety';
+import { runRedactionSelfTests } from '../../services/redaction';
 import { AutoApproveGate } from '../approvals/AutoApproveGate';
 import { useOverlayBehavior } from '../../hooks/useOverlayBehavior';
 import {
+  APPROVAL_SCOPES,
   DEFAULT_AUTO_APPROVE_POLICY,
+  isApprovalScope,
   normalizePolicy,
   type AutoApprovePolicy,
 } from '../approvals/approvalScopes';
@@ -109,20 +117,22 @@ const riskIcon = (level: RiskLevel) =>
   level === 'off' ? <ShieldCheck className="w-3 h-3" /> : <ShieldAlert className="w-3 h-3" />;
 
 // One boolean control for the whole file: Auto-start and every skill toggle.
-const Switch: React.FC<{ checked: boolean; onChange: () => void; ariaLabel: string }> = ({
+const Switch: React.FC<{ checked: boolean; onChange: () => void; ariaLabel: string; disabled?: boolean }> = ({
   checked,
   onChange,
   ariaLabel,
+  disabled,
 }) => (
   <button
     type="button"
     role="switch"
     aria-checked={checked}
     aria-label={ariaLabel}
-    onClick={onChange}
-    className={`hm-hit w-11 h-6 shrink-0 flex items-center r-full p-1 cursor-pointer transition-colors ${
-      checked ? 'bg-[var(--app-accent)]' : 'bg-[var(--app-card-hover)]'
-    }`}
+    disabled={disabled}
+    onClick={disabled ? undefined : onChange}
+    className={`hm-hit w-11 h-6 shrink-0 flex items-center r-full p-1 transition-colors ${
+      disabled ? 'opacity-50 cursor-not-allowed ' : 'cursor-pointer '
+    }${checked ? 'bg-[var(--app-accent)]' : 'bg-[var(--app-card-hover)]'}`}
   >
     <span
       className={`block bg-[var(--app-text)] w-4 h-4 r-full transition-transform ${
@@ -185,7 +195,11 @@ const StateNote: React.FC<{
   // line under the plain sentence, never as the sentence itself.
   detail?: string;
   onRetry?: () => void;
-}> = ({ state, message, detail, onRetry }) => {
+  // Verb for the action button. A note that says "Start it" has to offer a
+  // Start button, so callers pass the label that matches what pressing it
+  // actually does; anything else keeps the plain Retry label.
+  actionLabel?: string;
+}> = ({ state, message, detail, onRetry, actionLabel }) => {
   const { t } = useHermes();
   // Same degrade rule as the tab: a missing key renders the English fallback.
   const tx = (key: string, fallback: string): string => {
@@ -203,7 +217,10 @@ const StateNote: React.FC<{
     ready: '',
   };
   return (
-    <div className={`flex items-center gap-2 p-4 r-sm border ${styles[state]}`}>
+    <div
+      className={`flex items-center gap-2 p-4 r-sm border ${styles[state]}`}
+      role={state === 'error' || state === 'offline' ? 'alert' : 'status'}
+    >
       {state === 'offline' ? (
         <WifiOff className="w-3.5 h-3.5 shrink-0" />
       ) : state === 'refreshing' || state === 'loading' ? (
@@ -223,7 +240,7 @@ const StateNote: React.FC<{
       </span>
       {onRetry && (state === 'error' || state === 'offline') && (
         <button onClick={onRetry} className="hm-hit inline-flex items-center px-3 py-2 min-h-[36px] r-sm t-label text-[var(--app-accent-text)] hover:text-[var(--app-text)] cursor-pointer shrink-0">
-          {tx('retryLabel', 'Retry')}
+          {actionLabel || tx('retryLabel', 'Retry')}
         </button>
       )}
     </div>
@@ -253,7 +270,7 @@ const Section: React.FC<{
           <h3 className="t-heading text-[var(--app-text)] tracking-tight">{title}</h3>
           {badge}
         </div>
-        <p className="t-caption text-[var(--app-text-muted)] mt-1 truncate">{subtitle}</p>
+        <p className="t-caption text-[var(--app-text-muted)] mt-1 break-words">{subtitle}</p>
       </div>
       <ChevronDown className={`w-4 h-4 text-[var(--app-text-muted)] shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
     </button>
@@ -265,9 +282,63 @@ const Row: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <div className="py-3 first:pt-1 last:pb-1">{children}</div>
 );
 
-// Gateway loopback the native bridge and health probes target. One named
-// constant so summary lines never drift from the real endpoint.
-const GATEWAY_ADDR = '127.0.0.1:8080';
+// R1: alert permission row. Reads the live grant state from the bridge (web
+// builds have no bridge: the row hides itself). The button re-asks; a hard
+// denial can only be flipped in system settings.
+const NotificationRow: React.FC = () => {
+  const { t } = useHermes();
+  const tx = (key: string, fallback: string): string => {
+    const v = t(key);
+    return !v || v === key ? fallback : v;
+  };
+  const [granted, setGranted] = useState<boolean | null>(null);
+  const [asking, setAsking] = useState(false);
+  useEffect(() => {
+    if (!isNativeGateway()) return;
+    void nativeNotifGranted().then((g) => {
+      if (g !== null) setGranted(g);
+    });
+  }, []);
+  if (!isNativeGateway()) return null;
+  const Icon = granted ? Bell : BellOff;
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="flex items-start gap-2 min-w-0">
+        <Icon className="w-4 h-4 mt-1 shrink-0 text-[var(--app-text-muted)]" aria-hidden="true" />
+        <div className="min-w-0">
+          <p className="t-body text-[var(--app-text)]">
+            {tx('notifAlertsTitle', 'Approval and job alerts')}
+          </p>
+          <p className="t-caption text-[var(--app-text-muted)]">
+            {granted === null
+              ? tx('notifAlertsChecking', 'Checking notification permission.')
+              : granted
+                ? tx('notifAlertsOn', 'On: approvals reach you even with the app closed.')
+                : tx('notifAlertsOff', 'Off: approvals wait silently in Chat. Allow them to get alerts.')}
+          </p>
+        </div>
+      </div>
+      {granted === false && (
+        <button
+          type="button"
+          disabled={asking}
+          onClick={() => {
+            setAsking(true);
+            void nativeRequestNotifAlerts()
+              .then(() => nativeNotifGranted())
+              .then((g) => {
+                if (g !== null) setGranted(g);
+              })
+              .finally(() => setAsking(false));
+          }}
+          className="hm-hit min-h-[36px] px-4 shrink-0 r-sm t-caption font-medium bg-[var(--app-accent-subtle)] text-[var(--app-accent-text)] hover:bg-[var(--app-card-hover)] cursor-pointer disabled:opacity-50"
+        >
+          {tx('notifAllowAction', 'Allow')}
+        </button>
+      )}
+    </div>
+  );
+};
 
 // Turn a machine key into words a person reads: 'repo_url' -> 'Repo url'. The
 // raw key stays visible as the mono detail line under the field.
@@ -331,6 +402,8 @@ export const SettingsTab: React.FC = () => {
     updateConfiguredProvider,
     removeConfiguredProvider,
     activateProvider,
+    refreshModels,
+    ensureServerKey,
     install,
     installProgress,
     installError,
@@ -339,6 +412,7 @@ export const SettingsTab: React.FC = () => {
     gatewayStatus,
     gatewayFailed,
     gatewayFailureReason,
+    gatewayFailureKind,
     startGateway,
     stopGateway,
     installGateway,
@@ -346,7 +420,13 @@ export const SettingsTab: React.FC = () => {
     service,
     approvals,
     jobs,
+    skills: ctxSkills,
+    setSkills: ctxSetSkills,
+    blueprints: ctxBlueprints,
+    memory: ctxMemory,
+    setMemory: ctxSetMemory,
     lockNow,
+    unlockSecrets,
     vaultUnlocked,
     settingsSaveError,
     t,
@@ -360,7 +440,7 @@ export const SettingsTab: React.FC = () => {
   // Multi-provider form modal state
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null);
-  const [newProvType, setNewProvType] = useState('deepseek');
+  const [newProvType, setNewProvType] = useState('');
   const [newProvName, setNewProvName] = useState('');
   const [newProvKey, setNewProvKey] = useState('');
   const [newProvBaseUrl, setNewProvBaseUrl] = useState('');
@@ -381,6 +461,7 @@ export const SettingsTab: React.FC = () => {
     setShowAddModal(false);
     setNewProvKey('');
     setTestedFingerprint('');
+    setTestedModels([]);
     setKeyResult(null);
     setKeyOk(null);
     setShowNewKey(false);
@@ -401,7 +482,7 @@ export const SettingsTab: React.FC = () => {
     const wasActive = settings.activeProviderId
       ? prov.id === settings.activeProviderId
       : prov.provider === settings.provider;
-    const saveBefore = saveErrorRef.current;
+    const saveBefore = saveSnapshot();
     removeConfiguredProvider(prov.id);
     if (isSole) {
       // The store keeps activeProviderId when the list empties; clear it so
@@ -433,6 +514,9 @@ export const SettingsTab: React.FC = () => {
   const [keyResult, setKeyResult] = useState<string | null>(null);
   const [keyOk, setKeyOk] = useState<boolean | null>(null);
   const [testedFingerprint, setTestedFingerprint] = useState('');
+  // Live model ids returned by the last successful key test, so the default
+  // model can be picked from a list instead of typed by hand.
+  const [testedModels, setTestedModels] = useState<string[]>([]);
 
   // External bot bridges state
   const [tgToken, setTgToken] = useState(settings.tgToken || '');
@@ -465,10 +549,75 @@ export const SettingsTab: React.FC = () => {
   // Home use the same rules, which is why a bare token such as
   // "service_start_blocked" can never render here.
 
-  // Disabling App Lock is a two-tap confirm like auto-approve: first tap
-  // arms, second tap commits. Re-enabling always requires a new PIN.
+  // Disabling App Lock keeps the two-tap confirm, but the second tap only
+  // arms the PIN prompt: appLockEnabled flips to false once the current PIN
+  // verifies. appLockDesc promises PIN unlock, so a bare second tap would
+  // drop that promise on the way out.
   const [pendingDisableLock, setPendingDisableLock] = useState(false);
   const disableLockTimer = useRef<number | null>(null);
+  const [disablePinPrompt, setDisablePinPrompt] = useState(false);
+  const [disablePin, setDisablePin] = useState('');
+  const [showDisablePin, setShowDisablePin] = useState(false);
+  const [disablePinBusy, setDisablePinBusy] = useState(false);
+  const [disablePinError, setDisablePinError] = useState<string | null>(null);
+
+  const closeDisablePinPrompt = () => {
+    if (disableLockTimer.current !== null) window.clearTimeout(disableLockTimer.current);
+    setPendingDisableLock(false);
+    setDisablePinPrompt(false);
+    setDisablePin('');
+    setShowDisablePin(false);
+    setDisablePinError(null);
+    setDisablePinBusy(false);
+  };
+
+  // Same acceptance rule the lock screen uses: a vault is checked through
+  // unlockSecrets, a legacy no-vault setup compares the stored PIN. The flag
+  // only moves after that check passes.
+  const confirmDisableLock = () => {
+    if (disablePinBusy || !disablePin) return;
+    const throttle = readPinThrottle();
+    const now = Date.now();
+    if (now < throttle.until) {
+      const secs = Math.ceil((throttle.until - now) / 1000);
+      setDisablePinError(`${tx('tooManyAttempts', 'Too many wrong attempts. Try again in')} ${secs}s.`);
+      return;
+    }
+    const attempted = disablePin;
+    setDisablePin('');
+    setDisablePinBusy(true);
+    setDisablePinError(null);
+    const done = (accepted: boolean) => {
+      setDisablePinBusy(false);
+      if (!accepted) {
+        const fails = readPinThrottle().fails + 1;
+        writePinThrottle(fails, fails >= 5 ? Date.now() + 60000 : 0);
+        setDisablePinError(
+          fails >= 5
+            ? `${tx('tooManyAttempts', 'Too many wrong attempts. Try again in')} 60s.`
+            : tx('incorrectPin', 'Incorrect PIN.')
+        );
+        return;
+      }
+      writePinThrottle(0, 0);
+      closeDisablePinPrompt();
+      setShowPinForm(false);
+      saveThenToast({ appLockEnabled: false }, `${appLockTitle}: ${t('disabled')}`, 'success');
+    };
+    let hasVault = false;
+    try {
+      hasVault = !!localStorage.getItem('hermes_vault');
+    } catch {
+      /* storage unavailable: fall back to the stored-PIN comparison */
+    }
+    if (hasVault) {
+      unlockSecrets(attempted)
+        .then((accepted) => done(accepted === true))
+        .catch(() => done(false));
+    } else {
+      done(attempted === settings.appLockPin);
+    }
+  };
   // App lock PIN setup state
   const [showPinForm, setShowPinForm] = useState(false);
   const [newPin, setNewPin] = useState('');
@@ -476,7 +625,7 @@ export const SettingsTab: React.FC = () => {
   const [pinError, setPinError] = useState<string | null>(null);
 
   const validatePin = (pin: string): string | null => {
-    if (!/^\d{4,8}$/.test(pin)) return tx('pinLength', 'PIN must be 4 to 8 digits.');
+    if (!/^\d{6,8}$/.test(pin)) return tx('pinLength', 'PIN must be 6 to 8 digits.');
     if (COMMON_PINS.has(pin) || /^(\d)\1+$/.test(pin))
       return tx('pinRepeated', 'Repeated-digit PINs are not allowed. Choose a different one.');
     if (hasSequentialRun(pin)) return tx('pinCommon', 'That PIN is too common. Choose a different one.');
@@ -527,14 +676,46 @@ export const SettingsTab: React.FC = () => {
   const [sharingDebug, setSharingDebug] = useState(false);
 
   // Library & Skills state with distinct data states (UX-04)
-  const [skills, setSkills] = useState<SkillInfo[]>([]);
-  const [skillsState, setSkillsState] = useState<DataState>('loading');
-  const [memory, setMemory] = useState<MemoryInfo | null>(null);
-  const [memoryState, setMemoryState] = useState<DataState>('loading');
-  const [blueprints, setBlueprints] = useState<Blueprint[]>([]);
-  const [blueprintsState, setBlueprintsState] = useState<DataState>('loading');
+  const [skills, setSkills] = useState<SkillInfo[]>(() => ctxSkills || []);
+  const [skillsState, setSkillsState] = useState<DataState>(() => (ctxSkills && ctxSkills.length > 0 ? 'ready' : 'loading'));
+  // Neutral-case note: when the on-device server answers 500 the list is
+  // empty-but-live with a reason. The note renders inside the modal and the
+  // View button drops its ratio until a real catalog confirms it.
+  const [skillsNote, setSkillsNote] = useState<string>('');
+  // Dead-switch latches: when the gateway is up but a toggle route is
+  // absent (guaranteed failure), the switch disables with a plain reason
+  // instead of inviting another doomed tap. A later success clears it.
+  const [skillToggleDead, setSkillToggleDead] = useState<boolean>(false);
+  const [memoryToggleDead, setMemoryToggleDead] = useState<boolean>(false);
+  const [memory, setMemory] = useState<MemoryInfo | null>(() => ctxMemory || null);
+  const [memoryState, setMemoryState] = useState<DataState>(() => (ctxMemory ? 'ready' : 'loading'));
+  const [blueprints, setBlueprints] = useState<Blueprint[]>(() => ctxBlueprints || []);
+  const [blueprintsState, setBlueprintsState] = useState<DataState>(() => (ctxBlueprints && ctxBlueprints.length > 0 ? 'ready' : 'loading'));
   const [selectedBlueprint, setSelectedBlueprint] = useState<Blueprint | null>(null);
+  const [showSkillsModal, setShowSkillsModal] = useState(false);
   const [blueprintSlots, setBlueprintSlots] = useState<Record<string, string>>({});
+  const [memoryToggling, setMemoryToggling] = useState(false);
+
+  useEffect(() => {
+    if (ctxSkills && ctxSkills.length > 0) {
+      setSkills(ctxSkills);
+      setSkillsState('ready');
+    }
+  }, [ctxSkills]);
+
+  useEffect(() => {
+    if (ctxMemory) {
+      setMemory(ctxMemory);
+      setMemoryState('ready');
+    }
+  }, [ctxMemory]);
+
+  useEffect(() => {
+    if (ctxBlueprints && ctxBlueprints.length > 0) {
+      setBlueprints(ctxBlueprints);
+      setBlueprintsState('ready');
+    }
+  }, [ctxBlueprints]);
 
   // Gateway status summary entry point (UX-05): always visible, tap for details
   const [showGatewayDetails, setShowGatewayDetails] = useState(false);
@@ -542,6 +723,19 @@ export const SettingsTab: React.FC = () => {
   // Serialises start/stop/install taps so double-taps cannot overlap runs.
   const [gatewayBusy, setGatewayBusy] = useState(false);
   const [installing, setInstalling] = useState(false);
+
+  // Home's "Check connection" action flags this tab to open the disclosure
+  // it is about to jump into. The key is read once and cleared here, so one
+  // tap never leaves the panel stuck open later.
+  useEffect(() => {
+    try {
+      if (window.sessionStorage.getItem('hm:showGatewayDetails') !== '1') return;
+      window.sessionStorage.removeItem('hm:showGatewayDetails');
+      setShowGatewayDetails(true);
+    } catch {
+      /* storage unavailable: the disclosure simply stays collapsed */
+    }
+  }, []);
 
   // Token/secret visibility toggles (Telegram, Discord, server key).
   const [showTokens, setShowTokens] = useState({ tg: false, discord: false, server: false });
@@ -580,14 +774,14 @@ export const SettingsTab: React.FC = () => {
   // disabled), so the gate writes the policy and mirrors the boolean from it.
   // Nothing here reports Active before the write is confirmed.
   const autoApprovePolicy: AutoApprovePolicy = normalizePolicy(
-    (settings as unknown as { autoApprovePolicy?: unknown }).autoApprovePolicy ?? DEFAULT_AUTO_APPROVE_POLICY
+    settings.autoApprovePolicy ?? DEFAULT_AUTO_APPROVE_POLICY
   );
 
   const writeAutoApprovePolicy = (policy: AutoApprovePolicy) => {
     const patch = {
       autoApprovePolicy: policy,
       autoApproveGlobal: policy.enabled,
-    } as unknown as Parameters<typeof updateSettings>[0];
+    };
     saveThenToast(patch, `${t('autoApprove')}: ${policy.enabled ? t('active') : t('disabled')}`, policy.enabled ? 'error' : 'success');
   };
 
@@ -636,7 +830,7 @@ export const SettingsTab: React.FC = () => {
     if (!alive()) return;
     if (!applied.ok) {
       setAuthOk(false);
-      setAuthResult(applied.error || tx('keyNotAppliedPlain', 'The key was saved, but Hermes did not pick it up. Restart Hermes above, then test again.'));
+      setAuthResult(applied.error || tx('applyFailedPlain', 'The change was saved, but Hermes did not pick it up. Restart Hermes, then try again.'));
       return;
     }
     // 3. Real authenticated probe: 401/403 means the gateway rejected the
@@ -706,7 +900,7 @@ export const SettingsTab: React.FC = () => {
     try {
       await startGateway();
       const ok = await verifyGatewayUp();
-      showToast(ok ? t('gatewayStarted') : tx('startFailedPlain', 'Hermes did not start. Open the details below for the reason.'), ok ? 'success' : 'error');
+      showToast(ok ? t('gatewayStarted') : tx('startFailedPlain', 'Could not start Hermes. Try again.'), ok ? 'success' : 'error');
     } catch (e) {
       showToast(localizedMessage(toAppError(e), settings.language || 'en'), 'error');
     } finally {
@@ -864,6 +1058,7 @@ export const SettingsTab: React.FC = () => {
   const providerMenuRef = useOverlayBehavior(!!menuProviderId, () => setMenuProviderId(null));
   const addModalRef = useOverlayBehavior(showAddModal, closeAddModal);
   const blueprintModalRef = useOverlayBehavior(!!selectedBlueprint, () => setSelectedBlueprint(null));
+  const skillsModalRef = useOverlayBehavior(showSkillsModal, () => setShowSkillsModal(false));
 
   // Preferences search filters
   const [themeSearch, setThemeSearch] = useState('');
@@ -945,6 +1140,11 @@ export const SettingsTab: React.FC = () => {
   saveErrorRef.current = settingsSaveError ?? null;
   const saveStateRef = useRef<string | undefined>(undefined);
   saveStateRef.current = settingsSaveState;
+  // One number that always moves once per attempt: the context bumps it when
+  // a persist attempt finishes, so a caller can tell "my write has completed"
+  // from "the screen still holds the previous attempt".
+  const saveRevisionRef = useRef<number>(0);
+  saveRevisionRef.current = (ctx as unknown as { settingsSaveRevision?: number }).settingsSaveRevision ?? 0;
   const retryActionRef = useRef<(() => WriteOutcome | Promise<WriteOutcome>) | null>(null);
   const [hasRetry, setHasRetry] = useState(false);
   // Local copy of a failure the context did not record (a synchronous
@@ -960,29 +1160,80 @@ export const SettingsTab: React.FC = () => {
   const saveFailedFallback = () =>
     tx('settingsSaveFailedPlain', 'Your change was not saved. Your earlier settings are still in effect. Tap Retry to try again.');
 
-  // Resolves once the provider confirmed or rejected the write it was handed:
-  // settingsSaveState when the context ships it, otherwise the
-  // settingsSaveError surface plus a settle window. The snapshot is compared
-  // so a failure that was already on screen does not read as a new one.
-  const awaitSaveOutcome = async (before: string | null): Promise<WriteOutcome> => {
+  // A pre-write snapshot of every surface that carries a save verdict. Taken
+  // before updateSettings is called, so anything still equal to it when the
+  // poll runs belongs to an earlier attempt.
+  type SaveSnapshot = {
+    error: string | null;
+    state: string | undefined;
+    revision: number;
+    // False when the context ships no revision counter: then there is nothing
+    // to count and the error text plus the state stay the only observables.
+    countsRevisions: boolean;
+  };
+  const saveSnapshot = (): SaveSnapshot => ({
+    error: saveErrorRef.current,
+    state: saveStateRef.current,
+    revision: saveRevisionRef.current,
+    countsRevisions:
+      (ctx as unknown as { settingsSaveRevision?: number }).settingsSaveRevision !== undefined,
+  });
+
+  // Resolves once the provider confirmed or rejected the write it was handed.
+  // Two guarantees, both kept: (1) one failure left on screen by an earlier
+  // attempt must not poison this save, so 'error' is only trusted once the
+  // state, the error text or the revision moved away from the snapshot; and
+  // (2) a fast genuine failure must not report ok:true, so no early return
+  // happens before that movement, and a save that never moves still hits the
+  // 20s bound and reports "did not confirm".
+  // A third case sits between them: a save already mid-flight when this one
+  // was queued finishes first and its verdict is not this write's, so while
+  // the snapshot says 'saving' one extra revision bump is owed before any
+  // 'saved' or 'error' may be read as this attempt's.
+  const awaitSaveOutcome = async (before: SaveSnapshot): Promise<WriteOutcome> => {
     const started = Date.now();
-    let sawSaving = false;
+    const owed = before.countsRevisions && before.state === 'saving' ? 2 : 1;
+    let bumps = 0;
+    let seenRevision = before.revision;
     for (;;) {
       const err = saveErrorRef.current;
       const state = saveStateRef.current;
-      if (state === 'saving') sawSaving = true;
-      if (state === 'error' || (err && err !== before)) {
-        return { ok: false, error: err || saveFailedFallback() };
+      const revision = saveRevisionRef.current;
+      if (revision !== seenRevision) {
+        bumps += Math.max(1, revision - seenRevision);
+        seenRevision = revision;
       }
-      if (state === 'saved' && sawSaving) return { ok: true, error: null };
+      const moved = state !== before.state || err !== before.error || bumps > 0;
+      // 'ready': enough of this write has landed for what follows to be its
+      // own verdict instead of the previous attempt's.
+      const ready = before.countsRevisions ? bumps >= owed : moved;
+      if (ready) {
+        // A brand-new failure text after the snapshot is this write's verdict
+        // even when the tab has no save-state machine to say so.
+        if (err && err !== before.error) return { ok: false, error: err };
+        if (state === 'error') return { ok: false, error: err || saveFailedFallback() };
+        if (state === 'saved') return { ok: true, error: null };
+      }
       const elapsed = Date.now() - started;
-      const settle = state ? SAVE_SETTLE_STATE_MS : SAVE_SETTLE_LEGACY_MS;
-      if (state !== 'saving' && elapsed >= settle) return { ok: true, error: null };
       if (elapsed >= SAVE_MAX_WAIT_MS) {
         return {
           ok: false,
           error: tx('settingsSaveUnconfirmedPlain', 'The save did not confirm in time, so the change may not be in effect. Tap Retry to try again.'),
         };
+      }
+      // Only a context that ships no save-state machine (state stays
+      // undefined) may settle on the timer alone; a machine that has not
+      // moved yet is still holding this write, so it keeps waiting. Without
+      // a state machine the settle also waits for the revision bump, so a
+      // slow write is never declared saved before it finished.
+      if (
+        state !== 'saving' &&
+        state !== 'error' &&
+        state !== 'saved' &&
+        elapsed >= (state ? SAVE_SETTLE_STATE_MS : SAVE_SETTLE_LEGACY_MS) &&
+        (!before.countsRevisions || ready)
+      ) {
+        return { ok: true, error: null };
       }
       await sleep(60);
     }
@@ -1006,7 +1257,7 @@ export const SettingsTab: React.FC = () => {
   };
 
   const rawWrite = async (patch: SettingsPatch): Promise<WriteOutcome> => {
-    const before = saveErrorRef.current;
+    const before = saveSnapshot();
     try {
       updateSettings(patch);
     } catch (e) {
@@ -1066,7 +1317,14 @@ export const SettingsTab: React.FC = () => {
       await nativeSetProvider(prefs);
       return { ok: true };
     } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      return {
+        ok: false,
+        error: plainResultLine(
+          e instanceof Error ? e.message : String(e),
+          saveFailedFallback(),
+          tx
+        ),
+      };
     }
   };
 
@@ -1152,11 +1410,36 @@ export const SettingsTab: React.FC = () => {
     // Only a running gateway needs a restart; a stopped one reads the mirrored
     // prefs on its next start.
     if (!isNativeGateway() || !connected) return { ok: true, restarted: false, error: null };
+    // The gateway reads provider, key, base URL, and bot tokens once at
+    // process start, but the model travels with each chat turn. Restart only
+    // when a connection value actually changed; a model-only edit applies
+    // with a mirror and takes effect on the next message, no ~100s restart.
+    const connChanged =
+      (prefs.provider || '') !== (settings.provider || '') ||
+      (prefs.apiKey || '') !== (settings.apiKey || '') ||
+      (prefs.baseUrl || '') !== (settings.baseUrl || '') ||
+      (prefs.serverKey || '') !== (settings.serverKey || '') ||
+      (prefs.tgToken || '') !== (settings.tgToken || '') ||
+      (prefs.discordToken || '') !== (settings.discordToken || '') ||
+      // Profile identity: two profiles can look identical from render scope
+      // (blank keys when the vault is locked) while holding different stored
+      // keys natively. A switch to another profile always restarts, so the
+      // gateway can never keep the previous profile's runtime key.
+      (profileId != null && profileId !== (settings.activeProviderId || undefined) && profileId !== '');
+    if (!connChanged) return { ok: true, restarted: false, error: null };
     try {
       await stopGateway();
       await startGateway();
     } catch (e) {
-      return { ok: false, restarted: false, error: e instanceof Error ? e.message : String(e) };
+      return {
+        ok: false,
+        restarted: false,
+        error: plainResultLine(
+          e instanceof Error ? e.message : String(e),
+          saveFailedFallback(),
+          tx
+        ),
+      };
     }
     const up = await verifyGatewayUp();
     return up
@@ -1164,7 +1447,7 @@ export const SettingsTab: React.FC = () => {
       : {
           ok: false,
           restarted: false,
-          error: tx('providerApplyFailedPlain', 'The key was saved. Hermes did not come back up, so start it again above.'),
+          error: tx('applyFailedPlain', 'The change was saved, but Hermes did not pick it up. Restart Hermes, then try again.'),
         };
   };
 
@@ -1176,7 +1459,7 @@ export const SettingsTab: React.FC = () => {
     restartedMsg?: string;
     // settingsSaveError snapshot taken before an earlier write in the same
     // click, so the apply never runs on top of a failed save.
-    before?: string | null;
+    before?: SaveSnapshot;
     overrides?: { serverKey?: string; tgToken?: string; discordToken?: string };
     clearWhenMissing?: boolean;
     // Profile as just written, for the add/edit paths (see applyProviderConfig).
@@ -1224,6 +1507,7 @@ export const SettingsTab: React.FC = () => {
       if (res.ok) {
         setLocalSaveError(null);
         showToast(res.restarted ? opts.restartedMsg || opts.successMsg : opts.successMsg, 'success');
+        void refreshModels();
       } else {
         setLocalSaveError(res.error);
         showToast(res.error || tx('applyFailedPlain', 'The change was saved, but Hermes did not pick it up. Restart Hermes, then try again.'), 'error');
@@ -1242,7 +1526,7 @@ export const SettingsTab: React.FC = () => {
     setMenuProviderId(null);
     // One apply path: activate, confirm the write, then mirror + restart so the
     // running gateway stops using the previous provider's key/URL.
-    const before = saveErrorRef.current;
+    const before = saveSnapshot();
     activateProvider(prov.id);
     void runApply(prov.id, {
       label: prov.name,
@@ -1263,6 +1547,7 @@ export const SettingsTab: React.FC = () => {
     setKeyResult(null);
     setKeyOk(null);
     setTestedFingerprint('');
+    setTestedModels([]);
     setShowNewKey(false);
     setActivateNewProvider(false);
     setShowAddModal(true);
@@ -1281,14 +1566,14 @@ export const SettingsTab: React.FC = () => {
     showToast(`${t('testing')} ${prov.name}`, 'info');
     let valid: boolean | null = null;
     try {
-      valid = await service.providersValidate(normProvider(prov.provider), 'HERMES_API_KEY', cleaned);
+      valid = await service.providersValidate(normProvider(prov.provider), 'HERMES_API_KEY', cleaned, prov.baseUrl || '');
     } catch {
       valid = null;
     }
     if (valid === true) {
       if (!prov.validated) {
         void runVerifiedWrite(async () => {
-          const before = saveErrorRef.current;
+          const before = saveSnapshot();
           updateConfiguredProvider(prov.id, { validated: true });
           return awaitSaveOutcome(before);
         });
@@ -1313,31 +1598,80 @@ export const SettingsTab: React.FC = () => {
     (settingsSaveError && settingsSaveError !== saveErrorDismissed ? settingsSaveError : null) ||
     (localSaveError && localSaveError !== saveErrorDismissed ? localSaveError : null);
 
+  // One status fact for the gateway card, the section badge and the details
+  // row: reachable AND not rejected. Reading `connected` alone would paint
+  // green Running while the key is refused, so every gateway surface below
+  // uses this helper (same rule the header and Home use). Text carries the
+  // state as well as colour, so a chip is never colour alone.
+  const gatewayHealthy = connected && !gatewayFailed && !gatewayFailureKind;
+  const gatewayFailing = gatewayFailed === true || !!gatewayFailureKind;
+  const gatewayStatusText = gatewayHealthy
+    ? tx('running', 'Running')
+    : gatewayFailing
+      ? gatewayFailureKind === 'unauthorized'
+        ? tx('keyNotAccepted', 'Key not accepted')
+        : tx('couldNotConnect', 'Could not connect')
+      : tx('stopped', 'Stopped');
+  const gatewayStatusTone: BadgeTone = gatewayHealthy ? 'success' : gatewayFailing ? 'danger' : 'neutral';
+  // The dot under the headline: green only for healthy, red for a failure,
+  // dim for a service that is simply not up (never red for a normal stop).
+  const gatewayStatusDot = gatewayHealthy
+    ? 'bg-[var(--app-success)] shadow-[0_0_8px_var(--app-success)]'
+    : gatewayFailing
+      ? 'bg-[var(--app-danger)] shadow-[0_0_8px_var(--app-danger)]'
+      : 'bg-[var(--app-text-dim)]';
+  // Words for a machine state the card is waiting on, from the locale
+  // bundle: the machine's own label is English-only, which is why it is not
+  // rendered.
+  const gatewayProgressLabel = (state: GatewayState): string =>
+    state === 'INSTALLING'
+      ? tx('installing', 'Installing…')
+      : state === 'STARTING'
+        ? tx('starting', 'Starting')
+        : state === 'STOPPING'
+          ? tx('stopping', 'Stopping…')
+          : tx('statusConnecting', 'Connecting…');
+
   // Gateway button flags derive from the one lifecycle machine, so Start and
-  // Stop are enabled only in states where they can actually work.
-  const uiFlags = deriveUiFlags(
-    isNativeGateway()
-      ? (gatewayState as GatewayState)
-      : ((connected
-          ? 'RUNNING'
-          : install === 'NOT_INSTALLED'
-            ? 'NOT_INSTALLED'
-            : install === 'FAILED'
-              ? 'FAILED'
-              : 'STOPPED') as GatewayState)
-  );
+  // Stop are enabled only in states where they can actually work. A gateway
+  // that fails health or key checks is a failed service, not a running one.
+  const gatewayMachine: GatewayState = isNativeGateway()
+    ? (gatewayState as GatewayState)
+    : ((gatewayHealthy
+        ? 'RUNNING'
+        : install === 'NOT_INSTALLED'
+          ? 'NOT_INSTALLED'
+          : install === 'FAILED'
+            ? 'FAILED'
+            : 'STOPPED') as GatewayState);
+  const uiFlags = deriveUiFlags(gatewayMachine);
+
+  // The stopped-service note says "Start it", so its button starts the service
+  // instead of only re-probing status. Retry stays for a service that is
+  // running but failing, where one more probe is the honest action, and for a
+  // machine where Start is not available (setup still running, not installed).
+  const stoppedNoteStartsService = !gatewayFailing && uiFlags.canStart;
+
+  // One rule for the library lists: a payload that is not live is an
+  // offline/error note, never an empty one. These services envelope their
+  // failures instead of throwing, so without this check a dead gateway
+  // renders as "nothing here".
+  const listStateFrom = (live: boolean, count: number): DataState =>
+    live ? (count === 0 ? 'empty' : 'ready') : connected ? 'error' : 'offline';
 
   useEffect(() => {
     const ctrl = new AbortController();
     const { signal } = ctrl;
     setSkillsState((s) => (s === 'ready' ? 'refreshing' : 'loading'));
     service
-      .skillsList(signal)
+      .skillsWithState(signal)
       .then((list) => {
-        setSkills(list);
-        setSkillsState(list.length === 0 ? 'empty' : 'ready');
+        setSkills(list.items);
+        setSkillsNote(list.error || '');
+        setSkillsState(listStateFrom(list.live, list.items.length));
       })
       .catch(() => {
+        setSkillsNote('');
         setSkillsState(connected ? 'error' : 'offline');
       });
     setMemoryState((s) => (s === 'ready' ? 'refreshing' : 'loading'));
@@ -1354,10 +1688,10 @@ export const SettingsTab: React.FC = () => {
       });
     setBlueprintsState((s) => (s === 'ready' ? 'refreshing' : 'loading'));
     service
-      .blueprints(signal)
-      .then((bps) => {
-        setBlueprints(bps);
-        setBlueprintsState(bps.length === 0 ? 'empty' : 'ready');
+      .blueprintsWithState(signal)
+      .then((res) => {
+        setBlueprints(res.items);
+        setBlueprintsState(listStateFrom(res.live, res.items.length));
       })
       .catch(() => {
         setBlueprintsState(connected ? 'error' : 'offline');
@@ -1376,16 +1710,27 @@ export const SettingsTab: React.FC = () => {
     setMemoryState((s) => (s === 'ready' ? 'refreshing' : s));
     setBlueprintsState('refreshing');
     try {
-      const [list, bps, m] = await Promise.all([
-        service.skillsList(),
-        service.blueprints(),
+      // Adopt the local API key before the library calls: without it every
+      // authenticated route answers 401 and memory/skills render a red error
+      // for a key problem, not a data problem. Never blocks on failure.
+      try {
+        await ensureServerKey();
+      } catch {
+        /* the fetches below report their own outcome */
+      }
+      const [list, bpRes, m] = await Promise.all([
+        service.skillsWithState(),
+        service.blueprintsWithState(),
         service.memoryGet(),
       ]);
-      setSkills(list);
-      setSkillsState(list.length === 0 ? 'empty' : 'ready');
-      setBlueprints(bps);
-      setBlueprintsState(bps.length === 0 ? 'empty' : 'ready');
+      setSkills(list.items);
+      setSkillsNote(list.error || '');
+      setSkillsState(listStateFrom(list.live, list.items.length));
+      ctxSetSkills?.(list.items);
+      setBlueprints(bpRes.items);
+      setBlueprintsState(listStateFrom(bpRes.live, bpRes.items.length));
       setMemory(m);
+      ctxSetMemory?.(m);
       // LiveValue carries a live flag: only a live payload renders ready.
       setMemoryState(m.live ? 'ready' : connected ? 'error' : 'offline');
     } catch {
@@ -1403,17 +1748,74 @@ export const SettingsTab: React.FC = () => {
     setKeyResult(null);
     setKeyOk(null);
     setTestedFingerprint('');
+    setTestedModels([]);
 
     const norm = normProvider(newProvType);
     const cleaned = newProvKey.trim();
-    const valid = await service.providersValidate(norm, 'HERMES_API_KEY', cleaned);
+    const directBase = newProvBaseUrl.trim().replace(/\/+$/, '');
+    // The on-device gateway has no key-validation route (POST
+    // /api/providers/validate 404s there), so testing through it always
+    // reports 'Hermes did not answer'. For OpenAI-compatible providers the
+    // key is tested directly against the provider's own model catalog:
+    // GET {baseUrl}/models with the key as bearer. 200 proves the key and
+    // returns the real model list; 401/403 proves the key is refused.
+    // Providers with their own auth scheme (Anthropic, Gemini) and an empty
+    // base URL keep the gateway path below.
+    const directEligible = !!directBase && norm !== 'anthropic' && norm !== 'gemini';
+    if (directEligible) {
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 15000);
+        const res = await fetch(`${directBase}/models`, {
+          signal: ctrl.signal,
+          headers: { Authorization: `Bearer ${cleaned}` },
+        });
+        clearTimeout(timer);
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          const arr = data && Array.isArray((data as { data?: unknown }).data)
+            ? (data as { data: Array<{ id?: unknown }> }).data
+            : [];
+          const live = arr.map((m) => String(m?.id || '')).filter((m) => m.trim());
+          setTestingKey(false);
+          setTestedFingerprint(validationFingerprint({ provider: norm, [PROVIDER_CREDENTIAL_FIELD]: cleaned, baseUrl: newProvBaseUrl.trim() }));
+          setKeyOk(true);
+          setKeyResult(tx('keyValidPlain', 'This key works.'));
+          setTestedModels(live);
+          if (live.length > 0 && !newProvModel.trim()) {
+            setNewProvModel(live[0]);
+          }
+          return;
+        }
+        if (res.status === 401 || res.status === 403) {
+          setTestingKey(false);
+          setTestedFingerprint(validationFingerprint({ provider: norm, [PROVIDER_CREDENTIAL_FIELD]: cleaned, baseUrl: newProvBaseUrl.trim() }));
+          setKeyOk(false);
+          setKeyResult(tx('keyInvalidPlain', 'The provider refused this key.'));
+          return;
+        }
+        // Any other HTTP status is inconclusive for this path: fall through
+        // to the gateway validation below instead of guessing.
+      } catch {
+        // Unreachable provider from this phone: fall through to the gateway
+        // path, which reports its own outcome honestly.
+      }
+    }
+    const res = await service.providersValidateWithModels(norm, 'HERMES_API_KEY', cleaned, newProvBaseUrl.trim());
     setTestingKey(false);
     // Record the whole tested tuple (provider, key, baseUrl), not just the
     // key: editing the Base URL after a pass must drop the validated flag.
     setTestedFingerprint(validationFingerprint({ provider: norm, [PROVIDER_CREDENTIAL_FIELD]: cleaned, baseUrl: newProvBaseUrl.trim() }));
+    const valid = res === null ? null : res.valid;
     if (valid === true) {
       setKeyOk(true);
       setKeyResult(tx('keyValidPlain', 'This key works.'));
+      const live = (res?.models || []).filter((m) => typeof m === 'string' && m.trim());
+      setTestedModels(live);
+      // Pre-fill the default model when empty so nothing must be typed.
+      if (live.length > 0 && !newProvModel.trim()) {
+        setNewProvModel(live[0]);
+      }
     } else if (valid === false) {
       setKeyOk(false);
       setKeyResult(tx('keyInvalidPlain', 'The provider refused this key.'));
@@ -1438,33 +1840,129 @@ export const SettingsTab: React.FC = () => {
     }
     setRunningBackup(true);
     const res = await service.backup();
-    setBackupResult(res);
     setRunningBackup(false);
+    // Same export gate as the debug bundle: a snapshot that still carries
+    // key material is refused instead of shown or saved.
+    const knownSecrets = [
+      settings.apiKey,
+      settings.serverKey,
+      settings.tgToken,
+      settings.discordToken,
+      settings.appLockPin,
+      ...configuredProviders.map((p) => p.apiKey || ''),
+    ];
+    const leaked = assertNoPlaintextSecrets(res, knownSecrets);
+    if (leaked.length > 0) {
+      const blocked = tx('debugFailedPlain', 'The diagnostics bundle was not exported. Try again.');
+      setBackupResult({ ok: false, path: '', message: blocked });
+      showToast(blocked, 'error');
+      return;
+    }
+    setBackupResult(res);
   };
 
   const handleShareDebug = async () => {
     if (!window.confirm(tx('confirmDebugPlain', 'Share a diagnostics bundle? It includes the app version, service status, and recent logs, with secrets removed.'))) {
       return;
     }
+    // Two gates before any link is shown. The redaction engine has to pass its
+    // own self-test first, then the payload that came back is scanned against
+    // every secret this phone still holds. Either gate failing exports nothing,
+    // so a plain-text key can never leave the device inside a bundle.
+    if (!runRedactionSelfTests().passed) {
+      showToast(tx('debugFailedPlain', 'The diagnostics bundle was not exported. Try again.'), 'error');
+      return;
+    }
     setSharingDebug(true);
     const res = await service.debugShare();
-    setDebugResult(res);
     setSharingDebug(false);
+    const knownSecrets = [
+      settings.apiKey,
+      settings.serverKey,
+      settings.tgToken,
+      settings.discordToken,
+      settings.appLockPin,
+      ...configuredProviders.map((p) => p.apiKey || ''),
+    ];
+    const leaked = assertNoPlaintextSecrets(res, knownSecrets);
+    if (leaked.length > 0) {
+      // The reasons are fixed strings, never the values, so this log line
+      // stays safe to read while explaining why the export was refused.
+      console.warn('[debugSafety] bundle blocked:', leaked);
+      const blocked = tx('debugFailedPlain', 'The diagnostics bundle was not exported. Try again.');
+      setDebugResult({ ok: false, urls: [], summary: blocked });
+      showToast(blocked, 'error');
+      return;
+    }
+    setDebugResult(res);
   };
 
   const handleToggleSkill = async (id: string, current: boolean) => {
-    await service.skillToggle(id, !current);
-    const updated = await service.skillsList();
-    setSkills(updated);
-    setSkillsState(updated.length === 0 ? 'empty' : 'ready');
-    showToast(!current ? t('skillEnabled') : t('skillDisabled'));
+    // The gateway answers with a boolean, so a rejected toggle must not be
+    // announced as a success: read the state back and report the outcome.
+    const ok = await service.skillToggle(id, !current);
+    if (ok) setSkillToggleDead(false);
+    else if (connected) setSkillToggleDead(true);
+    try {
+      const list = await service.skillsWithState();
+      setSkills(list.items);
+      setSkillsNote(list.error || '');
+      setSkillsState(listStateFrom(list.live, list.items.length));
+      ctxSetSkills?.(list.items);
+    } catch {
+      setSkillsState(connected ? 'error' : 'offline');
+    }
+    showToast(
+      ok
+        ? !current
+          ? t('skillEnabled')
+          : t('skillDisabled')
+        : connected
+          ? tx('toggleUnsupportedPlain', 'This server does not support that switch.')
+          : tx('opsUnreachablePlain', 'Hermes is not reachable, so that did not finish.'),
+      ok ? 'info' : 'error'
+    );
+  };
+
+  const handleToggleMemory = async (target: boolean) => {
+    setMemoryToggling(true);
+    try {
+      const ok = await service.memoryToggle(target);
+      if (ok) setMemoryToggleDead(false);
+      else if (connected) setMemoryToggleDead(true);
+      const m = await service.memoryGet();
+      setMemory(m);
+      setMemoryState(m.live ? 'ready' : connected ? 'error' : 'offline');
+      ctxSetMemory?.(m);
+      showToast(
+        ok
+          ? target
+            ? tx('memoryEnabledToast', 'Memory enabled')
+            : tx('memoryDisabledToast', 'Memory disabled')
+          : connected
+            ? tx('toggleUnsupportedPlain', 'This server does not support that switch.')
+            : tx('opsUnreachablePlain', 'Hermes is not reachable, so that did not finish.'),
+        ok ? 'info' : 'error'
+      );
+    } catch {
+      setMemoryState(connected ? 'error' : 'offline');
+      showToast(tx('opsUnreachablePlain', 'Hermes is not reachable, so that did not finish.'), 'error');
+    } finally {
+      setMemoryToggling(false);
+    }
   };
 
   const handleInstantiateBlueprint = async (id: string) => {
-    await service.instantiateBlueprint(id, blueprintSlots);
+    const ok = await service.instantiateBlueprint(id, blueprintSlots);
     setSelectedBlueprint(null);
     setBlueprintSlots({});
-    showToast(tx('routineLaunched', 'Routine started in the current chat.'), 'success');
+    // No navigation follows: the toast must not claim the chat shows it.
+    showToast(
+      ok
+        ? tx('routineSentPlain', 'Routine sent. Open the chat to see it start.')
+        : tx('opsUnreachablePlain', 'Hermes is not reachable, so that did not finish.'),
+      ok ? 'success' : 'error'
+    );
   };
 
   const handleRefreshStatus = async () => {
@@ -1528,7 +2026,7 @@ export const SettingsTab: React.FC = () => {
         <div
           role="status"
           aria-live="polite"
-          className={`fixed top-16 left-1/2 -translate-x-1/2 z-[200] max-w-[min(90vw,28rem)] text-center px-4 py-2 r-sm elev-2 hairline t-label pointer-events-none animate-in fade-in slide-in-from-top-2 ${
+          className={`fixed top-16 start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[200] max-w-[min(90vw,28rem)] text-center px-4 py-2 r-sm elev-2 hairline t-label pointer-events-none animate-in fade-in slide-in-from-top-2 ${
             toast.tone === 'error'
               ? 'bg-[var(--app-danger-subtle)] text-[var(--app-danger)]'
               : toast.tone === 'success'
@@ -1593,16 +2091,19 @@ export const SettingsTab: React.FC = () => {
           >
             <span
               role="img"
-              aria-label={connected ? tx('running', 'Running') : tx('stopped', 'Stopped')}
-              className={`w-3 h-3 r-full shrink-0 ${connected ? 'bg-[var(--app-success)] shadow-[0_0_8px_var(--app-success)]' : 'bg-[var(--app-danger)]'}`}
+              aria-label={gatewayStatusText}
+              className={`w-3 h-3 r-full shrink-0 ${gatewayStatusDot}`}
             />
             <span className="min-w-0 flex-1">
-              <span className="block t-body text-[var(--app-text)] truncate">
-                {connected ? t('running') : t('stopped')}
-                <span className="t-caption font-normal text-[var(--app-text-muted)]"> · {GATEWAY_ADDR} · {installStateLabel(install)}</span>
+              <span className="block t-body text-[var(--app-text)] break-words">
+                {gatewayStatusText}
+                <span className="t-caption font-normal text-[var(--app-text-muted)]">
+                  {' '}
+                  · {tx('localMemory', 'On this phone')} · {installStateLabel(install)}
+                </span>
               </span>
-              <span className="block t-caption text-[var(--app-text-dim)] truncate">
-                {gatewayFailed && gatewayFailureReason
+              <span className="block t-caption text-[var(--app-text-dim)] break-words">
+                {gatewayFailing && gatewayFailureReason
                   ? plainGatewayFailure(gatewayFailureReason, tx)
                   : tx('tapForDetailsPlain', 'Tap for details')}
               </span>
@@ -1626,7 +2127,11 @@ export const SettingsTab: React.FC = () => {
             <div className="flex justify-between pt-2">
               <span>{tx('stateLabel', 'State')}</span>
               <span className="t-micro text-[var(--app-text)] font-mono">
-                {installStateLabel(gatewayStatus?.gatewayState || install)}
+                {/* The status payload carries lower-case tokens ('running',
+                    'ready', 'down') that this label never matched, so the row
+                    printed "Unknown" under a card that said Running. The
+                    status words come from the same helper as the card. */}
+                {gatewayStatusText}
               </span>
             </div>
             <div className="flex justify-between">
@@ -1642,13 +2147,27 @@ export const SettingsTab: React.FC = () => {
               <span className="t-micro text-[var(--app-text)] font-mono">{jobs?.length || 0}</span>
             </div>
             {refreshingStatus && <StateNote state="refreshing" message={tx('refreshingStatusPlain', 'Refreshing status…')} />}
-            {!connected && (
+            {!gatewayHealthy && (
               <StateNote
-                state="offline"
-                message={tx('serverStoppedHint', 'Hermes is stopped. Start it to run diagnostics and scheduled tasks.')}
-                detail={gatewayFailureReason || installError || undefined}
+                state={gatewayFailing ? 'error' : 'offline'}
+                message={
+                  gatewayFailing
+                    ? gatewayFailureReason
+                      ? plainGatewayFailure(gatewayFailureReason, tx)
+                      : tx('couldNotConnect', 'Could not connect')
+                    : tx('serverStoppedHint', 'Hermes is stopped. Start it to run diagnostics and scheduled tasks.')
+                }
+                detail={
+                  gatewayFailing
+                    ? undefined
+                    : installError
+                      ? plainResultLine(installError, '', tx) || undefined
+                      : undefined
+                }
+                actionLabel={stoppedNoteStartsService ? tx('startService', 'Start') : undefined}
                 onRetry={() => {
-                  void handleRefreshStatus();
+                  if (stoppedNoteStartsService) void handleStartGateway();
+                  else void handleRefreshStatus();
                 }}
               />
             )}
@@ -1699,7 +2218,7 @@ export const SettingsTab: React.FC = () => {
         open={openSections.connection}
         onToggle={() => toggleSection('connection')}
         id={sectionDomId('connection')}
-        badge={activeProvider ? <Badge tone="success">{t('active')}</Badge> : undefined}
+        badge={activeProvider ? <Badge tone="accent">{t('active')}</Badge> : undefined}
       >
         <Row>
           <div className="flex items-start justify-between gap-3">
@@ -1710,11 +2229,11 @@ export const SettingsTab: React.FC = () => {
             <button
               onClick={() => {
                 setEditingProviderId(null);
-                setNewProvType('deepseek');
-                setNewProvName('DeepSeek');
+                setNewProvType('');
+                setNewProvName('');
                 setNewProvKey('');
                 setNewProvBaseUrl('');
-                setNewProvModel(DEFAULT_MODELS['deepseek']?.[0] || 'deepseek/deepseek-chat');
+                setNewProvModel('');
                 setKeyResult(null);
                 setKeyOk(null);
                 setTestedFingerprint('');
@@ -1757,12 +2276,14 @@ export const SettingsTab: React.FC = () => {
                         </div>
                         <div className="flex items-center gap-2 min-w-0">
                           <p className="t-label text-[var(--app-text)] truncate">{prov.name}</p>
-                          {isActive && <Badge tone="success" className="shrink-0">{t('active')}</Badge>}
+                          {isActive && <Badge tone="accent" className="shrink-0">{t('active')}</Badge>}
                           {!prov.validated && <Badge tone="warning" className="shrink-0">{tx('untested', 'Untested')}</Badge>}
                         </div>
                       </div>
-                      {/* Line two: model and endpoint summary, never starved. */}
-                      <p className="t-micro text-[var(--app-text-dim)] truncate mt-1 ps-[46px]">
+                      {/* Line two: model and endpoint summary. Two lines, so a
+                          long model id plus the endpoint never gets cut to a
+                          fragment the way a single-line truncate did. */}
+                      <p className="t-micro text-[var(--app-text-dim)] line-clamp-2 mt-1 ps-[46px]">
                         {prov.defaultModel || t('defaultModelShort')} · {prov.baseUrl ? t('customProxy') : t('officialEndpoint')}
                       </p>
                     </div>
@@ -1820,13 +2341,17 @@ export const SettingsTab: React.FC = () => {
               {(settings.approvalScope || 'once') === 'session' && (
                 <Badge tone="warning" icon={riskIcon('medium')}>{tx('elevated', 'Elevated')}</Badge>
               )}
+              {/* The picker is built from the shared scope list, so a scope
+                  added there shows up here without a second hand-written copy,
+                  and a malformed stored value falls back to Once instead of
+                  rendering a strip with nothing selected. */}
               <Segmented
                 groupLabel={tx('approvalScope', 'Approval Scope')}
-                options={[
-                  { id: 'once', label: tx('scopeOnce', 'Once') },
-                  { id: 'session', label: tx('scopeSession', 'Session') },
-                ]}
-                value={settings.approvalScope || 'once'}
+                options={APPROVAL_SCOPES.map((scope) => ({
+                  id: scope,
+                  label: scope === 'session' ? tx('scopeSession', 'Session') : tx('scopeOnce', 'Once'),
+                }))}
+                value={isApprovalScope(settings.approvalScope) ? settings.approvalScope : 'once'}
                 onSelect={handleScopeChange}
                 pendingId={pendingScope}
               />
@@ -1854,8 +2379,12 @@ export const SettingsTab: React.FC = () => {
                     }
                     if (disableLockTimer.current !== null) window.clearTimeout(disableLockTimer.current);
                     setPendingDisableLock(false);
-                    saveThenToast({ appLockEnabled: false }, `${appLockTitle}: ${t('disabled')}`, 'success');
-                    setShowPinForm(false);
+                    // The second tap only opens the prompt: the PIN below is
+                    // what turns the flag off.
+                    setDisablePin('');
+                    setShowDisablePin(false);
+                    setDisablePinError(null);
+                    setDisablePinPrompt(true);
                   } else {
                     setPendingDisableLock(false);
                     setPinError(null);
@@ -1865,7 +2394,7 @@ export const SettingsTab: React.FC = () => {
                   }
                 }}
                 className={`hm-hit min-h-[36px] cursor-pointer transition ${
-                  settings.appLockEnabled ? (pendingDisableLock ? 'pill-warning' : 'pill-success') : 'pill-neutral'
+                  settings.appLockEnabled ? (pendingDisableLock ? 'pill-warning' : 'pill-accent') : 'pill-neutral'
                 }`}
               >
                 {settings.appLockEnabled ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
@@ -1873,6 +2402,64 @@ export const SettingsTab: React.FC = () => {
               </button>
             </div>
           </div>
+          {disablePinPrompt && (
+            <div
+              className="mt-3 p-3 r-sm edge bg-[var(--app-card-subtle)] space-y-2"
+              role="group"
+              aria-label={tx('lockPinInputLabel', 'App lock PIN')}
+            >
+              <p className="t-caption text-[var(--app-text-muted)]">
+                {tx('lockPinInputLabel', 'App lock PIN')}
+              </p>
+              <div className="flex items-center gap-2">
+                <input
+                  type={showDisablePin ? 'text' : 'password'}
+                  inputMode="numeric"
+                  autoFocus
+                  value={disablePin}
+                  onChange={(e) => {
+                    setDisablePin(e.target.value.replace(/\D/g, '').slice(0, 8));
+                    setDisablePinError(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') confirmDisableLock();
+                  }}
+                  placeholder={tx('confirmPinPlaceholder', 'Confirm PIN')}
+                  aria-label={tx('lockPinInputLabel', 'App lock PIN')}
+                  disabled={disablePinBusy}
+                  className="flex-1 min-w-0 px-3 py-2.5 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] font-mono focus:outline-none focus:border-[var(--app-accent)] disabled:opacity-50"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowDisablePin((v) => !v)}
+                  disabled={disablePinBusy}
+                  aria-label={showDisablePin ? tx('hideToken', 'Hide token') : tx('showToken', 'Show token')}
+                  className="hm-hit w-9 h-9 inline-flex items-center justify-center r-sm edge bg-[var(--app-card-subtle)] text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition cursor-pointer disabled:opacity-50"
+                >
+                  {showDisablePin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+                <button
+                  onClick={confirmDisableLock}
+                  disabled={disablePinBusy || disablePin.length < 1}
+                  className="hm-hit inline-flex items-center px-4 py-2 min-h-[36px] r-sm t-label bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)] transition cursor-pointer disabled:opacity-50"
+                >
+                  {disablePinBusy ? tx('unlocking', 'Unlocking…') : tx('confirm', 'Confirm?')}
+                </button>
+                <button
+                  onClick={closeDisablePinPrompt}
+                  disabled={disablePinBusy}
+                  className="hm-hit inline-flex items-center px-4 py-2 min-h-[36px] r-sm t-label edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] text-[var(--app-text)] transition cursor-pointer disabled:opacity-50"
+                >
+                  {t('cancel')}
+                </button>
+              </div>
+              {disablePinError && (
+                <p className="t-caption text-[var(--app-danger)]" role="alert">
+                  {disablePinError}
+                </p>
+              )}
+            </div>
+          )}
           {settings.appLockEnabled && (
             <p className="t-caption text-[var(--app-text-dim)] mt-1">{t('appLockReentryNote')}</p>
           )}
@@ -2220,11 +2807,11 @@ export const SettingsTab: React.FC = () => {
       {/* ========================================================= */}
       <Section
         title={tx('sectionServer', 'Hermes server')}
-        subtitle={`${GATEWAY_ADDR}, ${installStateLabel(install)}`}
+        subtitle={`${tx('localMemory', 'On this phone')}, ${installStateLabel(install)}`}
         open={openSections.gateway}
         onToggle={() => toggleSection('gateway')}
         id={sectionDomId('gateway')}
-        badge={<Badge tone={connected ? 'success' : 'danger'}>{connected ? t('running') : t('stopped')}</Badge>}
+        badge={<Badge tone={gatewayStatusTone}>{gatewayStatusText}</Badge>}
       >
         <Row>
           <p className="t-body text-[var(--app-text)]">{tx('serverServiceTitle', 'Background service')}</p>
@@ -2251,7 +2838,7 @@ export const SettingsTab: React.FC = () => {
               <Square className="w-3.5 h-3.5 fill-[var(--app-text-muted)]" />
               <span>{t('stopShort')}</span>
             </button>
-            {(install === 'NOT_INSTALLED' || install === 'FAILED') && (
+            {(uiFlags.canInstall || install === 'FAILED') && (
               <button
                 onClick={() => {
                   void handleInstallGateway();
@@ -2262,15 +2849,49 @@ export const SettingsTab: React.FC = () => {
                 {installing ? tx('installing', 'Installing…') : tx('install', 'Install')}
               </button>
             )}
+            {uiFlags.showRetry && (
+              <button
+                onClick={() => {
+                  // A failed install restarts it; a degraded service is worth
+                  // another probe before anything heavier is attempted.
+                  if (uiFlags.canStart) void handleStartGateway();
+                  else void handleRefreshStatus();
+                }}
+                disabled={gatewayBusy || refreshingStatus}
+                className="hm-hit inline-flex items-center gap-2 px-4 py-2 min-h-[36px] r-sm edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] t-label text-[var(--app-text)] transition cursor-pointer disabled:opacity-50"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>{tx('retry', 'Retry')}</span>
+              </button>
+            )}
           </div>
-          {!connected && (
+          {uiFlags.showProgress && !installProgress && !refreshingStatus && (
+            <div className="pt-2">
+              <StateNote state="refreshing" message={gatewayProgressLabel(gatewayMachine)} />
+            </div>
+          )}
+          {!gatewayHealthy && (
             <div className="pt-2">
               <StateNote
-                state="offline"
-                message={tx('serverStoppedHint', 'Hermes is stopped. Start it to run diagnostics and scheduled tasks.')}
-                detail={gatewayFailureReason || installError || undefined}
+                state={gatewayFailing ? 'error' : 'offline'}
+                message={
+                  gatewayFailing
+                    ? gatewayFailureReason
+                      ? plainGatewayFailure(gatewayFailureReason, tx)
+                      : tx('couldNotConnect', 'Could not connect')
+                    : tx('serverStoppedHint', 'Hermes is stopped. Start it to run diagnostics and scheduled tasks.')
+                }
+                detail={
+                  gatewayFailing
+                    ? undefined
+                    : installError
+                      ? plainResultLine(installError, '', tx) || undefined
+                      : undefined
+                }
+                actionLabel={stoppedNoteStartsService ? tx('startService', 'Start') : undefined}
                 onRetry={() => {
-                  void handleRefreshStatus();
+                  if (stoppedNoteStartsService) void handleStartGateway();
+                  else void handleRefreshStatus();
                 }}
               />
             </div>
@@ -2294,6 +2915,12 @@ export const SettingsTab: React.FC = () => {
             />
           </div>
         </Row>
+        {/* R1: alert permission state. Approvals and job results can only
+            reach a closed app when this is granted; a denial is flipped in
+            system settings, so the button re-asks (or the user goes there). */}
+        <Row>
+          <NotificationRow />
+        </Row>
       </Section>
 
       {/* ========================================================= */}
@@ -2316,49 +2943,44 @@ export const SettingsTab: React.FC = () => {
             </div>
             <button
               onClick={() => {
+                setShowSkillsModal(true);
                 void refreshLibrary();
               }}
-              className="hm-hit inline-flex items-center px-3 py-2 min-h-[36px] r-sm t-label text-[var(--app-accent-text)] hover:underline cursor-pointer shrink-0"
+              className="hm-hit inline-flex items-center px-3 py-2 min-h-[36px] r-sm t-label bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)] transition cursor-pointer shrink-0"
             >
-              {t('refresh')}
+              {skills.length > 0 && !skillsNote
+                ? `${tx('viewPlain', 'View')} (${skills.filter((s) => s.enabled).length}/${skills.length})`
+                : tx('viewPlain', 'View')}
             </button>
-          </div>
-          <div className="space-y-2 pt-3">
-            <StateNote
-              state={skillsState}
-              message={
-                skillsState === 'loading' ? tx('skillLoadingPlain', 'Loading skills…') :
-                skillsState === 'empty' ? tx('skillEmptyPlain', 'No skills installed yet.') :
-                skillsState === 'offline' ? tx('skillOfflinePlain', 'Hermes is offline. Skill switches are unavailable.') :
-                skillsState === 'error' ? tx('skillErrorPlain', 'Skills could not load.') :
-                skillsState === 'refreshing' ? tx('skillRefreshingPlain', 'Refreshing skills…') : ''
-              }
-              onRetry={() => {
-                void refreshLibrary();
-              }}
-            />
-            {skills.map((sk) => (
-              <div key={sk.id} className="flex items-center justify-between gap-3 py-2">
-                <div className="pe-3 min-w-0">
-                  <p className="t-label text-[var(--app-text)]">{sk.name}</p>
-                  <p className="t-caption text-[var(--app-text-muted)] mt-1">{sk.description}</p>
-                </div>
-                <Switch
-                  checked={sk.enabled}
-                  onChange={() => handleToggleSkill(sk.id, sk.enabled)}
-                  ariaLabel={`${sk.name}: ${sk.enabled ? t('skillEnabled') : t('skillDisabled')}`}
-                />
-              </div>
-            ))}
           </div>
         </Row>
 
         <Row>
-          <p className="t-body text-[var(--app-text)]">{tx('memoryTitlePlain', 'Memory')}</p>
-          <p className="t-caption text-[var(--app-text-muted)] mt-1">
-            {t('providerLabel')}: {memory?.provider || tx('localMemory', 'On this phone')} · {t('entriesLabel')}:{' '}
-            {memory?.entries || 0}
-          </p>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <p className="t-body text-[var(--app-text)]">{tx('memoryTitlePlain', 'Memory')}</p>
+                <Badge tone={memory?.enabled ? 'success' : 'neutral'}>
+                  {memory?.enabled ? t('active') : t('disabled')}
+                </Badge>
+              </div>
+              <p className="t-caption text-[var(--app-text-muted)] mt-1">
+                {t('providerLabel')}: {memory?.provider || tx('localMemory', 'On this phone')} · {t('entriesLabel')}:{' '}
+                {memory?.entries || 0}
+              </p>
+            </div>
+            <Switch
+              checked={Boolean(memory?.enabled)}
+              onChange={() => void handleToggleMemory(!memory?.enabled)}
+              disabled={memoryToggling || memoryState === 'loading' || memoryToggleDead}
+              ariaLabel={`${tx('memoryTitlePlain', 'Memory')}: ${memory?.enabled ? t('active') : t('disabled')}`}
+            />
+          </div>
+          {memoryToggleDead && connected && (
+            <p className="t-caption text-[var(--app-text-dim)] pt-1">
+              {tx('toggleUnsupportedPlain', 'This server does not support that switch.')}
+            </p>
+          )}
           <div className="pt-2">
             <StateNote
               state={memoryState}
@@ -2368,10 +2990,13 @@ export const SettingsTab: React.FC = () => {
                 memoryState === 'error' ? tx('memoryErrorPlain', 'Memory could not load.') :
                 memoryState === 'refreshing' ? tx('memoryRefreshingPlain', 'Refreshing memory…') : ''
               }
+              onRetry={() => {
+                void refreshLibrary();
+              }}
             />
             {memoryState === 'ready' && (
               <div className="t-caption text-[var(--app-text)] bg-[var(--app-card-subtle)] p-4 r-sm hairline font-mono leading-relaxed">
-                {memory?.summary || t('memoryEmpty')}
+                {memory?.summary || (memory?.enabled ? t('memoryEmpty') : tx('memoryDisabledPlain', 'Semantic memory is disabled.'))}
               </div>
             )}
           </div>
@@ -2480,19 +3105,19 @@ export const SettingsTab: React.FC = () => {
                 >
                   <div
                     className="w-full h-24 r-sm hairline overflow-hidden flex relative mb-3"
-                    style={{ backgroundColor: th.preview.bg }}
+                    style={{ backgroundColor: currentMode === 'light' ? th.light.bg : th.preview.bg }}
                   >
                     <div
                       className="w-12 h-full border-e border-[var(--app-border-subtle)] shrink-0"
-                      style={{ backgroundColor: th.preview.sidebar }}
+                      style={{ backgroundColor: currentMode === 'light' ? th.light.sidebar : th.preview.sidebar }}
                     />
                     <div className="flex-1 p-3 flex flex-col justify-between">
                       <div className="space-y-2">
-                        <div className="h-3 w-20 r-full" style={{ backgroundColor: th.preview.bar1 }} />
-                        <div className="h-2 w-28 r-full" style={{ backgroundColor: th.preview.bar2 }} />
+                        <div className="h-3 w-20 r-full" style={{ backgroundColor: currentMode === 'light' ? th.light.textMuted : th.preview.bar1 }} />
+                        <div className="h-2 w-28 r-full" style={{ backgroundColor: currentMode === 'light' ? th.light.textMuted : th.preview.bar2 }} />
                       </div>
                       <div className="flex justify-end">
-                        <div className="h-4 w-12 r-full" style={{ backgroundColor: th.preview.pill }} />
+                        <div className="h-4 w-12 r-full" style={{ backgroundColor: currentMode === 'light' ? th.light.accent : th.preview.pill }} />
                       </div>
                     </div>
                   </div>
@@ -2579,7 +3204,7 @@ export const SettingsTab: React.FC = () => {
                   </span>
                   <div className="flex items-center gap-3">
                     <span className="t-micro font-mono text-[var(--app-text-dim)]">{lang.code}</span>
-                    {isSelected && <Check className="w-4 h-4 text-[var(--app-accent)] stroke-[2.5]" />}
+                    {isSelected && <Check className="w-4 h-4 text-[var(--app-accent-text)] stroke-[2.5]" />}
                   </div>
                 </button>
               );
@@ -2598,7 +3223,11 @@ export const SettingsTab: React.FC = () => {
             max="1.3"
             step="0.05"
             value={fontScaleLocal}
-            onChange={(e) => setFontScaleLocal(parseFloat(e.target.value))}
+            onChange={(e) => {
+              const val = parseFloat(e.target.value);
+              setFontScaleLocal(val);
+              document.documentElement.style.setProperty('--font-scale', String(val));
+            }}
             aria-label={t('fontScale')}
             className="w-full accent-[var(--app-accent)] mt-2"
           />
@@ -2624,7 +3253,14 @@ export const SettingsTab: React.FC = () => {
               groupLabel={t('reasoningEffort')}
               options={EFFORT_LEVELS.map(({ id: lvl, label }) => ({ id: lvl, label }))}
               value={settings.reasoningEffort}
-              onSelect={(lvl) => updateSettings({ reasoningEffort: lvl })}
+              onSelect={(lvl) => {
+                const opt = EFFORT_LEVELS.find((o) => o.id === lvl);
+                saveThenToast(
+                  { reasoningEffort: lvl },
+                  `${t('reasoningEffort')}: ${opt ? opt.label : lvl}`,
+                  'success'
+                );
+              }}
             />
           </div>
         </Row>
@@ -2659,7 +3295,7 @@ export const SettingsTab: React.FC = () => {
             )}
             {doctorReport && (
               <div className="space-y-2 pt-1">
-                <p className={`t-label ${doctorReport.ok ? 'text-[var(--app-success)]' : 'text-[var(--app-danger)]'}`}>
+                <p className={`t-label ${doctorReport.ok ? 'text-[var(--app-success)]' : 'text-[var(--app-danger)]'}`} role="status">
                   {plainResultLine(
                     doctorReport.summary,
                     tx('diagnosticsFailedPlain', 'The diagnostics run did not finish. Try again.'),
@@ -2668,14 +3304,14 @@ export const SettingsTab: React.FC = () => {
                 </p>
                 <div className="space-y-2">
                   {doctorReport.checks.map((c, i) => (
-                    <div key={i} className="flex items-center gap-3 py-2 border-b border-[var(--app-border-subtle)] last:border-0 t-label">
+                    <div key={i} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 border-b border-[var(--app-border-subtle)] last:border-0 t-label">
                       {c.ok ? (
                         <CheckCircle2 className="w-4 h-4 text-[var(--app-success)] shrink-0" />
                       ) : (
                         <XCircle className="w-4 h-4 text-[var(--app-danger)] shrink-0" />
                       )}
-                      <span className="text-[var(--app-text)]">{c.name}</span>
-                      <span className="t-caption text-[var(--app-text-dim)] ms-auto truncate max-w-[200px]">{c.detail}</span>
+                      <span className="min-w-0 break-words text-[var(--app-text)]">{c.name}</span>
+                      <span className="t-caption text-[var(--app-text-dim)] ms-auto min-w-0 max-w-full break-words">{c.detail}</span>
                     </div>
                   ))}
                 </div>
@@ -2701,9 +3337,9 @@ export const SettingsTab: React.FC = () => {
               {runningBackup && <div className="pt-2"><StateNote state="loading" message={tx('snapshotRunning', 'Saving the snapshot…')} /></div>}
               {backupResult && (
                 <div className="pt-2 space-y-2">
-                  <p className={`t-caption ${backupResult.ok ? 'text-[var(--app-success)]' : 'text-[var(--app-danger)]'}`}>
+                  <p className={`t-caption ${backupResult.ok ? 'text-[var(--app-success)]' : 'text-[var(--app-danger)]'}`} role="status">
                     {backupResult.ok
-                      ? backupResult.message
+                      ? tx('backupOkPill', 'Saved')
                       : plainResultLine(
                           backupResult.message,
                           tx('snapshotFailedPlain', 'The snapshot was not saved. Try again.'),
@@ -2733,7 +3369,10 @@ export const SettingsTab: React.FC = () => {
               {sharingDebug && <div className="pt-2"><StateNote state="loading" message={tx('debugRunning', 'Removing secrets and exporting…')} /></div>}
               {debugResult && (
                 <div className="pt-2 space-y-2">
-                  <p className="t-caption text-[var(--app-accent-text)]">
+                  <p
+                    className={`t-caption ${debugResult.ok ? 'text-[var(--app-accent-text)]' : 'text-[var(--app-danger)]'}`}
+                    role="status"
+                  >
                     {plainResultLine(
                       debugResult.summary,
                       tx('debugFailedPlain', 'The diagnostics bundle was not exported. Try again.'),
@@ -2780,7 +3419,7 @@ export const SettingsTab: React.FC = () => {
               aria-modal="true"
               aria-label={`${tx('profileActions', 'Profile actions')}: ${prov.name}`}
               onClick={(event) => event.stopPropagation()}
-              className="w-full max-w-md r-md elev-3 bg-[var(--app-card)] edge p-4 space-y-1 pb-[calc(1rem+var(--safe-bottom))]"
+              className="w-full max-w-md r-md elev-3 bg-[var(--app-card)] edge p-4 space-y-1 pb-[calc(6.5rem+var(--safe-bottom))]"
             >
               <div className="px-3 pt-1 pb-3 border-b border-[var(--app-border-subtle)]">
                 <p className="t-body text-[var(--app-text)] truncate">{prov.name}</p>
@@ -2793,7 +3432,7 @@ export const SettingsTab: React.FC = () => {
                   onClick={() => handleUseProvider(prov)}
                   className="w-full min-h-[48px] px-3 r-sm flex items-center gap-3 text-start t-label text-[var(--app-text)] hover:bg-[var(--app-card-hover)] cursor-pointer transition-colors"
                 >
-                  <Check className="w-4 h-4 text-[var(--app-accent)] shrink-0" />
+                  <Check className="w-4 h-4 text-[var(--app-accent-text)] shrink-0" />
                   <span>{t('use')}</span>
                 </button>
               )}
@@ -2835,6 +3474,65 @@ export const SettingsTab: React.FC = () => {
       })()}
 
       {/* Blueprint Launch Modal */}
+      {showSkillsModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[var(--app-scrim)] backdrop-blur-sm animate-in fade-in duration-150"
+          onClick={() => setShowSkillsModal(false)}
+        >
+          <div
+            ref={skillsModalRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label={tx('skillsTitle', 'Skills')}
+            onClick={(event) => event.stopPropagation()}
+            className="w-full max-w-sm r-md elev-3 bg-[var(--app-card)] edge p-5 space-y-4 max-h-[80vh] overflow-y-auto overflow-x-clip"
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-[var(--app-border-subtle)]">
+              <span className="t-heading text-[var(--app-text)]">{tx('skillsTitle', 'Skills')}</span>
+              <button
+                onClick={() => setShowSkillsModal(false)}
+                aria-label={t('cancel')}
+                className="w-11 h-11 flex items-center justify-center r-sm text-[var(--app-text-muted)] hover:text-[var(--app-text)] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <StateNote
+              state={skillsState}
+              message={
+                skillsState === 'loading' ? tx('skillLoadingPlain', 'Loading skills…') :
+                skillsState === 'empty' && skillsNote ? skillsNote :
+                skillsState === 'empty' ? tx('skillEmptyPlain', 'No skills installed yet.') :
+                skillsState === 'offline' ? tx('skillOfflinePlain', 'Hermes is offline. Skill switches are unavailable.') :
+                skillsState === 'error' ? tx('skillErrorPlain', 'Skills could not load.') :
+                skillsState === 'refreshing' ? tx('skillRefreshingPlain', 'Refreshing skills…') : ''
+              }
+              onRetry={() => {
+                void refreshLibrary();
+              }}
+            />
+            {skillToggleDead && (
+              <p className="t-caption text-[var(--app-text-dim)]">
+                {tx('toggleUnsupportedPlain', 'This server does not support that switch.')}
+              </p>
+            )}
+            {skills.map((sk) => (
+              <div key={sk.id} className="flex items-center justify-between gap-3 py-2">
+                <div className="pe-3 min-w-0">
+                  <p className="t-label text-[var(--app-text)]">{sk.name}</p>
+                  <p className="t-caption text-[var(--app-text-muted)] mt-1">{sk.description}</p>
+                </div>
+                <Switch
+                  checked={sk.enabled}
+                  disabled={skillToggleDead}
+                  onChange={() => handleToggleSkill(sk.id, sk.enabled)}
+                  ariaLabel={`${sk.name}: ${sk.enabled ? t('skillEnabled') : t('skillDisabled')}`}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {selectedBlueprint && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[var(--app-scrim)] backdrop-blur-sm animate-in fade-in duration-150"
@@ -2937,11 +3635,12 @@ export const SettingsTab: React.FC = () => {
                     setNewProvType(val);
                     const opt = PROVIDER_OPTIONS.find(([id]) => id === val);
                     if (opt) setNewProvName(opt[1]);
-                    const defModel = DEFAULT_MODELS[val]?.[0] || '';
-                    if (defModel) setNewProvModel(defModel);
                   }}
                   className="w-full px-4 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)]"
                 >
+                  <option value="" disabled>
+                    {t('selectProvider')}
+                  </option>
                   {PROVIDER_OPTIONS.map(([id, name]) => (
                     <option key={id} value={id}>
                       {name}
@@ -3011,13 +3710,44 @@ export const SettingsTab: React.FC = () => {
               </div>
               <div>
                 <label className="block t-label text-[var(--app-text-muted)] mb-1">{t('defaultModel')}</label>
-                <input
-                  type="text"
-                  value={newProvModel}
-                  onChange={(e) => setNewProvModel(e.target.value)}
-                  placeholder={DEFAULT_MODELS[newProvType]?.[0] || 'e.g. gpt-4o, claude-3-7-sonnet'}
-                  className="w-full px-4 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)] font-mono"
-                />
+                {testedModels.length > 0 ? (
+                  <>
+                    <select
+                      value={testedModels.includes(newProvModel) ? newProvModel : '__custom'}
+                      onChange={(e) => {
+                        if (e.target.value === '__custom') setNewProvModel('');
+                        else setNewProvModel(e.target.value);
+                      }}
+                      className="w-full px-4 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)] font-mono cursor-pointer"
+                    >
+                      {testedModels.map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                      <option value="__custom">
+                        {tx('customModelPlain', 'Custom model…')}
+                      </option>
+                    </select>
+                    {!testedModels.includes(newProvModel) && (
+                      <input
+                        type="text"
+                        value={newProvModel}
+                        onChange={(e) => setNewProvModel(e.target.value)}
+                        placeholder={tx('customModelPlaceholder', 'Type the exact model id')}
+                        className="mt-2 w-full px-4 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)] font-mono"
+                      />
+                    )}
+                  </>
+                ) : (
+                  <input
+                    type="text"
+                    value={newProvModel}
+                    onChange={(e) => setNewProvModel(e.target.value)}
+                    placeholder={DEFAULT_MODELS[newProvType]?.[0] || 'e.g. gpt-4o, claude-3-7-sonnet'}
+                    className="w-full px-4 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)] font-mono"
+                  />
+                )}
               </div>
               <div>
                 <label className="block t-label text-[var(--app-text-muted)] mb-1">{t('baseUrl')}</label>
@@ -3056,7 +3786,7 @@ export const SettingsTab: React.FC = () => {
                 {t('cancel')}
               </button>
               <button
-                disabled={!keysValid(newProvType, newProvKey, newProvBaseUrl) || applyingProvider}
+                disabled={!keysValid(newProvType, newProvKey, newProvBaseUrl) || !newProvModel.trim() || applyingProvider}
                 onClick={async () => {
                   // Busy guard: a second tap must not start a second restart.
                   if (applyBusyRef.current) {
@@ -3065,7 +3795,9 @@ export const SettingsTab: React.FC = () => {
                   }
                   const cleanedKey = newProvKey.trim();
                   const baseUrl = newProvBaseUrl.trim();
-                  const targetModel = newProvModel.trim() || DEFAULT_MODELS[newProvType]?.[0] || `${newProvType}/default`;
+                  // No silent model fallback: the profile stores exactly the
+                  // model the user typed. Save stays disabled until one is set.
+                  const targetModel = newProvModel.trim();
                   const label = newProvName.trim() || PROVIDER_OPTIONS.find(([id]) => id === newProvType)?.[1] || providerLabel(newProvType);
                   const existing = editingProviderId
                     ? configuredProviders.find((p) => p.id === editingProviderId)
@@ -3105,7 +3837,7 @@ export const SettingsTab: React.FC = () => {
                   if (editingProviderId) {
                     const editId = editingProviderId;
                     const outcome = await runVerifiedWrite(async () => {
-                      const before = saveErrorRef.current;
+                      const before = saveSnapshot();
                       updateConfiguredProvider(editId, {
                         provider: newProvType,
                         name: label,
@@ -3139,7 +3871,7 @@ export const SettingsTab: React.FC = () => {
 
                   let createdId: string | null = null;
                   const outcome = await runVerifiedWrite(async () => {
-                    const before = saveErrorRef.current;
+                    const before = saveSnapshot();
                     if (createdId === null) {
                       createdId = addConfiguredProvider({
                         provider: newProvType,
@@ -3181,6 +3913,7 @@ export const SettingsTab: React.FC = () => {
                     });
                   } else {
                     showToast(`${tx('addedInactive', 'Added (inactive)')} ${label}`, 'success');
+                    void refreshModels();
                   }
                 }}
                 className="hm-hit inline-flex items-center px-5 py-2 min-h-[36px] r-sm t-label bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] disabled:opacity-40 text-[var(--app-on-accent)] cursor-pointer transition"

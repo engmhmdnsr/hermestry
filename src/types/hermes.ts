@@ -23,6 +23,7 @@ export interface CronJob {
   id: string;
   name: string;
   scheduleDisplay: string;
+  scheduleRaw?: string;
   prompt: string;
   enabled: boolean;
   state: string;
@@ -35,6 +36,7 @@ export interface AiModelInfo {
   id: string;
   displayName: string;
   provider?: string;
+  source?: 'live' | 'offline-fallback';
 }
 
 export interface ConfiguredProvider {
@@ -68,6 +70,7 @@ export interface PendingApproval {
   cwd?: string;
   reason?: string;
   createdAt?: number;
+  choices?: string[];
 }
 
 export interface GatewayStatus {
@@ -122,6 +125,10 @@ export interface OpsStatus {
 }
 
 export interface DebugShare {
+  // True only when the export actually produced something shareable. Callers
+  // branch on it instead of guessing from a non-empty string, so a failure
+  // never gets rendered as a success colour.
+  ok: boolean;
   urls: string[];
   summary: string;
 }

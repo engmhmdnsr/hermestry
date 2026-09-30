@@ -102,6 +102,8 @@ export const PROVIDER_ALIASES: Record<string, string> = {
   'tencent-lkeap': 'tencent-tokenplan',
   go: 'opencode-go',
   'opencode-go-sub': 'opencode-go',
+  opencode_go: 'opencode-go',
+  'opencode-go-api': 'opencode-go',
   kilo: 'kilocode',
   'kilo-code': 'kilocode',
   'kilo-gateway': 'kilocode',
@@ -112,12 +114,15 @@ export const PROVIDER_ALIASES: Record<string, string> = {
 export const KNOWN_PROVIDERS = new Set(PROVIDER_OPTIONS.map(([id]) => id));
 
 export function normProvider(p: string): string {
-  const slug = p.trim().toLowerCase().replace(/\s+/g, '-');
+  const slug = p.trim().toLowerCase().replace(/[\s_]+/g, '-');
   return PROVIDER_ALIASES[slug] || slug;
 }
 
 export function keysValid(provider: string, key: string, baseUrl: string): boolean {
-  const p = normProvider(provider).trim() || 'deepseek';
+  // Empty provider names nothing: never substitute a default here. A caller
+  // with no provider configured must read invalid, not inherit deepseek.
+  const p = normProvider(provider).trim();
+  if (!p) return false;
   if (KEYLESS_PROVIDERS.has(p)) return true;
   if (!key.trim()) return false;
   return KNOWN_PROVIDERS.has(p) || baseUrl.trim().length > 0;
@@ -162,7 +167,24 @@ export const DEFAULT_MODELS: Record<string, string[]> = {
     'moa/reasoning-ensemble-v2',
   ],
   deepseek: ['deepseek/deepseek-chat', 'deepseek/deepseek-reasoner'],
-  'opencode-go': ['deepseek-v4.1-flash'],
+  'opencode-go': [
+    'deepseek-v4.1-flash',
+    'deepseek-v4.1-coder',
+    'deepseek-v4.1-reasoner',
+    'deepseek-v3',
+    'deepseek-r1',
+    'deepseek-chat',
+    'deepseek-reasoner',
+    'claude-3-7-sonnet',
+    'claude-3-5-sonnet',
+    'gpt-4o',
+    'gpt-4o-mini',
+    'o3-mini',
+    'gemini-2.5-pro',
+    'gemini-2.5-flash',
+    'qwen-2.5-coder-32b',
+    'meta-llama/llama-3.3-70b-instruct',
+  ],
   'opencode-zen': ['opencode-zen/default', 'opencode-zen/auto'],
   xiaomi: ['mimo-v2-flash', 'mimo-v2-thinking-flash'],
   'tencent-tokenhub': ['tokenhub-default', 'tokenhub-plus'],
@@ -204,10 +226,20 @@ export const STATIC_PROVIDER_ENTRIES: StaticProviderEntry[] = PROVIDER_OPTIONS.m
   source: STATIC_CATALOG_SOURCE,
 }));
 
+export function formatFallbackDisplayName(id: string): string {
+  const parts = id.split('/');
+  const rawName = parts.length > 1 ? parts[1] : parts[0];
+  const clean = rawName
+    .replace(/[-_]/g, ' ')
+    .replace(/\b([a-z])/g, (c) => c.toUpperCase());
+  return clean;
+}
+
 // Offline-fallback snapshot of default models. Array copies so callers
 // cannot mutate the shared catalog. Source is always offline-fallback.
 export function staticModelsFor(provider: string): { models: string[]; source: ProviderCatalogSource } {
-  const list = DEFAULT_MODELS[provider];
+  const norm = normProvider(provider);
+  const list = DEFAULT_MODELS[norm];
   return { models: list ? [...list] : [], source: STATIC_CATALOG_SOURCE };
 }
 

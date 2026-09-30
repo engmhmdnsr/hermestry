@@ -1,21 +1,38 @@
 package ee.oversight.hermes.mobile
 
+import android.app.Activity
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.PowerManager
+import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
 import ee.oversight.hermes.mobile.install.Bootstrap
+import ee.oversight.hermes.mobile.install.stableFailure
 import ee.oversight.hermes.mobile.security.SecurePrefs
 import ee.oversight.hermes.mobile.service.MobileGatewayService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
 
 /**
  * Capacitor bridge for the on-device Hermes gateway runner.
@@ -29,26 +46,129 @@ import java.net.URL
 @CapacitorPlugin(name = "HermesGateway")
 class HermesGatewayPlugin : Plugin() {
 
-  private val scope = CoroutineScope(Dispatchers.IO)
+  // SupervisorJob: install()/stop() run here too, and one escaping throw
+  // (a null system service, a call settled twice) must not cancel this scope
+  // for the process lifetime, which is exactly how every later call ends up
+  // silently doing nothing.
+  private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private val pctRe = Regex("(\\d{1,3})%")
+  // Voice I/O: the Capacitor WebView has no Web Speech APIs, so the chat
+  // layer probes for these. speechRecognize delegates to the system
+  // recognizer via RecognizerIntent (no RECORD_AUDIO needed: the recognizer
+  // app owns the mic); ttsSpeak/ttsStop drive android TextToSpeech.
+  private val REQ_SPEECH = 0x48E7
+  private var pendingSpeechCall: PluginCall? = null
+  private var pendingSpeechMax = 500
+  private var tts: TextToSpeech? = null
+  private var ttsReady = false
+  private var ttsDead = false
+  // installInFlight lives in the companion (process-wide): see its comment.
+
+  // --- Voice I/O: mic dictation + read-aloud (chat layer probes) ---
+
+  override fun load() {
+    super.load()
+    // Warm up TTS so the first speaker tap finds a ready engine.
+    try { getTts() } catch (_: Exception) { }
+  }
+
+  @PluginMethod
+  fun speechRecognize(call: PluginCall) {
+    if (pendingSpeechCall != null) { call.reject("busy"); return }
+    if (!SpeechRecognizer.isRecognitionAvailable(context)) { call.reject("unavailable"); return }
+    val locale = (call.getString("locale") ?: "en").replace('_', '-')
+    val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+      putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+      putExtra(RecognizerIntent.EXTRA_LANGUAGE, locale)
+      putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+    }
+    if (intent.resolveActivity(context.packageManager) == null) { call.reject("unavailable"); return }
+    pendingSpeechMax = call.getInt("maxChars") ?: 500
+    pendingSpeechCall = call
+    startActivityForResult(call, intent, REQ_SPEECH)
+  }
+
+  override fun handleOnActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+    super.handleOnActivityResult(requestCode, resultCode, data)
+    if (requestCode != REQ_SPEECH) return
+    val call = pendingSpeechCall
+    pendingSpeechCall = null
+    if (call == null) return
+    if (resultCode == Activity.RESULT_OK && data != null) {
+      val text = (data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull() ?: "").take(pendingSpeechMax)
+      if (text.isBlank()) { call.reject("empty"); return }
+      val ret = JSObject()
+      ret.put("transcript", text)
+      call.resolve(ret)
+    } else {
+      call.reject("cancelled")
+    }
+  }
+
+  private fun getTts(): TextToSpeech? {
+    if (ttsDead) return null
+    val existing = tts
+    if (existing != null) return if (ttsReady) existing else null
+    tts = TextToSpeech(context) { status ->
+      if (status == TextToSpeech.SUCCESS) { ttsReady = true }
+      else { ttsDead = true; tts = null }
+    }
+    return null
+  }
+
+  @PluginMethod
+  fun ttsSpeak(call: PluginCall) {
+    val text = call.getString("text") ?: ""
+    if (text.isBlank()) { call.reject("empty"); return }
+    val engine = getTts()
+    if (engine == null) { call.reject(if (ttsDead) "unavailable" else "not_ready"); return }
+    try {
+      val tag = (call.getString("locale") ?: "en").replace('_', '-')
+      val avail = engine.setLanguage(Locale.forLanguageTag(tag))
+      if (avail == TextToSpeech.LANG_MISSING_DATA || avail == TextToSpeech.LANG_NOT_SUPPORTED) {
+        engine.setLanguage(Locale.ENGLISH)
+      }
+      engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "hermes-${System.currentTimeMillis()}")
+      call.resolve()
+    } catch (_: Exception) { call.reject("failed") }
+  }
+
+  @PluginMethod
+  fun ttsStop(call: PluginCall) {
+    try { tts?.stop() } catch (_: Exception) { }
+    call.resolve()
+  }
 
   @PluginMethod
   fun install(call: PluginCall) {
+    if (!installInFlight.compareAndSet(false, true)) {
+      call.reject("install_in_progress")
+      return
+    }
     call.setKeepAlive(true)
     scope.launch {
       // Screen-off survival: a partial wake lock keeps the CPU running and
       // a high-perf wifi lock keeps the radio awake, so Doze cannot stall
       // the ~305MB image download when the display sleeps. Released below.
-      val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
-      val wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "hermes:install")
-      val wifi = context.applicationContext
-        .getSystemService(Context.WIFI_SERVICE) as WifiManager
-      val wifiLock = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "hermes:install")
+      // Guarded: getSystemService(WIFI_SERVICE) is null on devices without
+      // Wi-Fi, and an unguarded cast here escaped the coroutine before any
+      // try/finally existed.
+      val wakeLock = try {
+        (context.getSystemService(Context.POWER_SERVICE) as? PowerManager)
+          ?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "hermes:install")
+      } catch (_: Exception) { null }
+      val wifiLock = try {
+        (context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager)
+          ?.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "hermes:install")
+      } catch (_: Exception) { null }
       try {
-        wakeLock.acquire(30 * 60 * 1000L)
+        wakeLock?.acquire(30 * 60 * 1000L)
       } catch (_: Exception) { }
       try {
-        wifiLock.acquire()
+        // WifiLock has no timed acquire (unlike WakeLock): it is held until
+        // the matching release below, so screen-off cannot drop the radio
+        // mid-download.
+        wifiLock?.acquire()
       } catch (_: Exception) { }
       try {
         // INSTALL-04: fail fast before the ~305MB download when storage is short.
@@ -62,33 +182,63 @@ class HermesGatewayPlugin : Plugin() {
           call.reject(msg)
           return@launch
         }
+        // Drop stale artifacts BEFORE asking the service to start. The
+        // service deletes them asynchronously in runInstall(), so a leftover
+        // "ok" from a previous run could be read first and resolve this
+        // install as successful without installing anything. install.log too:
+        // otherwise the tail below replays the previous run's lines first,
+        // which pins lastPhase (phases only move forward) at DONE and hides
+        // the new run's earlier phases.
+        try { java.io.File(Bootstrap.rootDir(context), "install.done").delete() } catch (_: Exception) { }
+        try { java.io.File(Bootstrap.rootDir(context), "install.log").delete() } catch (_: Exception) { }
         // The install itself runs inside the foreground service, which the
         // OS must keep alive with the screen off. Here we only tail its log.
         try {
           MobileGatewayService.install(context)
         } catch (e: Exception) {
+          val msg = stableFailure(e, "install_start_failed")
           notifyListeners("installDone", JSObject()
             .put("ok", false)
-            .put("error", e.message ?: "could not start installer"), true)
-          call.reject(e.message ?: "could not start installer")
+            .put("error", msg), true)
+          call.reject(msg)
           return@launch
         }
         val root = Bootstrap.rootDir(context)
         val log = java.io.File(root, "install.log")
         val done = java.io.File(root, "install.done")
         var offset = 0L
+        // Highest phase already reported; installPhaseForLine only classifies
+        // one line at a time, so without this an early informational line
+        // could walk the phase bar backwards.
+        var lastPhase = -1
+        // Deadline: no install.log line and no verdict for this long means the
+        // install is gone (the service was killed, or a Stop cancelled the
+        // install job) or wedged. The loop is while(true) on a kept-alive
+        // call, so without it the coroutine never returns: the call stays
+        // alive for the life of the WebView, holding the wake/wifi locks and
+        // polling forever with no error shown to the wizard.
+        var lastActivityAt = System.currentTimeMillis()
         while (true) {
           try {
             if (log.exists()) {
               val lines = log.readLines()
+              // The service recreates install.log for each run: a shorter
+              // file means offset now points past the end and every line of
+              // the new run would be silently skipped.
+              if (lines.size.toLong() < offset) offset = 0
               while (offset < lines.size) {
                 val line = lines[offset.toInt()]
                 offset++
+                lastActivityAt = System.currentTimeMillis()
                 notifyListeners("installLog", JSObject().put("line", line), true)
                 // INSTALL-03: real progress phases alongside the percent lines.
                 try {
                   Bootstrap.installPhaseForLine(line)?.let { ph ->
-                    notifyListeners("installPhase", JSObject().put("phase", ph.name), true)
+                    // Phases are a linear pipeline: only move forward.
+                    if (ph.ordinal > lastPhase) {
+                      lastPhase = ph.ordinal
+                      notifyListeners("installPhase", JSObject().put("phase", ph.name), true)
+                    }
                   }
                 } catch (_: Exception) { }
                 pctRe.find(line)?.let { m ->
@@ -99,8 +249,14 @@ class HermesGatewayPlugin : Plugin() {
                 }
               }
             }
-            if (done.exists()) {
-              val verdict = try { done.readText().trim() } catch (_: Exception) { "" }
+            // install.done is published by rename (MobileGatewayService
+            // writeDone), so a partial verdict cannot appear, but an empty or
+            // unreadable read must still mean "not settled yet", never a
+            // verdict: an error verdict would be rendered as-is.
+            val verdict = if (done.exists()) {
+              try { done.readText().trim() } catch (_: Exception) { "" }
+            } else ""
+            if (verdict.isNotEmpty()) {
               if (verdict == "ok") {
                 notifyListeners("installDone", JSObject().put("ok", true), true)
                 call.resolve(JSObject().put("ok", true))
@@ -114,14 +270,25 @@ class HermesGatewayPlugin : Plugin() {
               return@launch
             }
           } catch (_: Exception) { }
+          if (System.currentTimeMillis() - lastActivityAt > INSTALL_IDLE_TIMEOUT_MS) {
+            // Stable token, never the platform text: plainFailure maps it to
+            // one line of copy while install.log keeps the raw detail.
+            val msg = "install_timeout"
+            notifyListeners("installDone", JSObject()
+              .put("ok", false)
+              .put("error", msg), true)
+            call.reject(msg)
+            return@launch
+          }
           kotlinx.coroutines.delay(700)
         }
       } finally {
+        installInFlight.set(false)
         try {
-          if (wakeLock.isHeld) wakeLock.release()
+          if (wakeLock?.isHeld == true) wakeLock?.release()
         } catch (_: Exception) { }
         try {
-          if (wifiLock.isHeld) wifiLock.release()
+          if (wifiLock?.isHeld == true) wifiLock?.release()
         } catch (_: Exception) { }
       }
     }
@@ -147,7 +314,7 @@ class HermesGatewayPlugin : Plugin() {
       MobileGatewayService.start(context)
       call.resolve(JSObject().put("ok", true))
     } catch (e: Exception) {
-      call.reject(e.message ?: "start failed")
+      call.reject(stableFailure(e, "start_failed"))
     }
   }
 
@@ -162,7 +329,7 @@ class HermesGatewayPlugin : Plugin() {
     try {
       MobileGatewayService.stop(context)
     } catch (e: Exception) {
-      call.reject(e.message ?: "stop failed")
+      call.reject(stableFailure(e, "stop_failed"))
       return
     }
     scope.launch {
@@ -196,6 +363,16 @@ class HermesGatewayPlugin : Plugin() {
   }
 
   /**
+   * What to report when nothing else is wrong: the secure store is refusing
+   * secret writes (SecurePrefs full fallback), so the wizard's save silently
+   * does nothing. A real gateway failure outranks it; a healthy store
+   * reports nothing. Surfaced through lastError because that is the one error
+   * field the web side already copies from the status report.
+   */
+  private fun secureStoreReason(): String? =
+    if (SecurePrefs.isFallback()) SecurePrefs.lastError() else null
+
+  /**
    * Single-machine status (GATEWAY-03/04): state is one of UNINITIALIZED,
    * CHECKING, NOT_INSTALLED, INSTALLING, INSTALLED, STARTING, RUNNING,
    * STOPPING, STOPPED, DEGRADED, FAILED. Legacy web strings
@@ -208,6 +385,7 @@ class HermesGatewayPlugin : Plugin() {
     val failed = MobileGatewayService.gatewayFailed.value
     val reason = MobileGatewayService.gatewayFailureReason.value
       ?: MobileGatewayService.startupLastError.value
+      ?: secureStoreReason()
     val up = healthOk()
     val machine = MobileGatewayService.gatewayState.value
     val state = when {
@@ -230,6 +408,11 @@ class HermesGatewayPlugin : Plugin() {
       .put("phase", MobileGatewayService.startupPhase.value.name)
       .put("elapsedMs", MobileGatewayService.elapsedMs())
       .put("lastError", reason ?: "")
+      // Secure-store health: with the Keystore unavailable every secret write
+      // is refused (SecurePrefs FALLBACK_ERROR), so the screens can say so
+      // instead of letting a save silently do nothing.
+      .put("secureStoreFallback", SecurePrefs.isFallback())
+      .put("secureStoreError", SecurePrefs.lastError() ?: "")
       .put("logPath", java.io.File(Bootstrap.rootDir(context), "gateway.log").absolutePath)
       .put("retryable", state == "FAILED" || state == "DEGRADED" || state == "STOPPED")
       .put("installed", installed)
@@ -244,10 +427,15 @@ class HermesGatewayPlugin : Plugin() {
   fun startupInfo(call: PluginCall) {
     val reason = MobileGatewayService.gatewayFailureReason.value
       ?: MobileGatewayService.startupLastError.value
+      ?: secureStoreReason()
     call.resolve(JSObject()
       .put("phase", MobileGatewayService.startupPhase.value.name)
       .put("elapsedMs", MobileGatewayService.elapsedMs())
       .put("lastError", reason ?: "")
+      // Same two fields as status(): a light-weight poll must be enough to
+      // notice that secret writes are being refused.
+      .put("secureStoreFallback", SecurePrefs.isFallback())
+      .put("secureStoreError", SecurePrefs.lastError() ?: "")
       .put("logPath", java.io.File(Bootstrap.rootDir(context), "gateway.log").absolutePath)
       .put("retryable", MobileGatewayService.gatewayState.value ==
         MobileGatewayService.GatewayMachineState.FAILED))
@@ -274,7 +462,7 @@ class HermesGatewayPlugin : Plugin() {
         .put("compatible", compat.compatible)
         .put("compatError", compat.error ?: ""))
     } catch (e: Exception) {
-      call.reject(e.message ?: "preflight failed")
+      call.reject(stableFailure(e, "preflight_failed"))
     }
   }
 
@@ -286,20 +474,27 @@ class HermesGatewayPlugin : Plugin() {
         .edit().putBoolean("autostart", enabled).apply()
       call.resolve(JSObject().put("autostart", enabled))
     } catch (e: Exception) {
-      call.reject(e.message ?: "setAutostart failed")
+      call.reject(stableFailure(e, "autostart_update_failed"))
     }
   }
 
   @PluginMethod
   fun serverKey(call: PluginCall) {
     // Hand the minted local-API key to the WebView so its /api/* calls
-    // pass auth. Fail closed: blank means Bootstrap has not run yet.
+    // pass auth. If not provisioned yet, mint it on demand into SecurePrefs.
     try {
-      val key = SecurePrefs.getString(context, SecurePrefs.KEY_SERVER, "")
+      var key = SecurePrefs.getString(context, SecurePrefs.KEY_SERVER, "")
+      if (key.isBlank()) {
+        val rnd = ByteArray(24)
+        java.security.SecureRandom().nextBytes(rnd)
+        val minted = rnd.joinToString("") { "%02x".format(it) }
+        SecurePrefs.putString(context, SecurePrefs.KEY_SERVER, minted)
+        key = SecurePrefs.getString(context, SecurePrefs.KEY_SERVER, "")
+      }
       if (key.isBlank()) call.reject("server key not provisioned yet")
       else call.resolve(JSObject().put("serverKey", key))
     } catch (e: Exception) {
-      call.reject(e.message ?: "serverKey failed")
+      call.reject(stableFailure(e, "server_key_unavailable"))
     }
   }
 
@@ -327,8 +522,59 @@ class HermesGatewayPlugin : Plugin() {
         .putString("provider_base_url", baseUrl)
         .putString("model_id", model)
         .apply()
+      // Active profile id (prov_<slug>_<rand>), so a later per-profile
+      // secretSet for THIS profile can converge KEY_PROVIDER. Absent on old
+      // callers, and then only the slug fallback below applies.
+      val activeProfileId = (call.getString("activeProfileId")
+        ?: call.getString("active_profile_id")).orEmpty()
+      if (activeProfileId.isNotBlank()) {
+        context.getSharedPreferences("hermes_mobile", Context.MODE_PRIVATE).edit()
+          .putString("provider_profile_id", activeProfileId)
+          .apply()
+      }
       SecurePrefs.clearError()
-      SecurePrefs.putString(context, SecurePrefs.KEY_PROVIDER, apiKey)
+      // Converge provider key: if apiKey is provided, set KEY_PROVIDER and dual-write
+      // the profile slot. If blank, check if a key exists for activeProfileId in SecurePrefs.
+      // Owner tracking: KEY_PROVIDER remembers which profile put it there
+      // (provider_key_owner). A blank wire for a DIFFERENT profile must not
+      // inherit the previous profile's key: that leaks A's key into B's
+      // session. Same-owner blanks still restore the stored per-profile key.
+      val prefs = context.getSharedPreferences("hermes_mobile", Context.MODE_PRIVATE)
+      val keyOwner = prefs.getString("provider_key_owner", "").orEmpty()
+      if (apiKey.isNotBlank()) {
+        SecurePrefs.putString(context, SecurePrefs.KEY_PROVIDER, apiKey)
+        if (activeProfileId.isNotBlank()) {
+          SecurePrefs.putString(context, "provider.${activeProfileId}.apiKey", apiKey)
+          prefs.edit().putString("provider_key_owner", activeProfileId).apply()
+        } else {
+          prefs.edit().putString("provider_key_owner", provider).apply()
+        }
+      } else if (activeProfileId.isNotBlank()) {
+        // Blank apiKey on the wire means 'unknown', not 'deleted': restore
+        // the stored per-profile key when there is one, otherwise LEAVE
+        // KEY_PROVIDER alone. Removing here destroyed legacy flat-only keys
+        // (no per-profile copy exists), leaving the gateway credentialless.
+        // Explicit removal goes through secretSet, which clears this slot.
+        val storedProfileKey = SecurePrefs.getString(context, "provider.${activeProfileId}.apiKey", "")
+        if (storedProfileKey.isNotBlank()) {
+          SecurePrefs.putString(context, SecurePrefs.KEY_PROVIDER, storedProfileKey)
+          prefs.edit().putString("provider_key_owner", activeProfileId).apply()
+        } else if (keyOwner.isNotBlank() && keyOwner != activeProfileId) {
+          // Owner mismatch with nothing stored for the new profile: the slot
+          // still holds the previous profile's key. Clear it and the owner
+          // rather than leaking one profile's key into another's session.
+          SecurePrefs.remove(context, SecurePrefs.KEY_PROVIDER)
+          prefs.edit().putString("provider_key_owner", "").apply()
+        }
+      } else if (provider.isBlank()) {
+        // Same rule: a blank provider with a blank key carries no signal.
+        // Only an explicit secretSet removal clears the slot.
+      }
+      // Dual-write the per-provider slug slot for legacy callers.
+      if (provider.isNotBlank() && apiKey.isNotBlank() &&
+          Regex("^[A-Za-z0-9_-]{1,64}$").matches(provider)) {
+        SecurePrefs.putString(context, "provider.${provider}.apiKey", apiKey)
+      }
       (call.getString("tg_token") ?: call.getString("tgToken"))?.let { t ->
         if (t.isBlank()) SecurePrefs.remove(context, SecurePrefs.KEY_TG)
         else SecurePrefs.putString(context, SecurePrefs.KEY_TG, t)
@@ -348,7 +594,7 @@ class HermesGatewayPlugin : Plugin() {
       if (err != null) call.reject(err)
       else call.resolve(JSObject().put("ok", true))
     } catch (e: Exception) {
-      call.reject(e.message ?: "setProvider failed")
+      call.reject(stableFailure(e, "provider_update_failed"))
     }
   }
 
@@ -372,18 +618,234 @@ class HermesGatewayPlugin : Plugin() {
       if (err != null) call.reject(err)
       else call.resolve(JSObject().put("ok", true))
     } catch (e: Exception) {
-      call.reject(e.message ?: "setServerKey failed")
+      call.reject(stableFailure(e, "server_key_update_failed"))
+    }
+  }
+
+  /**
+   * Generic secret slots backed by SecurePrefs (EncryptedSharedPreferences).
+   * The WebView keeps only blanked settings; real secrets live here.
+   * Allowlist: provider profile keys "provider.<id>.apiKey" and the globals
+   * global.serverKey / global.tgToken / global.discordToken /
+   * global.appLockPin, plus the "lockout.<name>" counters the app-lock gate
+   * owns. Anything else is rejected. Blank set removes the slot.
+   */
+  private val secretKeyRe = Regex("^(provider\\.[A-Za-z0-9_-]{1,64}\\.apiKey|global\\.(serverKey|tgToken|discordToken|appLockPin)|lockout\\.[A-Za-z0-9_-]{1,64})$")
+
+  /**
+   * Slot aliasing (AUTH-01): secretGet/secretSet address slots verbatim, but
+   * the gateway service reads the short SecurePrefs keys (KEY_SERVER etc.).
+   * Without this map the WebView and the gateway use DIFFERENT slots for the
+   * same secret: the app sends 'global.serverKey' while the gateway enforces
+   * 'server_key', so every request 401s forever and no restart can fix it.
+   * appLockPin/lockout/provider slots are web-only and stay verbatim, except
+   * that a provider write matching the active provider also refreshes
+   * KEY_PROVIDER so the gateway picks it up on next (re)start.
+   */
+  private fun resolveSlot(key: String): String = when (key) {
+    "global.serverKey" -> SecurePrefs.KEY_SERVER
+    "global.tgToken" -> SecurePrefs.KEY_TG
+    "global.discordToken" -> SecurePrefs.KEY_DISCORD
+    else -> key
+  }
+
+  private fun activeProviderId(): String {
+    return try {
+      context.getSharedPreferences("hermes_mobile", Context.MODE_PRIVATE)
+        .getString("provider_name", "").orEmpty()
+    } catch (_: Exception) { "" }
+  }
+
+  @PluginMethod
+  fun secretGet(call: PluginCall) {
+    try {
+      val key = call.getString("key").orEmpty()
+      if (!secretKeyRe.matches(key)) {
+        call.reject("secret key not allowed")
+        return
+      }
+      SecurePrefs.clearError()
+      val value = SecurePrefs.getString(context, resolveSlot(key), "")
+      val err = SecurePrefs.lastError()
+      if (err != null) call.reject(err)
+      else call.resolve(JSObject().put("value", value))
+    } catch (e: Exception) {
+      call.reject(stableFailure(e, "secret_read_failed"))
+    }
+  }
+
+  @PluginMethod
+  fun secretSet(call: PluginCall) {
+    try {
+      val key = call.getString("key").orEmpty()
+      if (!secretKeyRe.matches(key)) {
+        call.reject("secret key not allowed")
+        return
+      }
+      val value = call.getString("value").orEmpty()
+      SecurePrefs.clearError()
+      if (value.isBlank()) SecurePrefs.remove(context, resolveSlot(key))
+      else SecurePrefs.putString(context, resolveSlot(key), value)
+      // Converge the provider slots: the service reads only KEY_PROVIDER, so
+      // a per-profile write for the ACTIVE profile refreshes it too. The
+      // secret key carries the profile id (prov_<slug>_<rand>), which never
+      // equals the provider slug, so compare against the stored active
+      // profile id first and keep the slug as a legacy fallback.
+      val m = Regex("^provider\\.([A-Za-z0-9_-]{1,64})\\.apiKey$").matchEntire(key)
+      val seg = m?.groupValues?.getOrNull(1).orEmpty()
+      val activeProfile = try {
+        context.getSharedPreferences("hermes_mobile", Context.MODE_PRIVATE)
+          .getString("provider_profile_id", "").orEmpty()
+      } catch (_: Exception) { "" }
+      if (seg.isNotBlank() && (seg == activeProfile || seg == activeProviderId())) {
+        if (value.isNotBlank()) {
+          SecurePrefs.putString(context, SecurePrefs.KEY_PROVIDER, value)
+        } else {
+          SecurePrefs.remove(context, SecurePrefs.KEY_PROVIDER)
+          // Explicit removal drops ownership too, so a later blank for
+          // another profile cannot be mistaken for this one's key.
+          try {
+            context.getSharedPreferences("hermes_mobile", Context.MODE_PRIVATE).edit()
+              .putString("provider_key_owner", "").apply()
+          } catch (_: Exception) { }
+        }
+      }
+      val err = SecurePrefs.lastError()
+      if (err != null) call.reject(err)
+      else call.resolve(JSObject().put("ok", true))
+    } catch (e: Exception) {
+      call.reject(stableFailure(e, "secret_write_failed"))
+    }
+  }
+
+  /**
+   * Alert channel (R1): approvals and job results while the app is closed.
+   * Separate HIGH channel from the LOW gateway FGS channel so alerts are
+   * never buried. notifState/requestNotifAlerts drive the Settings row;
+   * notifyAlert posts. All fail soft (log + reject), alerts are best-effort,
+   * the in-app queue stays authoritative.
+   */
+  @PluginMethod
+  fun notifState(call: PluginCall) {
+    try {
+      val granted = if (Build.VERSION.SDK_INT >= 33) {
+        ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS) ==
+          PackageManager.PERMISSION_GRANTED
+      } else {
+        true
+      }
+      call.resolve(JSObject().put("granted", granted))
+    } catch (e: Exception) {
+      call.reject(stableFailure(e, "notif_state_failed"))
+    }
+  }
+
+  @PluginMethod
+  fun requestNotifAlerts(call: PluginCall) {
+    try {
+      val act = activity
+      if (act == null) {
+        call.reject("no activity to host the permission dialog")
+        return
+      }
+      if (Build.VERSION.SDK_INT >= 33) {
+        ActivityCompat.requestPermissions(
+          act,
+          arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+          9002
+        )
+      }
+      call.resolve(JSObject().put("ok", true))
+    } catch (e: Exception) {
+      call.reject(stableFailure(e, "notif_request_failed"))
+    }
+  }
+
+  @PluginMethod
+  fun notifyAlert(call: PluginCall) {
+    try {
+      val title = call.getString("title").orEmpty().take(120)
+      val body = call.getString("body").orEmpty().take(240)
+      if (title.isBlank() && body.isBlank()) {
+        call.reject("empty notification")
+        return
+      }
+      val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        try {
+          nm.createNotificationChannel(
+            NotificationChannel("alerts", "Hermes alerts", NotificationManager.IMPORTANCE_HIGH)
+          )
+        } catch (_: Exception) { }
+      }
+      val launch = PendingIntent.getActivity(
+        context, 1,
+        Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+        PendingIntent.FLAG_IMMUTABLE
+      )
+      val n = NotificationCompat.Builder(context, "alerts")
+        .setContentTitle(title.ifBlank { "Hermes" })
+        .setContentText(body)
+        .setSmallIcon(android.R.drawable.stat_sys_warning)
+        .setAutoCancel(true)
+        .setContentIntent(launch)
+        .build()
+      nm.notify(alertSeq.incrementAndGet(), n)
+      call.resolve(JSObject().put("ok", true))
+    } catch (e: Exception) {
+      call.reject(stableFailure(e, "notify_failed"))
     }
   }
 
   private fun healthOk(): Boolean {
     return try {
-      val c = URL("http://127.0.0.1:8080/health").openConnection() as HttpURLConnection
+      val c = URL("http://127.0.0.1:8080/health").openConnection(java.net.Proxy.NO_PROXY) as HttpURLConnection
+      c.setRequestProperty("Connection", "close")
       c.connectTimeout = 2_000
       c.readTimeout = 2_000
-      c.responseCode in 200..299
+      val ok = c.responseCode in 200..299
+      c.disconnect()
+      ok
     } catch (_: Exception) {
       false
     }
+  }
+
+  /**
+   * The bridge dies while the process lives on (WebView reload, activity
+   * recreation, a fresh plugin instance), and this scope used to outlive it
+   * uncancelled: every tail loop and stop poll kept running against a dead
+   * call, holding wake/wifi locks forever. Cancelling runs each coroutine's
+   * finally, which releases those locks; clearing the guard afterwards covers
+   * a call that was cancelled before its body ever started (its finally
+   * never runs, so installInFlight would otherwise stay true and reject every
+   * future install() with install_in_progress).
+   */
+  override fun handleOnDestroy() {
+    try { scope.cancel() } catch (_: Exception) { }
+    try { installInFlight.set(false) } catch (_: Exception) { }
+    try { tts?.shutdown() } catch (_:Exception) { }
+    tts = null
+    super.handleOnDestroy()
+  }
+
+  private companion object {
+    // Atomic notifier id: wall-clock millis truncated to Int can collide and
+    // overwrite a previous alert still sitting in the tray.
+    val alertSeq = java.util.concurrent.atomic.AtomicInteger(1000)
+    /** No install.log line and no install.done verdict for this long. */
+    const val INSTALL_IDLE_TIMEOUT_MS = 10 * 60 * 1000L
+
+    /**
+     * One tail at a time: a second install() would delete the running
+     * install's install.done (the verdict would be lost and both loops spin
+     * forever) and take a second pair of wake/wifi locks.
+     *
+     * Process-wide on purpose: Bootstrap.install runs inside the service, not
+     * here, so the guard has to survive a bridge recreation. Held per instance
+     * it was a fresh false every time, and a new plugin instance could start a
+     * second tail against the install the old instance had started.
+     */
+    val installInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
   }
 }

@@ -18,8 +18,10 @@ import {
 import type { ListSyncResult, PagedResult } from './syncState';
 import {
   DEFAULT_MESSAGES_PAGE_SIZE,
+  DEFAULT_RUNS_PAGE_SIZE,
   DEFAULT_SESSIONS_PAGE_SIZE,
   MAX_MESSAGES_PAGE_SIZE,
+  MAX_RUNS_PAGE_SIZE,
   MAX_SESSIONS_PAGE_SIZE,
   MESSAGE_RETENTION_CAP,
   buildPageQuery,
@@ -63,14 +65,40 @@ const REQUEST_TIMEOUT_MS = 15000;
 const HEALTH_TIMEOUT_MS = 5000;
 const JOB_ACTIONS = new Set(['pause', 'resume', 'run', 'delete']);
 
+// Existing key/auth hint copy (same words as the context errGatewayAuthHint
+// fallback): a 401/403 anywhere in the list fetchers below names the key fix
+// instead of a generic load failure. The HTTP token stays in the string
+// because context authStatusFromError recognises it to mark the gateway
+// unauthorized.
+const AUTH_HINT_COPY =
+  'Hermes rejected the stored key. Check the provider key and Base URL in Settings, then try again.';
+
+// Honest cause for a failed skills fetch, most actionable first. A rejected
+// key names the key fix, an on-device 5xx names the server error with a
+// retry (the error UI state keeps its Retry action); anything else keeps
+// the generic trailing status.
+const honestSkillsCause = (authStatus: string, serverStatus: string, lastStatus: string): string => {
+  if (authStatus) return `${authStatus}. ${AUTH_HINT_COPY}`;
+  if (serverStatus)
+    return `${serverStatus}. The on-device server returned an error. Retry, and check the connection if it repeats.`;
+  return lastStatus;
+};
+
 import { redactSecrets } from './redaction';
-import { plainListStale, plainServiceFailure } from './plainFailure';
+import { plainGatewayFailure, plainListStale, plainServiceFailure } from './plainFailure';
+import { createAppError } from './appErrors';
+import { withRetry } from './retry';
+import { validateProvider, type ProviderValidationInput } from './providerValidation';
 export { REDACTED } from './redaction';
 
 export class GatewayService {
   private baseUrl: string;
   private apiKey: () => string;
   private isConnected: boolean = false;
+  /** Last live-catalog fetch outcome: null = ok (or never ran), else a short reason. */
+  public lastModelsError: string | null = null;
+  /** Live-catalog entry count from the last successful fetch (0 when never/failed). */
+  public lastModelsLiveCount: number = 0;
 
   constructor(baseUrl: string = 'http://127.0.0.1:8080', apiKey: () => string = () => '') {
     this.baseUrl = '';
@@ -174,49 +202,157 @@ export class GatewayService {
         version: '',
         gatewayState: 'down',
         platforms: {},
-        detail: e instanceof Error ? e.message : 'unreachable',
+        detail: plainServiceFailure(e),
       };
     }
   }
 
-  async modelOptions(provider: string = 'deepseek', callerSignal?: AbortSignal): Promise<AiModelInfo[]> {
+  // Live model catalog (single source of truth). The provider hint is sent as
+  // ?provider= when known, but the whole response is parsed either way: the
+  // gateway may answer unfiltered, and every provider's models must appear.
+  // Accepts all shapes gateways return: {providers:[{slug, models}]},
+  // a top-level {models:[...]}, OpenAI-style {data:[...]}, direct arrays,
+  // and dictionary maps {providers:{slug:[...]}} or {slug:[...]}.
+  async modelOptions(provider: string = '', callerSignal?: AbortSignal): Promise<AiModelInfo[]> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/model/options`, {
+      const hint = (provider || '').trim();
+      const url = hint
+        ? `${this.baseUrl}/api/model/options?provider=${encodeURIComponent(hint)}`
+        : `${this.baseUrl}/api/model/options`;
+      const res = await fetch(url, {
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
-      if (!res.ok) return [];
+      if (!res.ok) {
+        this.lastModelsError = res.status === 401 || res.status === 403 ? 'auth' : `HTTP ${res.status}`;
+        this.lastModelsLiveCount = 0;
+        return [];
+      }
       const data = await res.json();
+      if (data && typeof data === 'object') {
+        const rec = data as Record<string, unknown>;
+        const err = rec.error ?? rec.detail ?? (rec.ok === false && rec.message ? rec.message : undefined);
+        if (typeof err === 'string' && err.trim()) {
+          const lower = err.toLowerCase();
+          this.lastModelsError = (lower.includes('auth') || lower.includes('key') || lower.includes('unauthorized') || lower.includes('forbidden'))
+            ? 'auth'
+            : err.trim();
+          this.lastModelsLiveCount = 0;
+          return [];
+        }
+      }
       const out: AiModelInfo[] = [];
       const seen = new Set<string>();
-      if (Array.isArray(data.providers)) {
-        for (const p of data.providers) {
-          if (Array.isArray(p.models)) {
-            for (const id of p.models) {
-              if (typeof id === 'string' && id && !id.toLowerCase().includes('embed') && !seen.has(id)) {
-                seen.add(id);
-                const clean = id.split('/').pop()?.replace(/[-_]/g, ' ') || id;
-                out.push({
-                  id,
-                  displayName: clean.charAt(0).toUpperCase() + clean.slice(1),
-                  provider: p.slug || provider,
-                });
-              }
-            }
+      const pushModel = (rawId: unknown, rawName: unknown, slug: string) => {
+        const id = typeof rawId === 'string' ? rawId.trim() : '';
+        if (!id || id.toLowerCase().includes('embed') || seen.has(id)) return;
+        seen.add(id);
+        const label = typeof rawName === 'string' && rawName.trim() ? rawName.trim() : id.split('/').pop() || id;
+        const clean = label.replace(/[-_]/g, ' ');
+        out.push({
+          id,
+          displayName: clean.charAt(0).toUpperCase() + clean.slice(1),
+          provider: slug || hint,
+          source: 'live',
+        });
+      };
+      const readEntry = (entry: unknown, slug: string) => {
+        if (typeof entry === 'string') {
+          pushModel(entry, '', slug);
+          return;
+        }
+        if (entry && typeof entry === 'object') {
+          const rec = entry as Record<string, unknown>;
+          const id = rec.id ?? rec.model ?? rec.name;
+          const name = rec.displayName ?? rec.display_name ?? rec.label ?? rec.title;
+          pushModel(id, typeof name === 'string' ? name : '', slug);
+        }
+      };
+
+      // Direct array shape
+      if (Array.isArray(data)) {
+        for (const item of data) readEntry(item, hint);
+      }
+
+      // OpenAI-style {data: [...]} shape
+      if (data && typeof data === 'object' && Array.isArray((data as { data?: unknown }).data)) {
+        for (const item of (data as { data: unknown[] }).data) readEntry(item, hint);
+      }
+
+      // Top-level {models: [...]} shape
+      if (data && typeof data === 'object' && Array.isArray((data as { models?: unknown }).models)) {
+        for (const id of (data as { models: unknown[] }).models) readEntry(id, hint);
+      }
+
+      // Top-level {models: {id: info}} dictionary shape
+      if (
+        data &&
+        typeof data === 'object' &&
+        (data as { models?: unknown }).models &&
+        typeof (data as { models: unknown }).models === 'object' &&
+        !Array.isArray((data as { models: unknown }).models)
+      ) {
+        for (const [id, val] of Object.entries((data as { models: Record<string, unknown> }).models)) {
+          if (val && typeof val === 'object') readEntry(val, hint);
+          else pushModel(id, String(val || id), hint);
+        }
+      }
+
+      // Provider list {providers: [{slug, models}]} shape
+      if (data && typeof data === 'object' && Array.isArray((data as { providers?: unknown }).providers)) {
+        for (const p of (data as { providers: unknown[] }).providers) {
+          const slug = (p && typeof p === 'object'
+            ? String((p as Record<string, unknown>).slug ?? (p as Record<string, unknown>).provider ?? (p as Record<string, unknown>).id ?? hint)
+            : hint) || hint;
+          const list = (p as { models?: unknown }).models;
+          if (Array.isArray(list)) {
+            for (const id of list) readEntry(id, slug);
           }
         }
       }
+
+      // Provider dictionary {providers: {slug: models}} shape
+      if (
+        data &&
+        typeof data === 'object' &&
+        (data as { providers?: unknown }).providers &&
+        typeof (data as { providers: unknown }).providers === 'object' &&
+        !Array.isArray((data as { providers: unknown }).providers)
+      ) {
+        for (const [slug, val] of Object.entries((data as { providers: Record<string, unknown> }).providers)) {
+          if (Array.isArray(val)) {
+            for (const item of val) readEntry(item, slug);
+          } else if (val && typeof val === 'object' && Array.isArray((val as { models?: unknown }).models)) {
+            for (const item of (val as { models: unknown[] }).models) readEntry(item, slug);
+          }
+        }
+      }
+
+      // Generic provider dictionary shape { [providerSlug]: [...] }
+      if (data && typeof data === 'object' && !Array.isArray(data)) {
+        for (const [key, val] of Object.entries(data as Record<string, unknown>)) {
+          if (key !== 'models' && key !== 'providers' && key !== 'data' && key !== 'ok' && key !== 'error' && key !== 'detail' && Array.isArray(val)) {
+            for (const item of val) readEntry(item, key);
+          }
+        }
+      }
+
+      this.lastModelsError = null;
+      this.lastModelsLiveCount = out.length;
       return out;
     } catch {
+      this.lastModelsError = 'network';
+      this.lastModelsLiveCount = 0;
       return [];
     }
   }
 
   // Sync-state storage keys for lastSyncedAt (DATA-03).
-  private static readonly SYNC_KEYS = {
+  public static readonly SYNC_KEYS = {
     sessions: 'hermes_sessions_synced_at',
     jobs: 'hermes_jobs_synced_at',
     skills: 'hermes_skills_synced_at',
+    memory: 'hermes_memory_synced_at',
     blueprints: 'hermes_blueprints_synced_at',
     runs: 'hermes_runs_synced_at',
     logs: 'hermes_logs_synced_at',
@@ -252,9 +388,29 @@ export class GatewayService {
       id: String(j.id),
       name: j.name || 'job',
       scheduleDisplay: j.schedule_display || j.schedule?.display || '',
+      // Raw schedule for the edit form: the display string ('once at ...')
+      // never parses back, so editing must start from the source. Desktop
+      // stores {kind, run_at|minutes|expr} (jobs.py parse_schedule), and
+      // each form below re-parses: ISO stamp for once, 'every Nm' for
+      // interval, the raw expression for cron.
+      scheduleRaw:
+        typeof j.schedule === 'string'
+          ? j.schedule
+          : j.schedule?.kind === 'once' && j.schedule?.run_at
+            ? String(j.schedule.run_at)
+            : j.schedule?.kind === 'interval' && j.schedule?.minutes != null
+              ? `every ${Number(j.schedule.minutes)}m`
+              : j.schedule?.kind === 'cron' && j.schedule?.expr
+                ? String(j.schedule.expr)
+                : '',
       prompt: j.prompt || '',
-      enabled: j.enabled !== false && j.state !== 'paused',
-      state: j.state || 'active',
+      // Desktop authority (jobs.py effective_job_state): terminal states are
+      // preserved regardless of `enabled`; enabled=true rules otherwise.
+      enabled:
+        j.state === 'completed' || j.state === 'error'
+          ? false
+          : j.enabled === true || (j.enabled !== false && j.state !== 'paused'),
+      state: j.state || 'scheduled',
       nextRunAt: j.next_run_at || '',
       lastStatus: j.last_status || '',
       lastError: j.last_error || j.last_run?.error || '',
@@ -272,7 +428,7 @@ export class GatewayService {
   ): Promise<PagedResult<MobileSession>> {
     const page = clampPage(params, DEFAULT_SESSIONS_PAGE_SIZE, MAX_SESSIONS_PAGE_SIZE);
     try {
-      const res = await fetch(`${this.baseUrl}/api/sessions${buildPageQuery(page)}`, {
+      const res = await fetch(`${this.baseUrl}/api/sessions${buildPageQuery(page, 'latest')}`, {
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
@@ -329,6 +485,8 @@ export class GatewayService {
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
+      // 404 means already gone: the local ghost must die too, not error out.
+      if (res.status === 404) return true;
       return res.ok;
     } catch {
       return false;
@@ -380,7 +538,7 @@ export class GatewayService {
     const syncKey = GatewayService.SYNC_KEYS.messages(sessionId);
     try {
       const res = await fetch(
-        `${this.baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages${buildPageQuery(page)}`,
+        `${this.baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages${buildPageQuery(page, 'latest')}`,
         {
           signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
           headers: this.getHeaders(),
@@ -394,7 +552,19 @@ export class GatewayService {
         .map((m: any, idx: number) => this.normalizeMessage(m, sessionId, page.offset + idx));
       const now = Date.now();
       if (page.offset === 0 && !page.cursor) {
-        this.saveLocalMessages(sessionId, items);
+        // Merge, never replace. The local cache also holds offline-created
+        // messages and history older than this page window, while an empty
+        // server page is normal for a session the gateway has not caught up
+        // on yet. Replacing here (as this used to) wiped local-only messages
+        // and truncated the cached history to a single page, which then got
+        // persisted as the whole truth. This merge mirrors what
+        // HermesContext.selectSession does with the same two lists.
+        const existing = this.loadLocalMessages(sessionId);
+        const fromServer = new Set(items.map((m) => m.id));
+        const localOnly = existing.filter((m) => !fromServer.has(m.id));
+        const byTime = (a: ChatMessage, b: ChatMessage): number =>
+          (a.timestamp || 0) - (b.timestamp || 0);
+        this.saveLocalMessages(sessionId, [...items, ...localOnly].sort(byTime));
         writeSyncedAt(syncKey, now);
       }
       return toPagedResult(items, liveMeta(now), page, total);
@@ -436,7 +606,7 @@ export class GatewayService {
     }
   }
 
-  async listPendingApprovals(callerSignal?: AbortSignal): Promise<PendingApproval[]> {
+  async listPendingApprovals(callerSignal?: AbortSignal): Promise<{ items: PendingApproval[]; live: boolean }> {
     const paths = ['/v1/runs/pending', '/api/runs/pending', '/v1/approvals/pending'];
     for (const p of paths) {
       try {
@@ -447,12 +617,14 @@ export class GatewayService {
         if (!res.ok) continue;
         const data = await res.json();
         const arr = data.approvals || data.pending || data.runs || data.data || [];
-        if (Array.isArray(arr)) return arr.map((a: any) => this.normalizeApproval(a));
+        // A live answer (even an empty one) is reconcilable; a dead gateway
+        // is not: callers must keep the cached cards, never wipe them.
+        if (Array.isArray(arr)) return { items: arr.map((a: any) => this.normalizeApproval(a)), live: true };
       } catch {
         // Try the next candidate path.
       }
     }
-    return [];
+    return { items: [], live: false };
   }
 
   normalizeApproval(raw: any, fallbackSessionId: string = ''): PendingApproval {
@@ -472,6 +644,11 @@ export class GatewayService {
       risk: raw.risk ? String(raw.risk) : undefined,
       cwd: raw.cwd ? String(raw.cwd) : undefined,
       reason: raw.reason ? String(raw.reason) : undefined,
+      // Gateway-advertised decision set (e.g. once-only when session grant
+      // is denied server-side). UI hides modes the server did not offer.
+      choices: Array.isArray(raw.choices)
+        ? raw.choices.map((c: unknown) => String(c))
+        : undefined,
       createdAt: typeof raw.created_at === 'number' ? raw.created_at : Date.now(),
     };
   }
@@ -481,7 +658,7 @@ export class GatewayService {
     allow: boolean,
     mode: string = 'once',
     callerSignal?: AbortSignal
-  ): Promise<boolean> {
+  ): Promise<'ok' | 'resolved' | 'failed'> {
     try {
       const body = {
         choice: allow ? mode : 'deny',
@@ -492,174 +669,18 @@ export class GatewayService {
         headers: this.getHeaders(),
         body: JSON.stringify(body),
       });
-      return res.ok;
+      if (res.ok) return 'ok';
+      // Already resolved elsewhere (approved/denied from another surface):
+      // not a failure, the card just has nothing left to decide.
+      if (res.status === 404 || res.status === 409) return 'resolved';
+      return 'failed';
     } catch {
-      return false;
+      return 'failed';
     }
   }
 
-  async streamChat(
-    sessionId: string,
-    model: string,
-    message: string,
-    reasoningEffort: string,
-    imageDataUrls: string[],
-    callbacks: StreamChatCallbacks,
-    abortSignal?: AbortSignal
-  ): Promise<void> {
-    // Streaming responses stay open for minutes by design, so no fixed
-    // timeout applies here. The caller abort signal is honored, and the
-    // reader is always cancelled and released to avoid leaking locks.
-    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-    const onAbort = () => {
-      if (reader) {
-        reader.cancel().catch(() => {});
-      }
-    };
-    try {
-      const body: Record<string, any> = { model };
-      if (imageDataUrls && imageDataUrls.length > 0) {
-        const parts: any[] = [];
-        if (message) parts.push({ type: 'text', text: message });
-        for (const url of imageDataUrls) {
-          parts.push({ type: 'image_url', image_url: { url } });
-        }
-        body.message = parts;
-      } else {
-        body.message = message;
-      }
-      if (reasoningEffort && reasoningEffort !== 'none') {
-        body.model_options = { reasoning_effort: reasoningEffort.toLowerCase() };
-      }
-
-      const res = await fetch(`${this.baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/chat/stream`, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(body),
-        signal: abortSignal,
-      });
-
-      if (!res.ok) {
-        if (res.status === 401 || res.status === 403) {
-          callbacks.onError?.(`Auth failed: HTTP ${res.status}`);
-        } else {
-          callbacks.onError?.(`Stream failed: HTTP ${res.status}`);
-        }
-        return;
-      }
-      if (!res.body) {
-        callbacks.onError?.('Stream failed: empty response body');
-        return;
-      }
-
-      reader = res.body.getReader();
-      abortSignal?.addEventListener('abort', onAbort, { once: true });
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let currentEvent = '';
-
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (trimmed.startsWith('event:')) {
-              currentEvent = trimmed.replace('event:', '').trim();
-            } else if (trimmed.startsWith('data:')) {
-              const dataRaw = trimmed.replace('data:', '').trim();
-              if (!dataRaw) continue;
-              try {
-                const ev = JSON.parse(dataRaw);
-                if (ev.run_id && callbacks.onRunId) {
-                  callbacks.onRunId(ev.run_id);
-                }
-                if (currentEvent === 'assistant.delta' && ev.delta) {
-                  callbacks.onThinkingDone();
-                  callbacks.onText(ev.delta);
-                } else if (currentEvent === 'assistant.commentary' && ev.text) {
-                  callbacks.onThinkingDone();
-                  callbacks.onText(ev.text);
-                } else if (currentEvent === 'tool.progress') {
-                  if (ev.tool_name === '_thinking' || ev.tool_name === 'thinking') {
-                    callbacks.onThinking(ev.delta || ev.preview || '');
-                  } else {
-                    callbacks.onTool(ev.tool_name || 'tool');
-                  }
-                } else if (currentEvent === 'tool.started' || currentEvent === 'tool.completed') {
-                  callbacks.onThinkingDone();
-                  const name = ev.tool_name || 'tool';
-                  callbacks.onTool(name);
-                  if (ev.output && callbacks.onToolOutput) {
-                    callbacks.onToolOutput(name, ev.output);
-                  }
-                } else if (currentEvent === 'approval.request') {
-                  if (ev.run_id) {
-                    callbacks.onApproval({
-                      runId: String(ev.run_id),
-                      sessionId,
-                      summary: ev.description || ev.command || 'Approval requested for action',
-                      tool: ev.tool_name || ev.tool ? String(ev.tool_name || ev.tool) : undefined,
-                      command: ev.command ? String(ev.command) : undefined,
-                      path: ev.path ? String(ev.path) : undefined,
-                      args: Array.isArray(ev.args)
-                        ? ev.args.map((a: unknown) => String(a))
-                        : undefined,
-                      risk: ev.risk ? String(ev.risk) : undefined,
-                      cwd: ev.cwd ? String(ev.cwd) : undefined,
-                      reason: ev.reason ? String(ev.reason) : undefined,
-                      createdAt: Date.now(),
-                    });
-                  }
-                } else if (ev.usage) {
-                  callbacks.onUsage(ev.usage.input_tokens || 0, ev.usage.output_tokens || 0);
-                }
-              } catch {
-                // Non JSON line, skip
-              }
-            }
-          }
-        }
-      } finally {
-        abortSignal?.removeEventListener('abort', onAbort);
-        try {
-          await reader.cancel();
-        } catch {
-          // Stream already closed, nothing to cancel
-        }
-        try {
-          reader.releaseLock();
-        } catch {
-          // Lock already released, ignore
-        }
-        reader = null;
-      }
-      callbacks.onThinkingDone();
-    } catch (err: any) {
-      if (reader) {
-        try {
-          await reader.cancel();
-        } catch {
-          // Ignore cancel errors during teardown
-        }
-        try {
-          reader.releaseLock();
-        } catch {
-          // Ignore release errors during teardown
-        }
-        reader = null;
-      }
-      if (err && err.name === 'AbortError') {
-        callbacks.onStopped?.();
-        return;
-      }
-      callbacks.onError?.(err instanceof Error ? err.message : 'Stream failed: gateway unreachable');
-    }
-  }
+  // streamChat removed: it hand-rolled a broken SSE parser instead of SseParser
+  // (no CRLF, stale currentEvent, split data: lines) and had zero callers.
 
   // Jobs CRUD (DATA-04: envelope distinguishes empty vs stale vs error)
   async jobsWithState(callerSignal?: AbortSignal): Promise<ListSyncResult<CronJob>> {
@@ -703,7 +724,7 @@ export class GatewayService {
         method: 'POST',
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
-        body: JSON.stringify({ name, schedule, prompt, deliver: 'local' }),
+        body: JSON.stringify({ name, schedule, prompt }),
       });
       return res.ok;
     } catch {
@@ -717,8 +738,10 @@ export class GatewayService {
     callerSignal?: AbortSignal
   ): Promise<boolean> {
     try {
+      // The gateway registers PATCH /api/jobs/{id} only; PUT was never
+      // routed, so every edit used to fail closed as a 404/405.
       const res = await fetch(`${this.baseUrl}/api/jobs/${encodeURIComponent(id)}`, {
-        method: 'PUT',
+        method: 'PATCH',
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
         body: JSON.stringify(patch),
@@ -758,10 +781,11 @@ export class GatewayService {
     params?: PageParams,
     callerSignal?: AbortSignal
   ): Promise<PagedResult<CronRun>> {
-    const page = clampPage(params, DEFAULT_SESSIONS_PAGE_SIZE, MAX_SESSIONS_PAGE_SIZE);
+    // Runs are a jobs-domain list: own page size, never the sessions one.
+    const page = clampPage(params, DEFAULT_RUNS_PAGE_SIZE, MAX_RUNS_PAGE_SIZE);
     try {
       const res = await fetch(
-        `${this.baseUrl}/api/jobs/${encodeURIComponent(jobId)}/runs${buildPageQuery(page)}`,
+        `${this.baseUrl}/api/jobs/${encodeURIComponent(jobId)}/runs${buildPageQuery(page, 'latest')}`,
         {
           signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
           headers: this.getHeaders(),
@@ -773,7 +797,7 @@ export class GatewayService {
       const runs: CronRun[] = arr.map((r: any, idx: number) => ({
         id: String(r.id || `${jobId}-run-${page.offset + idx}`),
         jobId,
-        status: r.status || r.state || 'success',
+        status: r.status || r.state || 'unknown',
         startedAt: r.started_at || '',
         finishedAt: r.finished_at || '',
         error: r.error || '',
@@ -798,25 +822,80 @@ export class GatewayService {
   }
 
   // Skills with sync envelope (DATA-05).
+  // The on-phone gateway (api_server) serves GET /v1/skills with shape
+  // {object:'list', data:[{name, description, category}]} and no toggle
+  // route. The desktop dashboard (web_server) serves GET /api/skills as a
+  // bare array with {name, description, enabled}. Try the live route
+  // first, keep the dashboard shape as fallback, and normalize both to
+  // SkillInfo. The phone route includes disabled skills without an enabled
+  // flag (skip_disabled=False), so enabled reads true here, meaning
+  // unknown, not confirmed-on. The dashboard shape carries real flags.
   async skillsWithState(callerSignal?: AbortSignal): Promise<ListSyncResult<SkillInfo>> {
-    try {
-      const res = await fetch(`${this.baseUrl}/api/skills`, {
-        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
-        headers: this.getHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const { arr } = pickArray(data, ['skills', 'data']);
+    const candidates = [`${this.baseUrl}/v1/skills`, `${this.baseUrl}/api/skills`];
+    let lastStatus = '';
+    // The on-phone gateway answers /v1/skills with HTTP 500 (server TypeError)
+    // while the desktop fallback route 404s: without priority the trailing
+    // 404 masks the real server error, so both verdicts are remembered and
+    // the most actionable one composes the outcome below.
+    let authStatus = '';
+    let serverStatus = '';
+    for (const url of candidates) {
+      try {
+        const res = await fetch(url, {
+          signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+          headers: this.getHeaders(),
+        });
+        if (!res.ok) {
+          lastStatus = `HTTP ${res.status}`;
+          if ((res.status === 401 || res.status === 403) && !authStatus) authStatus = lastStatus;
+          else if (res.status >= 500 && !serverStatus) serverStatus = lastStatus;
+          continue;
+        }
+        const data = await res.json();
+        const { arr } = pickArray(data, ['skills', 'data', 'items']);
+        if (!Array.isArray(arr)) {
+          lastStatus = 'unexpected response shape';
+          continue;
+        }
+        const items: SkillInfo[] = (arr as Array<Record<string, unknown>>).map((s) => {
+          const name = typeof s.name === 'string' && s.name ? s.name : String((s as { id?: unknown }).id || '');
+          return {
+            id: typeof s.id === 'string' && s.id ? s.id : name,
+            name,
+            description: typeof s.description === 'string' ? s.description : '',
+            enabled: typeof s.enabled === 'boolean' ? s.enabled : true,
+          };
+        });
+        const now = Date.now();
+        writeSyncedAt(GatewayService.SYNC_KEYS.skills, now);
+        return { items, ...liveMeta(now) };
+      } catch (e: unknown) {
+        lastStatus = e instanceof Error ? e.message : 'gateway unreachable';
+      }
+    }
+    // The on-phone gateway answers /v1/skills with HTTP 500 (a server TypeError
+    // inside the downloaded image, not something this client can fix) while
+    // the desktop fallback route 404s. A red error box for that is
+    // unactionable, so it resolves to a neutral empty list with the honest
+    // reason kept in the message, the same shape as routines on 404. A
+    // rejected key keeps its error state so auth problems stay loud.
+    if (serverStatus && !authStatus) {
       const now = Date.now();
       writeSyncedAt(GatewayService.SYNC_KEYS.skills, now);
-      return { items: arr as SkillInfo[], ...liveMeta(now) };
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'gateway unreachable';
       return {
         items: [],
-        ...staleMeta(readSyncedAt(GatewayService.SYNC_KEYS.skills), plainListStale('Skills unavailable:', msg), false),
+        ...liveMeta(now),
+        error: `Skills are not available on the on-device server (${serverStatus} on /v1/skills).`,
       };
     }
+    return {
+      items: [],
+      ...staleMeta(
+        readSyncedAt(GatewayService.SYNC_KEYS.skills),
+        plainListStale('Skills unavailable:', honestSkillsCause(authStatus, serverStatus, lastStatus)),
+        false
+      ),
+    };
   }
 
   /** Compat wrapper: skills with legacy live/stale flags. Prefer skillsWithState. */
@@ -825,18 +904,45 @@ export class GatewayService {
     return this.flagList(r.items, r.live);
   }
 
+  // No toggle route exists on the on-phone gateway (api_server has no
+  // skills toggle; the desktop dashboard uses PUT /api/skills/toggle
+  // {name, enabled}). The /api/skills/{id}/toggle shape below is
+  // speculative and 404s through to the dashboard shape; both attempts
+  // report the real outcome so the switch never announces a success
+  // the gateway did not confirm.
   async skillToggle(id: string, enabled: boolean, callerSignal?: AbortSignal): Promise<boolean> {
-    try {
-      const res = await fetch(`${this.baseUrl}/api/skills/${encodeURIComponent(id)}/toggle`, {
-        method: 'POST',
-        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
-        headers: this.getHeaders(),
-        body: JSON.stringify({ enabled }),
-      });
-      return res.ok;
-    } catch {
-      return false;
+    const attempts: Array<{ url: string; init: RequestInit }> = [
+      {
+        url: `${this.baseUrl}/api/skills/${encodeURIComponent(id)}/toggle`,
+        init: {
+          method: 'POST',
+          signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+          headers: this.getHeaders(),
+          body: JSON.stringify({ enabled }),
+        },
+      },
+      {
+        url: `${this.baseUrl}/api/skills/toggle`,
+        init: {
+          method: 'PUT',
+          signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+          headers: this.getHeaders(),
+          body: JSON.stringify({ name: id, enabled }),
+        },
+      },
+    ];
+    for (const a of attempts) {
+      try {
+        const res = await fetch(a.url, a.init);
+        if (res.ok) return true;
+        // A 404/405 means this gateway simply has no such route: try the
+        // next shape instead of treating it as a verdict on the toggle.
+        if (res.status !== 404 && res.status !== 405) return false;
+      } catch {
+        return false;
+      }
     }
+    return false;
   }
 
   // Memory
@@ -847,6 +953,31 @@ export class GatewayService {
         headers: this.getHeaders(),
       });
       if (!res.ok) {
+        // No memory route on this server: a neutral unavailable payload from
+        // a live response, never a red error. A rejected key keeps its HTTP
+        // token plus the key/auth hint; anything else stays a plain status.
+        if (res.status === 404) {
+          return this.flagValue(
+            {
+              enabled: false,
+              provider: '',
+              summary: 'Memory is not available on the on-device server.',
+              entries: 0,
+            },
+            true
+          );
+        }
+        if (res.status === 401 || res.status === 403) {
+          return this.flagValue(
+            {
+              enabled: false,
+              provider: '',
+              summary: `Memory unavailable: HTTP ${res.status}. ${AUTH_HINT_COPY}`,
+              entries: 0,
+            },
+            false
+          );
+        }
         return this.flagValue(
           {
             enabled: false,
@@ -858,12 +989,19 @@ export class GatewayService {
         );
       }
       const data = await res.json();
+      // Desktop shape is {active, providers, builtin_files}; older clients
+      // sent {enabled, provider, summary, entries}. Map active to enabled
+      // so a configured memory no longer reads as disabled.
+      const m = (data.memory && typeof data.memory === 'object' ? data.memory : data) as Record<string, unknown>;
+      const active = typeof m.active === 'string' ? m.active : '';
+      const now = Date.now();
+      writeSyncedAt(GatewayService.SYNC_KEYS.memory, now);
       return this.flagValue(
         {
-          enabled: Boolean(data.enabled),
-          provider: data.provider || '',
-          summary: data.summary || '',
-          entries: typeof data.entries === 'number' ? data.entries : 0,
+          enabled: active !== '' ? true : Boolean(m.enabled),
+          provider: active || (typeof m.provider === 'string' ? m.provider : ''),
+          summary: typeof m.summary === 'string' ? m.summary : '',
+          entries: typeof m.entries === 'number' ? m.entries : 0,
         },
         true
       );
@@ -880,6 +1018,41 @@ export class GatewayService {
     }
   }
 
+  // Memory toggle: speculative attempts against desktop dashboard PUT /api/memory
+  // and mobile POST /api/memory/toggle. Reports true only on confirmation.
+  async memoryToggle(enabled: boolean, callerSignal?: AbortSignal): Promise<boolean> {
+    const attempts: Array<{ url: string; init: RequestInit }> = [
+      {
+        url: `${this.baseUrl}/api/memory/toggle`,
+        init: {
+          method: 'POST',
+          signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+          headers: this.getHeaders(),
+          body: JSON.stringify({ enabled }),
+        },
+      },
+      {
+        url: `${this.baseUrl}/api/memory`,
+        init: {
+          method: 'PUT',
+          signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+          headers: this.getHeaders(),
+          body: JSON.stringify({ enabled }),
+        },
+      },
+    ];
+    for (const a of attempts) {
+      try {
+        const res = await fetch(a.url, a.init);
+        if (res.ok) return true;
+        if (res.status !== 404 && res.status !== 405) return false;
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+
   // Blueprints with sync envelope (DATA-05).
   async blueprintsWithState(callerSignal?: AbortSignal): Promise<ListSyncResult<Blueprint>> {
     try {
@@ -887,7 +1060,19 @@ export class GatewayService {
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        // No routines route on this server: a neutral empty list from a live
+        // response, never a red error box. The error field still reports the
+        // honest reason for log readers; the UI state resolves to empty.
+        // A rejected key keeps its HTTP token plus the key/auth hint.
+        if (res.status === 404) {
+          const now = Date.now();
+          writeSyncedAt(GatewayService.SYNC_KEYS.blueprints, now);
+          return { items: [], ...liveMeta(now), error: 'Routines are not available on the on-device server.' };
+        }
+        if (res.status === 401 || res.status === 403) throw new Error(`HTTP ${res.status}. ${AUTH_HINT_COPY}`);
+        throw new Error(`HTTP ${res.status}`);
+      }
       const data = await res.json();
       const { arr } = pickArray(data, ['blueprints', 'data']);
       const now = Date.now();
@@ -941,7 +1126,8 @@ export class GatewayService {
           checks: [],
         };
       }
-      return await res.json();
+      // Doctor details can echo keys/tokens: redact before storage/display.
+      return redactSecrets(await res.json());
     } catch (e: unknown) {
       return {
         ok: false,
@@ -986,14 +1172,24 @@ export class GatewayService {
       });
       if (!res.ok) {
         return {
+          ok: false,
           urls: [],
           summary: `Debug share failed: HTTP ${res.status}`,
         };
       }
       // Redact before the bundle result is stored or uploaded anywhere.
-      return redactSecrets(await res.json());
+      // The status payload rarely repeats `ok`, so derive it from what came
+      // back: an export only succeeded if it produced shareable urls.
+      const data = redactSecrets(await res.json()) as Partial<DebugShare>;
+      const urls = Array.isArray(data.urls) ? data.urls : [];
+      return {
+        ok: data.ok !== false && urls.length > 0,
+        urls,
+        summary: String(data.summary ?? ''),
+      };
     } catch (e: unknown) {
       return {
+        ok: false,
         urls: [],
         summary: plainServiceFailure(e),
       };
@@ -1021,7 +1217,9 @@ export class GatewayService {
       const { arr, total } = pickArray(data, ['logs', 'data']);
       const now = Date.now();
       writeSyncedAt(GatewayService.SYNC_KEYS.logs, now);
-      return toPagedResult(arr as LogLine[], liveMeta(now), page, total);
+      // Server logs can echo keys/tokens: redact every line before it is
+      // stored or shown anywhere.
+      return toPagedResult(redactSecrets(arr) as LogLine[], liveMeta(now), page, total);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'gateway unreachable';
       return toPagedResult<LogLine>(
@@ -1048,7 +1246,7 @@ export class GatewayService {
       );
       if (!res.ok) return this.flagList([], false);
       const data = await res.json();
-      const logs: LogLine[] = data.logs || [];
+      const logs: LogLine[] = redactSecrets(data.logs || []);
       return this.flagList(logs, true);
     } catch {
       return this.flagList([], false);
@@ -1083,6 +1281,7 @@ export class GatewayService {
     provider: string,
     envVar: string,
     key: string,
+    baseUrl: string = '',
     callerSignal?: AbortSignal
   ): Promise<boolean | null> {
     if (!key.trim()) return false;
@@ -1091,16 +1290,66 @@ export class GatewayService {
     // that carries the key.
     const reachable = await this.health(callerSignal);
     if (!reachable) return null;
+    // One live-validation path for the whole app: validateProvider owns the
+    // request shape and the result parsing, so the key test and the Settings
+    // flows cannot drift apart. The call carries no side effects, so a
+    // transient gateway blip is retried once instead of being reported to the
+    // user as "the key was not tested".
     try {
-      const res = await fetch(`${this.baseUrl}/api/providers/validate`, {
-        method: 'POST',
-        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
-        headers: this.getHeaders(),
-        body: JSON.stringify({ provider, key, env_var: envVar }),
-      });
-      if (!res.ok) return null;
-      const data = await res.json();
-      return Boolean(data.valid);
+      const result = await withRetry(
+        async () => {
+          // The caller's Base URL rides along: a hardcoded '' here used to
+          // fail every local/custom provider test before it started.
+          const input = { provider, baseUrl: (baseUrl || '').trim(), envVar } as ProviderValidationInput;
+          input.apiKey = key;
+          const r = await validateProvider(
+            input,
+            { gatewayBaseUrl: this.baseUrl, serverKey: this.apiKey, timeoutMs: REQUEST_TIMEOUT_MS },
+            callerSignal
+          );
+          if (r === null) {
+            throw createAppError('unavailable', 'Gateway did not answer the key validation.', { retryable: true });
+          }
+          return r;
+        },
+        { idempotent: true, signal: callerSignal, maxAttempts: 2, baseDelayMs: 300, maxDelayMs: 500 }
+      );
+      return result.valid;
+    } catch {
+      return null;
+    }
+  }
+
+  // Same live validation, but keeps the model list the gateway returns so
+  // the provider form can offer a picker instead of a hand-typed model id.
+  async providersValidateWithModels(
+    provider: string,
+    envVar: string,
+    key: string,
+    baseUrl: string = '',
+    callerSignal?: AbortSignal
+  ): Promise<{ valid: boolean; models: string[] } | null> {
+    if (!key.trim()) return { valid: false, models: [] };
+    const reachable = await this.health(callerSignal);
+    if (!reachable) return null;
+    try {
+      const result = await withRetry(
+        async () => {
+          const input = { provider, baseUrl: (baseUrl || '').trim(), envVar } as ProviderValidationInput;
+          input.apiKey = key;
+          const r = await validateProvider(
+            input,
+            { gatewayBaseUrl: this.baseUrl, serverKey: this.apiKey, timeoutMs: REQUEST_TIMEOUT_MS },
+            callerSignal
+          );
+          if (r === null) {
+            throw createAppError('unavailable', 'Gateway did not answer the key validation.', { retryable: true });
+          }
+          return r;
+        },
+        { idempotent: true, signal: callerSignal, maxAttempts: 2, baseDelayMs: 300, maxDelayMs: 500 }
+      );
+      return { valid: result.valid, models: Array.isArray(result.models) ? result.models : [] };
     } catch {
       return null;
     }
@@ -1140,6 +1389,15 @@ export class GatewayService {
       // cannot exhaust quota. Older history stays on the gateway (DATA-02).
       const capped = capMessages(messages, MESSAGE_RETENTION_CAP);
       localStorage.setItem(`hermes_messages_${sessionId}`, JSON.stringify(capped));
+    } catch {
+      // Ignored
+    }
+  }
+
+  /** Drop a deleted session's cache so it cannot accumulate forever. */
+  removeLocalMessages(sessionId: string): void {
+    try {
+      localStorage.removeItem(`hermes_messages_${sessionId}`);
     } catch {
       // Ignored
     }

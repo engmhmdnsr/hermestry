@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback, lazy, Suspense } from 'react';
 import {
   X,
   Plus,
@@ -10,12 +10,21 @@ import {
   Download,
   Copy,
   MoreHorizontal,
+  CalendarClock,
+  ChevronDown,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import { GatewayService } from '../../services/gateway';
 import { resolveListUiState } from '../../services/pagination';
+import { plainListStale, plainServiceFailure } from '../../services/plainFailure';
 import { useOverlayBehavior } from '../../hooks/useOverlayBehavior';
 import { MobileSession } from '../../types/hermes';
+
+// Jobs live at the end of this drawer now (the bottom tab is Terminal).
+// Lazy so the 70KB schedules UI only loads when the section opens.
+const JobsTab = lazy(() =>
+  import('../tabs/JobsTab').then((m) => ({ default: m.JobsTab }))
+);
 
 const gatewayService = new GatewayService();
 
@@ -41,6 +50,8 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     refreshNow,
     pinnedIds,
     togglePin,
+    deletedSessionIds,
+    jobs,
     t,
   } = useHermes();
 
@@ -50,6 +61,20 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     const v = t(key);
     return !v || v === key ? fallback : v;
   };
+
+  // Jobs section at the end of the drawer. Collapsed by default; Home's
+  // Activity card opens the drawer with it expanded through hm:drawerJobs.
+  const [jobsOpen, setJobsOpen] = useState(false);
+  useEffect(() => {
+    if (!isOpen) return;
+    try {
+      if (sessionStorage.getItem('hm:drawerJobs') === '1') {
+        sessionStorage.removeItem('hm:drawerJobs');
+        setJobsOpen(true);
+      }
+    } catch {}
+  }, [isOpen]);
+  const enabledJobs = jobs.filter((j) => j.enabled).length;
 
   const [query, setQuery] = useState('');
   const [sortMode, setSortMode] = useState<0 | 1 | 2>(0);
@@ -64,6 +89,9 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
   const [deleteError, setDeleteError] = useState('');
   const [isSavingRename, setIsSavingRename] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  // newSession() awaits a bridge lookup plus two gateway round trips before it
+  // returns, so a second tap inside that window would mint a second chat.
+  const [isCreatingSession, setIsCreatingSession] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Paginated session list truthfulness (DATA-01/03/04/05). The context owns
@@ -81,10 +109,47 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
   const [metaLoading, setMetaLoading] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
 
-  // Escape / Android back button / Tab focus trap for the whole drawer. The
-  // close handler unwinds the top-most surface first (rename or delete dialog,
-  // then the drawer itself) so the back button never skips a dialog.
+  // Escape and the Android back button route per layer, not per drawer: the
+  // card menu, the rename dialog and the delete dialog each own their own
+  // overlay stack entry with their own close handler. Before this, back popped
+  // the drawer's single entry while closeTop only closed an inner card, so the
+  // next back jumped to Home with the drawer still open and a third back
+  // exited over it. Focus trapping stays with the drawer (these layers live
+  // inside it); what each layer owns is stack membership and top-only Escape.
+  //
+  // Declared before the drawer hook on purpose: the layers only ever open
+  // while the drawer is already open (so the drawer always registers first),
+  // and on cleanup their focus restore then runs ahead of the drawer's, leaving
+  // focus on the drawer trigger instead of on a card that is about to unmount.
+  const closeMenuLayer = useCallback(() => setOpenMenuId(null), []);
+  const closeRenameLayer = useCallback(() => {
+    setRenameTarget(null);
+    setRenameError('');
+  }, []);
+  const closeDeleteLayer = useCallback(() => {
+    setDeleteTarget(null);
+    setDeleteError('');
+  }, []);
+  // Gated on isOpen as well: closing the drawer must drop its inner entries in
+  // the same commit, because the dialogs are not rendered while it is closed.
+  const menuLayerRef = useOverlayBehavior(isOpen && !!openMenuId, closeMenuLayer, undefined, {
+    trapFocus: false,
+  });
+  const renameLayerRef = useOverlayBehavior(isOpen && !!renameTarget, closeRenameLayer, undefined, {
+    trapFocus: false,
+  });
+  const deleteLayerRef = useOverlayBehavior(isOpen && !!deleteTarget, closeDeleteLayer, undefined, {
+    trapFocus: false,
+  });
+
+  // Tap outside the panel: the scrim unwinds the top-most surface first (open
+  // card menu, then rename or delete dialog, then the drawer itself) so a tap
+  // can never skip a layer.
   const closeTop = useCallback(() => {
+    if (openMenuId) {
+      setOpenMenuId(null);
+      return;
+    }
     if (renameTarget) {
       setRenameTarget(null);
       setRenameError('');
@@ -96,9 +161,18 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       return;
     }
     onClose();
-  }, [renameTarget, deleteTarget, onClose]);
+  }, [openMenuId, renameTarget, deleteTarget, onClose]);
 
   const drawerRef = useOverlayBehavior(isOpen, closeTop);
+
+  // Reopening the drawer must never resurrect a dialog the previous visit
+  // left open, so the inner layers are cleared when it closes.
+  useEffect(() => {
+    if (isOpen) return;
+    setOpenMenuId(null);
+    setRenameTarget(null);
+    setDeleteTarget(null);
+  }, [isOpen]);
 
   useEffect(() => {
     return () => {
@@ -130,7 +204,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
         setNextOffset(page.nextOffset);
       } catch (e) {
         if (cancelled) return;
-        setPageError(e instanceof Error ? e.message : tx('couldNotLoadChats', 'Could not load chats.'));
+        setPageError(plainServiceFailure(e, tx));
       } finally {
         if (!cancelled) setMetaLoading(false);
       }
@@ -154,9 +228,10 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       });
       setHasMore(page.hasMore);
       setNextOffset(page.nextOffset);
-      if (page.error && !page.stale) setPageError(page.error);
+      if (page.error && !page.stale)
+        setPageError(plainListStale(tx('couldNotLoadMoreChats', 'Could not load more chats.'), page.error, tx));
     } catch (e) {
-      setPageError(e instanceof Error ? e.message : tx('couldNotLoadMoreChats', 'Could not load more chats.'));
+      setPageError(plainServiceFailure(e, tx));
     } finally {
       setLoadingMore(false);
     }
@@ -175,17 +250,21 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       setHasMore(page.hasMore);
       setNextOffset(page.nextOffset);
     } catch (e) {
-      setPageError(e instanceof Error ? e.message : tx('couldNotLoadChats', 'Could not load chats.'));
+      setPageError(plainServiceFailure(e, tx));
     }
   };
 
   const handleNewSession = async () => {
+    if (isCreatingSession) return;
+    setIsCreatingSession(true);
     try {
       const newId = await newSession();
       onSelectSession(newId);
       onClose();
     } catch {
       showDrawerToast(tx('couldNotCreateSession', 'Could not start a chat. The Hermes server did not answer.'), 'error');
+    } finally {
+      setIsCreatingSession(false);
     }
   };
 
@@ -197,11 +276,14 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     }
   };
 
-  // Context list plus paged-in older sessions, deduped by id.
+  // Context list plus paged-in older sessions, deduped by id and minus
+  // ids deleted after the page was loaded (context refresh never reprunes
+  // these stale pages).
   const allSessions = useMemo(() => {
+    const gone = new Set(deletedSessionIds);
     const ids = new Set(sessions.map((s) => s.id));
-    return [...sessions, ...extraSessions.filter((s) => !ids.has(s.id))];
-  }, [sessions, extraSessions]);
+    return [...sessions, ...extraSessions.filter((s) => !ids.has(s.id) && !gone.has(s.id))];
+  }, [sessions, extraSessions, deletedSessionIds]);
 
   const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
   const listState = resolveListUiState(
@@ -303,15 +385,13 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     return false;
   };
 
-  const handleExportMarkdown = async (sess: MobileSession) => {
-    const targetMessages = await loadTranscriptMessages(sess.id);
-    const md = buildTranscriptMarkdown(sess, targetMessages);
-    // On mobile WebViews a blob download often goes nowhere, so prefer
-    // the native share sheet when it can take the file.
-    if (await shareNative(sess, md)) {
-      showDrawerToast(tx('transcriptShared', 'Transcript shared.'), 'success');
-      return;
-    }
+  // A blob anchor click has no success callback: the browser either throws
+  // (a detached document, a blocked URL API, a refused node insert) or it
+  // silently takes over, and this WebView exposes no download event to script.
+  // So the only honest verdicts are "the click failed" and "dispatched but
+  // unconfirmed". Revoking immediately can also abort a transfer that is still
+  // starting, so the URL lives long enough for the download manager to read it.
+  const dispatchDownload = (sess: MobileSession, md: string): boolean => {
     try {
       const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
       const url = URL.createObjectURL(blob);
@@ -321,16 +401,35 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       document.body.appendChild(a);
       a.click();
       a.remove();
-      URL.revokeObjectURL(url);
-      showDrawerToast(tx('transcriptExported', 'Transcript exported.'), 'success');
+      window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+      return true;
     } catch {
+      return false;
+    }
+  };
+
+  const handleExportMarkdown = async (sess: MobileSession) => {
+    const targetMessages = await loadTranscriptMessages(sess.id);
+    const md = buildTranscriptMarkdown(sess, targetMessages);
+    // On mobile WebViews a blob download often goes nowhere, so prefer
+    // the native share sheet when it can take the file. That path reports a
+    // real result, so it is the only one allowed to claim success.
+    if (await shareNative(sess, md)) {
+      showDrawerToast(tx('transcriptShared', 'Transcript shared.'), 'success');
+      return;
+    }
+    if (!dispatchDownload(sess, md)) {
+      // The download path itself refused: copy instead, which is verifiable.
       try {
         await navigator.clipboard.writeText(md);
         showDrawerToast(tx('downloadUnavailableCopied', 'Download unavailable. Transcript copied instead.'), 'info');
       } catch {
         showDrawerToast(tx('exportFailed', 'Export failed: no download, share, or clipboard available.'), 'error');
       }
+      return;
     }
+    // Dispatched, not confirmed: say so without claiming the file landed.
+    showDrawerToast(tx('exporting', 'Exporting…'), 'info');
   };
 
   const handleCopyTranscript = async (sess: MobileSession) => {
@@ -367,21 +466,22 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
           role="status"
           aria-live="polite"
           style={{ top: 'calc(4rem + env(safe-area-inset-top, 0px))' }}
-          className={`fixed start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] px-4 py-2 r-sm elev-3 t-caption font-semibold ${
+          className={`fixed start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] px-4 py-2 r-sm elev-3 t-caption font-semibold max-w-[min(20rem,calc(100vw-2rem))] text-center ${
             toastKind === 'error'
-              ? 'bg-[var(--app-danger)] text-[var(--app-bg)]'
+              ? 'bg-[var(--app-danger-solid)] text-[var(--app-on-danger)]'
               : toastKind === 'success'
-                ? 'bg-[var(--app-success)] text-[var(--app-bg)]'
+                ? 'bg-[var(--app-success-solid)] text-[var(--app-on-success)]'
                 : 'edge text-[var(--app-text)]'
           }`}
         >
           {drawerToast}
         </div>
       )}
-      {/* Backdrop */}
+      {/* Backdrop. It unwinds the top-most surface like Escape and Android
+          back do, so a tap-outside can never skip an open menu or dialog. */}
       <div
         className="fixed inset-0 bg-[var(--app-scrim)] backdrop-blur-xs transition-opacity duration-200"
-        onClick={onClose}
+        onClick={closeTop}
         aria-hidden="true"
       />
 
@@ -396,7 +496,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
           paddingTop: 'env(safe-area-inset-top, 0px)',
           backgroundColor: 'var(--app-card)',
         }}
-        className="relative w-full max-w-xs border-e edge h-full flex flex-col z-10 elev-3 animate-in slide-in-from-left rtl:slide-in-from-right duration-200"
+        className="relative w-full max-w-[min(20rem,85vw)] border-e edge h-full flex flex-col z-10 elev-3 animate-in slide-in-from-left rtl:slide-in-from-right duration-200"
       >
         {/* Header: 44px row carrying 36px controls. */}
         <div className="px-3 min-h-[44px] hairline border-b flex items-center justify-between gap-2">
@@ -415,7 +515,8 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
           <div className="flex items-center gap-1 shrink-0">
             <button
               onClick={() => void handleNewSession()}
-              className="w-9 h-9 r-sm flex items-center justify-center text-[var(--app-accent-text)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)] transition"
+              disabled={isCreatingSession}
+              className="w-9 h-9 r-sm flex items-center justify-center text-[var(--app-accent-text)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)] transition disabled:opacity-50 disabled:cursor-not-allowed"
               title={tx('newChat', 'New chat')}
               aria-label={tx('newChat', 'New chat')}
             >
@@ -516,8 +617,13 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
             </div>
           ) : listState === 'error' ? (
             <div className="py-12 text-center t-caption text-[var(--app-text-muted)] space-y-3" role="alert">
-              <p>{tx('couldNotLoadChats', 'Could not load chats.')}</p>
-              {pageMeta.error && <p className="t-caption text-[var(--app-text-dim)]">{pageMeta.error}</p>}
+              <p>
+                {plainListStale(
+                  tx('couldNotLoadChats', 'Could not load chats. The Hermes server did not answer.'),
+                  pageMeta.error,
+                  tx
+                )}
+              </p>
               <button
                 onClick={() => void handleRetryList()}
                 className="h-9 px-4 r-sm bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)] t-caption font-medium cursor-pointer"
@@ -530,7 +636,8 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
               <p>{tx('noChatsYet', 'No chats yet')}</p>
               <button
                 onClick={() => void handleNewSession()}
-                className="mt-3 h-9 px-3 r-sm bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)] t-caption font-medium cursor-pointer"
+                disabled={isCreatingSession}
+                className="mt-3 h-9 px-3 r-sm bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] disabled:opacity-50 text-[var(--app-on-accent)] t-caption font-medium cursor-pointer"
               >
                 {tx('startFirstChat', 'Start your first chat')}
               </button>
@@ -574,6 +681,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                       onToggleMenu={() =>
                         setOpenMenuId((prev) => (prev === sess.id ? null : sess.id))
                       }
+                      menuRef={menuLayerRef}
                       onCloseMenu={() => setOpenMenuId(null)}
                     />
                   ))}
@@ -622,11 +730,57 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
             </>
           )}
         </div>
+
+        {/* Scheduled Jobs at the end of the drawer: the full schedules UI
+            (create, pause, resume, run, delete) embedded in a collapsible
+            section, so nothing from the old Jobs tab is lost. */}
+        <div className="shrink-0 hairline border-t">
+          <button
+            type="button"
+            onClick={() => setJobsOpen((v) => !v)}
+            aria-expanded={jobsOpen}
+            className="w-full min-h-[44px] px-3 flex items-center gap-2 text-start cursor-pointer"
+          >
+            <CalendarClock className="w-4 h-4 shrink-0 text-[var(--app-tab-jobs)]" aria-hidden="true" />
+            <span className="t-body font-semibold text-[var(--app-text)] flex-1 truncate">
+              {tx('scheduledJobsTitle', 'Scheduled tasks')}
+            </span>
+            {enabledJobs > 0 && (
+              <span
+                className="t-micro font-mono text-[var(--app-tab-jobs)] shrink-0"
+                aria-label={tx('jobsTurnedOnCount', '{count} jobs turned on').replace(
+                  '{count}',
+                  String(enabledJobs)
+                )}
+              >
+                {enabledJobs}
+              </span>
+            )}
+            <ChevronDown
+              className={`w-4 h-4 shrink-0 text-[var(--app-text-muted)] transition-transform ${jobsOpen ? 'rotate-180' : ''}`}
+              aria-hidden="true"
+            />
+          </button>
+          {jobsOpen && (
+            <div className="max-h-[60vh] overflow-y-auto border-t hairline">
+              <Suspense
+                fallback={
+                  <div className="p-4 text-center t-caption text-[var(--app-text-muted)]" role="status">
+                    {tx('loadingJobs', 'Loading jobs')}
+                  </div>
+                }
+              >
+                <JobsTab />
+              </Suspense>
+            </div>
+          )}
+        </div>
       </aside>
 
       {/* Rename Dialog */}
       {renameTarget && (
         <div
+          ref={renameLayerRef}
           role="dialog"
           aria-modal="true"
           aria-label={tx('renameChat', 'Rename chat')}
@@ -688,6 +842,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       {/* Delete Dialog */}
       {deleteTarget && (
         <div
+          ref={deleteLayerRef}
           role="dialog"
           aria-modal="true"
           aria-label={tx('deleteChat', 'Delete chat')}
@@ -734,7 +889,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                   }
                 }}
                 disabled={isDeleting}
-                className="h-9 px-4 r-sm bg-[var(--app-danger)] hover:brightness-110 disabled:opacity-50 text-[var(--app-bg)] t-caption font-semibold"
+                className="h-9 px-4 r-sm bg-[var(--app-danger-solid)] hover:brightness-110 disabled:opacity-50 text-[var(--app-on-danger)] t-caption font-semibold"
               >
                 {isDeleting ? tx('deleting', 'Deleting…') : t('delete') || tx('delete', 'Delete')}
               </button>
@@ -760,6 +915,10 @@ interface SessionCardProps {
   isMenuOpen: boolean;
   onToggleMenu: () => void;
   onCloseMenu: () => void;
+  // The open menu registers its own overlay stack entry (Android back and
+  // Escape close the menu first, then the drawer), so the drawer hands the
+  // hook ref down to the popup it does not render itself.
+  menuRef?: React.RefObject<HTMLDivElement | null>;
 }
 
 const SessionCard: React.FC<SessionCardProps> = ({
@@ -776,6 +935,7 @@ const SessionCard: React.FC<SessionCardProps> = ({
   isMenuOpen,
   onToggleMenu,
   onCloseMenu,
+  menuRef,
 }) => {
   const { t } = useHermes();
   const tx = (key: string, fallback: string): string => {
@@ -861,6 +1021,7 @@ const SessionCard: React.FC<SessionCardProps> = ({
                   aria-hidden="true"
                 />
                 <div
+                  ref={menuRef}
                   role="menu"
                   aria-label={`${tx('moreActions', 'More actions')}: ${title}`}
                   className="absolute end-0 top-full z-50 w-44 r-sm elev-2 edge bg-[var(--app-card)] p-1"

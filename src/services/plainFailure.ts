@@ -17,18 +17,35 @@ export type TranslateFn = (key: string, fallback: string) => string;
 // English-only resolver for callers with no locale bundle in scope.
 const englishOnly: TranslateFn = (_key, fallback) => fallback;
 
-// Transport and reachability text that must never surface.
+// Transport and reachability text that must never surface. Covers the whole
+// family of runtime reasons, not just one spelling: Node's "fetch failed"
+// (the message a live fetch() rejection carries), DNS ("getaddrinfo
+// ENOTFOUND"), the socket codes ("read ECONNRESET", "ETIMEDOUT", "socket
+// hang up"), TLS ("unable to verify the first certificate", "self signed")
+// and the peer-close wordings ("other side closed", "terminated").
 const TRANSPORT_RE =
-  /econnrefused|networkerror|network error|failed to fetch|load failed|unreachable|not reachable|timed out|timeout|\boffline\b|net::|::err|err_[a-z]+|errno|unknownhost|socketexception|sslexception|\babort(?:ed)?\b/i;
+  /econnrefused|econnreset|etimedout|econnaborted|epipe|eai_again|ehostunreach|enetunreach|networkerror|network error|failed to fetch|fetch failed|load failed|unreachable|not reachable|timed out|timeout|\boffline\b|net::|::err|err_[a-z]+|errno|unknownhost|getaddrinfo|enotfound|socket hang|socket disconnect|socketexception|sslexception|certificate|cert_|self.?signed|unable to verify|other side closed|\bterminated\b|\babort(?:ed)?\b/i;
 
-// Platform and stack fragments that must never surface.
+// Platform and stack fragments that must never surface. Includes the DOM
+// and native exception class names, because those reach user copy verbatim
+// when a caller interpolates e.message (quota, security, bridge failures).
 const PLATFORM_RE =
-  /\bat\s+\S+\.(?:kt|java):\d+|java\.|android\.|traceback|\bexception\b|\bhttp:\/\/|127\.0\.0\.1|localhost:\d|\bhttp \d{3}\b|\.log\b/i;
+  /\bat\s+\S+\.(?:kt|java):\d+|java\.|kotlin\.|android\.|traceback|\bexception\b|\bhttp:\/\/|127\.0\.0\.1|localhost:\d|\bhttp \d{3}\b|\.log\b|\b(?:type|reference|syntax|range|eval|uri|quotaexceeded|security|invalidstate|dom|notfound|notallowed|notreadable|notsupported|abort|operation|network|timeout|encoding|dataclone|indexsize|invalidcharacter)(?:error|exception)\b|quota has been exceeded|native bridge|bridge unavailable|setserverkey unavailable|install\(\)|exit code|permission denial|\bproot\b|\b(?:eacces|enoent|eperm|eisdir|erofs|enospc)\b|startforegroundservice|toappstrictmode/i;
 
-// A bare machine token: lowercase, underscores, optional trailing colon,
-// e.g. "service_start_blocked" or "not_installed:". A capitalized word or a
-// sentence with spaces never matches.
-const TOKEN_RE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+:?$/;
+// Machine identifiers a case-insensitive scan cannot catch without eating
+// honest prose: exception class names ("NullPointerException" with its
+// detail), dotted package types ("com.example.App$Companion") and shouted
+// status tokens ("CAPACITY"). Deliberately case-sensitive: "Agent Error",
+// "e.g." and any sentence in the dictionary never match, while camel case
+// and ALL CAPS do.
+const CLASSNAME_RE =
+  /\b[A-Za-z_$][A-Za-z0-9_$]*Exception\b|\b[A-Za-z_$][A-Za-z0-9_$]*Error\b|\b[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+\.[A-Z][A-Za-z0-9_$]*|^[A-Z][A-Z0-9_]{4,}$/;
+
+// A bare machine token: underscores, optional trailing colon, e.g.
+// "service_start_blocked", "Service_Start_Blocked" or "not_installed:". Case
+// is ignored because the bridge and the Android installers shout some of
+// them. A word or a sentence with spaces never matches.
+const TOKEN_RE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+:?$/i;
 
 /** True when the text is transport or reachability noise, never user copy. */
 export function isTransportFailure(raw: string | null | undefined): boolean {
@@ -40,7 +57,7 @@ export function isTransportFailure(raw: string | null | undefined): boolean {
 export function isMachineFailure(raw: string | null | undefined): boolean {
   const s = (raw || '').trim();
   if (!s) return false;
-  return TOKEN_RE.test(s) || PLATFORM_RE.test(s);
+  return TOKEN_RE.test(s) || PLATFORM_RE.test(s) || CLASSNAME_RE.test(s);
 }
 
 // Start and connect failures. A native reason is mapped to plain copy; a
@@ -82,6 +99,11 @@ export function plainResultLine(
 ): string {
   const s = (raw || '').trim();
   if (!s) return fallback;
+  // A rejected key is a state the UI must keep recognising, so the status
+  // token survives instead of being replaced by the fallback. Everything
+  // else machine-made below is replaced.
+  const httpAuth = /\bhttp (401|403)\b/i.exec(s);
+  if (httpAuth) return `HTTP ${httpAuth[1]}`;
   if (TRANSPORT_RE.test(s))
     return tx('opsUnreachablePlain', 'Hermes is not reachable, so that did not finish.');
   if (isMachineFailure(s)) return fallback;

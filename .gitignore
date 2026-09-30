@@ -1,8 +1,10 @@
-# Node
+# Build outputs
 node_modules/
 dist/
 .vite/
 *.log
+*.apk
+*.aab
 npm-debug.log*
 yarn-error.log*
 

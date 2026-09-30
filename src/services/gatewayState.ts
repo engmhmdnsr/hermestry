@@ -163,32 +163,35 @@ export interface GatewayUiFlags {
   showRetry: boolean;
   showProgress: boolean;
   isStable: boolean;
-  label: string;
 }
 
-/** Derive every button/spinner from the machine (GATEWAY-03). */
+/**
+ * Derive every button/spinner from the machine (GATEWAY-03).
+ * There is deliberately no English `label` here: a word a person reads has
+ * to come from the locale bundle, and the UI builds it from the same state.
+ */
 export function deriveUiFlags(s: GatewayState): GatewayUiFlags {
   switch (s) {
     case 'NOT_INSTALLED':
-      return { canStart: false, canStop: false, canInstall: true, showRetry: false, showProgress: false, isStable: true, label: 'Not installed' };
+      return { canStart: false, canStop: false, canInstall: true, showRetry: false, showProgress: false, isStable: true };
     case 'INSTALLING':
-      return { canStart: false, canStop: false, canInstall: false, showRetry: false, showProgress: true, isStable: false, label: 'Installing' };
+      return { canStart: false, canStop: false, canInstall: false, showRetry: false, showProgress: true, isStable: false };
     case 'CHECKING':
     case 'STARTING':
-      return { canStart: false, canStop: true, canInstall: false, showRetry: false, showProgress: true, isStable: false, label: s === 'CHECKING' ? 'Checking' : 'Starting' };
+      return { canStart: false, canStop: true, canInstall: false, showRetry: false, showProgress: true, isStable: false };
     case 'RUNNING':
-      return { canStart: false, canStop: true, canInstall: false, showRetry: false, showProgress: false, isStable: true, label: 'Running' };
+      return { canStart: false, canStop: true, canInstall: false, showRetry: false, showProgress: false, isStable: true };
     case 'STOPPING':
-      return { canStart: false, canStop: false, canInstall: false, showRetry: false, showProgress: true, isStable: false, label: 'Stopping' };
+      return { canStart: false, canStop: false, canInstall: false, showRetry: false, showProgress: true, isStable: false };
     case 'STOPPED':
     case 'INSTALLED':
-      return { canStart: true, canStop: false, canInstall: false, showRetry: false, showProgress: false, isStable: true, label: s === 'STOPPED' ? 'Stopped' : 'Installed' };
+      return { canStart: true, canStop: false, canInstall: false, showRetry: false, showProgress: false, isStable: true };
     case 'DEGRADED':
-      return { canStart: false, canStop: true, canInstall: false, showRetry: true, showProgress: false, isStable: true, label: 'Degraded' };
+      return { canStart: false, canStop: true, canInstall: false, showRetry: true, showProgress: false, isStable: true };
     case 'FAILED':
-      return { canStart: true, canStop: false, canInstall: false, showRetry: true, showProgress: false, isStable: true, label: 'Failed' };
+      return { canStart: true, canStop: false, canInstall: false, showRetry: true, showProgress: false, isStable: true };
     default:
-      return { canStart: false, canStop: false, canInstall: false, showRetry: false, showProgress: true, isStable: false, label: 'Starting' };
+      return { canStart: false, canStop: false, canInstall: false, showRetry: false, showProgress: true, isStable: false };
   }
 }
 

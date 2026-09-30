@@ -17,6 +17,7 @@ import {
   KEYLESS_PROVIDERS,
 } from '../../constants/providers';
 import { redactSecrets } from '../../services/redaction';
+import { plainGatewayFailure, plainResultLine } from '../../services/plainFailure';
 import { useOverlayBehavior } from '../../hooks/useOverlayBehavior';
 import { parseInstallPhase } from '../../services/gatewayState';
 import type { InstallPhase } from '../../services/gatewayState';
@@ -44,6 +45,7 @@ const WIZARD_PRIMARY =
   'flex-1 min-h-[48px] px-4 r-sm inline-flex items-center justify-center gap-2 t-body font-semibold transition cursor-pointer disabled:opacity-60 disabled:cursor-wait';
 
 export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) => {
+  const hermes = useHermes();
   const {
     settings,
     saveKeys,
@@ -58,7 +60,16 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
     installGateway,
     updateSettings,
     t,
-  } = useHermes();
+  } = hermes;
+
+  // A start timeout reports install === 'FAILED' as well, but the image is
+  // already on the phone in that case, so "nothing was installed" would be
+  // untrue. The context publishes the start cause beside the install state;
+  // read it through a narrow cast so this screen still compiles against a
+  // context build that has not published the field yet.
+  const startFailureRaw = (hermes as unknown as { startFailure?: unknown }).startFailure;
+  const startFailure =
+    typeof startFailureRaw === 'string' && startFailureRaw.trim() ? startFailureRaw.trim() : null;
 
   // New copy may not exist in constants/languages yet: a missing key degrades
   // to the English fallback instead of printing the raw key.
@@ -74,6 +85,10 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
     if (connected) return 3;
     if (install === 'INSTALLED' || install === 'RUNNING') return 2;
     if (install === 'INSTALLING') return 1;
+    // A failed run resumes where the cause and the control that acts on it
+    // are both visible. Step 0 would only offer a plain "Start setup", which
+    // hides why it failed and sends the user through a full re-setup.
+    if (install === 'FAILED') return 1;
     return 0;
   });
   const stepRef = useRef(step);
@@ -91,13 +106,37 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
   const [backConfirm, setBackConfirm] = useState(false);
   // Autostart policy text lives behind a disclosure, not in the 3-line box.
   const [showPolicy, setShowPolicy] = useState(false);
+  // Raw installer lines carry absolute paths and mirror URLs. The default
+  // view is the plain phase list; the technical log is one disclosure away
+  // for the case where the actual text is needed.
+  const [showInstallLog, setShowInstallLog] = useState(false);
+
+  // Raw installer output is a log line, not a sentence: on screen only a
+  // line that survives plainResultLine is shown under the failure copy.
+  const installErrorLine = installError
+    ? plainResultLine(redactSecrets(installError), '', tx)
+    : '';
 
   // Keep the newest log line visible: the box has a fixed height, so without
   // this the user sees the first lines forever and thinks logging stopped.
+  // Re-runs when the disclosure opens too, so a log opened late starts at the
+  // end instead of at lines that have long scrolled out of the stream.
   const logBoxRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const el = logBoxRef.current;
     if (el) el.scrollTop = el.scrollHeight;
+  }, [gatewayLogs, showInstallLog]);
+
+  // Phases the native installer has reported, in order, as plain labels. This
+  // is what the step shows by default: parsing is done once per log update
+  // rather than on every render, and the raw lines stay out of the flow.
+  const plainLogPhases = useMemo(() => {
+    const seen: InstallPhase[] = [];
+    for (const line of gatewayLogs) {
+      const phase = parseInstallPhase(line);
+      if (phase && !seen.includes(phase)) seen.push(phase);
+    }
+    return seen;
   }, [gatewayLogs]);
 
   // Form inputs
@@ -127,8 +166,9 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
   useEffect(() => {
     if (step === 3 && launchTried && !launching && !connected && gatewayFailed) {
       setLaunchError(
-        gatewayFailureReason ||
-          tx('launchFailedPlain', 'Hermes did not start. Nothing was changed, so your setup is intact. Check the log below, then try again.')
+        gatewayFailureReason
+          ? plainGatewayFailure(gatewayFailureReason, tx)
+          : tx('launchFailedPlain', 'Hermes did not start. Nothing was changed, so your setup is intact. Check the log below, then try again.')
       );
     }
   }, [step, launchTried, launching, connected, gatewayFailed, gatewayFailureReason, t]);
@@ -215,9 +255,15 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
   // the live phases while it runs.
   const startInstall = () => {
     if (install === 'INSTALLING') return;
+    // Reached by going Back from the progress step on a finished install:
+    // resume the flow instead of kicking off a second full image download.
     setInstallDismissed(false);
     setStep(1);
-    installGateway();
+    // RUNNING means the gateway is already up (health can lag behind it), so
+    // re-running the installer here would re-download over a running install.
+    // A start failure is the same case: the image landed, so the resume step
+    // offers Start rather than a second full download.
+    if (install !== 'INSTALLED' && install !== 'RUNNING' && !startFailure) installGateway();
   };
 
   // Cancel: there is no native cancel API, so the on-device install cannot be
@@ -288,6 +334,51 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
     backButton: true,
     trapFocus: false,
   });
+
+  // The two-tap exit guard is shared by the welcome step (where the hardware
+  // back button and Escape arm it) and step 3's Skip button, so the same
+  // confirm copy renders on both. Without it the welcome step's second back
+  // press closed the wizard in silence.
+  const skipConfirmBlock = skipArmed ? (
+    <div
+      role="alert"
+      className="p-4 r-md bg-[var(--app-warning-subtle)] border border-[var(--app-warning-border)] t-caption text-[var(--app-warning)]"
+    >
+      {isOffline
+        ? tx(
+            'skipConfirmOfflinePlain',
+            'You appear to be offline and Hermes is not running. Tap Skip for now again to open the app anyway. Chats will not work until Hermes runs.',
+          )
+        : tx(
+            'skipConfirmOnlinePlain',
+            'Hermes is not running yet. Tap Skip for now again to open the app without it. Chats will not work until Hermes runs.',
+          )}
+    </div>
+  ) : null;
+
+  const skipButton = (
+    <button
+      onClick={handleSkip}
+      className="w-full min-h-[44px] inline-flex items-center justify-center text-center t-caption text-[var(--app-text-muted)] hover:text-[var(--app-text)] cursor-pointer transition"
+    >
+      {tx('skipForNowPlain', 'Skip for now')}
+    </button>
+  );
+
+  // Three signals must not outlive the condition that produced them: the
+  // back-block notice once the install has stopped, a skip armed on a step the
+  // user has since left, and a launch failure once the gateway answers.
+  useEffect(() => {
+    if (install !== 'INSTALLING') setBackConfirm(false);
+  }, [install]);
+
+  useEffect(() => {
+    setSkipArmed(false);
+  }, [step]);
+
+  useEffect(() => {
+    if (connected) setLaunchError(null);
+  }, [connected]);
 
   const stepLabel =
     step === 0
@@ -381,7 +472,11 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                   )}
                 </div>
 
-                {installDismissed && install === 'INSTALLING' && (
+                {/* Shown whenever the install is still running, not only after
+                    Cancel: Back from the progress step also lands here, and
+                    without this card that welcome screen shows only a disabled
+                    "Setup in progress" button with no way back to progress. */}
+                {install === 'INSTALLING' && (
                   <div className="p-4 r-md bg-[var(--app-warning-subtle)] border border-[var(--app-warning-border)] space-y-3">
                     <p className="t-caption text-[var(--app-warning)]">
                       {tx(
@@ -406,7 +501,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                     onClick={startInstall}
                     disabled={isInstalling}
                     aria-disabled={isInstalling}
-                    className={`${WIZARD_PRIMARY} w-full bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-bg)]`}
+                    className={`${WIZARD_PRIMARY} w-full bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)]`}
                   >
                     <span>
                       {isInstalling
@@ -415,6 +510,14 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                     </span>
                     <ArrowRight className="w-4 h-4 rtl-flip" />
                   </button>
+                </div>
+
+                {/* Escape and the hardware back button both arm this two-tap
+                    exit from the welcome step, so it needs the same visible
+                    confirm and the same explicit control as step 3. */}
+                <div className="pt-4 space-y-3">
+                  {skipConfirmBlock}
+                  {skipButton}
                 </div>
               </div>
             )}
@@ -428,7 +531,11 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                   <p className="t-body text-[var(--app-text-muted)] mt-1">
                     {install === 'INSTALLING' && tx('installingMsgPlain', 'Downloading about 305 MB and unpacking it. Keep this screen open.')}
                     {install === 'INSTALLED' && tx('installedMsgPlain', 'Setup finished. Your Hermes server is ready.')}
-                    {install === 'FAILED' && tx('failedMsgPlain', 'Setup failed. Nothing was installed, so nothing was lost. Press Retry to try again.')}
+                    {install === 'RUNNING' && tx('installedMsgPlain', 'Setup finished. Your Hermes server is ready.')}
+                    {install === 'FAILED' &&
+                      (startFailure
+                        ? tx('startFailedPlain', 'Could not start Hermes. Try again.')
+                        : tx('failedMsgPlain', 'Setup failed. Nothing was installed, so nothing was lost. Press Retry to try again.'))}
                   </p>
                 </div>
 
@@ -513,26 +620,65 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                   </p>
                 )}
 
-                <div
-                  className="r-md bg-[var(--app-card-subtle)] hairline p-3 h-48 overflow-y-auto overflow-x-hidden font-mono t-caption text-[var(--app-text-muted)] space-y-1"
-                  ref={logBoxRef}
-                >
-                  {gatewayLogs.slice(-200).map((log, i) => (
-                    <div key={`${gatewayLogs.length - 200 + i}`} className="leading-relaxed break-words whitespace-pre-wrap">
-                      {redactSecrets(log)}
+                {/* Plain phase lines are the default surface. Raw installer
+                    output carries absolute paths and mirror URLs, so it stays
+                    behind a disclosure instead of in the reading flow. */}
+                <div className="r-md bg-[var(--app-card-subtle)] hairline p-3 space-y-2">
+                  <div role="status" aria-live="polite" className="space-y-1">
+                    {plainLogPhases.length > 0 ? (
+                      plainLogPhases.map((p) => (
+                        <p key={p} className="t-caption text-[var(--app-text-muted)] leading-relaxed">
+                          {phaseLabel(p)}
+                        </p>
+                      ))
+                    ) : (
+                      <p className="t-caption text-[var(--app-text-muted)]">
+                        {tx('installInProgress', 'Setup in progress')}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowInstallLog((v) => !v)}
+                    aria-expanded={showInstallLog}
+                    className="min-h-[44px] inline-flex items-center gap-1 t-caption text-[var(--app-accent-text)] hover:text-[var(--app-accent-hover)] cursor-pointer transition"
+                  >
+                    {showInstallLog ? (
+                      <ChevronUp className="w-3.5 h-3.5" />
+                    ) : (
+                      <ChevronDown className="w-3.5 h-3.5" />
+                    )}
+                    <span>{tx('technicalDetails', 'Technical details')}</span>
+                  </button>
+                  {showInstallLog && (
+                    <div
+                      className="h-48 overflow-y-auto overflow-x-hidden font-mono t-caption text-[var(--app-text-muted)] space-y-1"
+                      ref={logBoxRef}
+                    >
+                      {gatewayLogs.slice(-200).map((log, i) => (
+                        <div
+                          key={`${gatewayLogs.length - 200 + i}`}
+                          className="leading-relaxed break-words whitespace-pre-wrap"
+                        >
+                          {redactSecrets(log)}
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
 
                 <div className="pt-4 space-y-3">
-                  {install === 'INSTALLED' && (
+                  {/* RUNNING (gateway up, health still settling) is as ready as
+                      INSTALLED: without a forward control here the wizard has no
+                      next step, because Back from step 2 lands on this screen. */}
+                  {(install === 'INSTALLED' || install === 'RUNNING') && (
                     <div className="flex items-center gap-2">
                       <button onClick={() => setStep(0)} className={WIZARD_SECONDARY}>
                         {t('back')}
                       </button>
                       <button
                         onClick={() => setStep(2)}
-                        className={`${WIZARD_PRIMARY} bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-bg)]`}
+                        className={`${WIZARD_PRIMARY} bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)]`}
                       >
                         {tx('continueToKeys', 'Continue to keys')}
                       </button>
@@ -554,36 +700,62 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                     <div className="space-y-3">
                       <div className="p-4 r-md bg-[var(--app-danger-subtle)] border border-[var(--app-danger-border)] space-y-2">
                         <p className="t-caption text-[var(--app-danger)] break-words">
-                          {tx('failedMsgPlain', 'Setup failed. Nothing was installed, so nothing was lost. Press Retry to try again.')}
+                          {/* A start failure is not an install failure: the image
+                              landed, so "nothing was installed" would be untrue.
+                              startFailure is a stable token, never copy, so it is
+                              mapped to wording here instead of printed. */}
+                          {startFailure
+                            ? tx('launchFailedPlain', 'Hermes did not start. Nothing was changed, so your setup is intact. Check the log below, then try again.')
+                            : tx('failedMsgPlain', 'Setup failed. Nothing was installed, so nothing was lost. Press Retry to try again.')}
                         </p>
-                        {installError && (
+                        {installErrorLine && (
                           <p className="t-micro font-mono text-[var(--app-text-muted)] break-words">
-                            {redactSecrets(installError)}
+                            {installErrorLine}
                           </p>
                         )}
                       </div>
-                      <p className="t-caption text-[var(--app-text-dim)]">
-                        {tx('installRetryHint', 'Retry resumes the download instead of starting over.')}
-                      </p>
+                      {!startFailure && (
+                        <p className="t-caption text-[var(--app-text-dim)]">
+                          {tx('installRetryHint', 'Retry resumes the download instead of starting over.')}
+                        </p>
+                      )}
                       <div className="flex items-center gap-2">
                         <button onClick={() => setStep(0)} className={WIZARD_SECONDARY}>
                           {t('back')}
                         </button>
-                        <button
-                          onClick={() => {
-                            if (isInstalling) return;
-                            installGateway();
-                          }}
-                          disabled={isInstalling}
-                          className={`${WIZARD_PRIMARY} bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-bg)]`}
-                        >
-                          {tx('retrySetupPlain', 'Retry setup')}
-                        </button>
+                        {startFailure ? (
+                          <button
+                            onClick={() => {
+                              // The image is already installed: start it and
+                              // let the launch step report the real outcome
+                              // instead of re-running setup.
+                              setStep(3);
+                              void handleLaunch();
+                            }}
+                            className={`${WIZARD_PRIMARY} bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)]`}
+                          >
+                            {tx('startHermesNow', 'Start Hermes')}
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => {
+                              if (isInstalling) return;
+                              installGateway();
+                            }}
+                            disabled={isInstalling}
+                            className={`${WIZARD_PRIMARY} bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)]`}
+                          >
+                            {tx('retrySetupPlain', 'Try setup again')}
+                          </button>
+                        )}
                       </div>
                     </div>
                   )}
 
-                  {install !== 'INSTALLED' && install !== 'INSTALLING' && install !== 'FAILED' && (
+                  {install !== 'INSTALLED' &&
+                    install !== 'RUNNING' &&
+                    install !== 'INSTALLING' &&
+                    install !== 'FAILED' && (
                     <button onClick={() => setStep(0)} className={`${WIZARD_SECONDARY} w-full`}>
                       {t('back')}
                     </button>
@@ -621,7 +793,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                         aria-pressed={customProvider}
                         className={`px-3 min-h-[44px] r-sm t-caption font-medium transition cursor-pointer ${
                           customProvider
-                            ? 'bg-[var(--app-accent)] text-[var(--app-bg)]'
+                            ? 'bg-[var(--app-accent)] text-[var(--app-on-accent)]'
                             : 'edge bg-[var(--app-card-subtle)] text-[var(--app-text-muted)] hover:text-[var(--app-text)]'
                         }`}
                       >
@@ -696,7 +868,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                       value={baseUrl}
                       onChange={(e) => setBaseUrl(e.target.value)}
                       onBlur={persistEnteredCredentials}
-                      placeholder="https://api.openai.com/v1"
+                      placeholder={tx('baseUrlPlaceholder', 'https://api.openai.com/v1')}
                       dir="ltr"
                       autoComplete="off"
                       className={`${WIZARD_FIELD} font-mono`}
@@ -772,7 +944,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                       }}
                       className={`${WIZARD_PRIMARY} ${
                         canSave
-                          ? 'bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-bg)]'
+                          ? 'bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)]'
                           : 'bg-[var(--app-card-subtle)] text-[var(--app-text-dim)] cursor-not-allowed'
                       }`}
                     >
@@ -872,7 +1044,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                     {connected ? (
                       <button
                         onClick={finishOnboarding}
-                        className={`${WIZARD_PRIMARY} bg-[var(--app-success)] hover:opacity-90 text-[var(--app-bg)]`}
+                        className={`${WIZARD_PRIMARY} bg-[var(--app-success-solid)] hover:opacity-90 text-[var(--app-on-success)]`}
                       >
                         <Check className="w-4 h-4 shrink-0" />
                         <span>{tx('finishSetup', 'Finish setup')}</span>
@@ -882,7 +1054,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                         onClick={handleLaunch}
                         disabled={launching}
                         aria-disabled={launching}
-                        className={`${WIZARD_PRIMARY} bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-bg)]`}
+                        className={`${WIZARD_PRIMARY} bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)]`}
                       >
                         <Check className="w-4 h-4 shrink-0" />
                         <span>{launching ? tx('launchingPlain', 'Starting…') : tx('startHermesNow', 'Start Hermes')}</span>
@@ -890,29 +1062,9 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                     )}
                   </div>
 
-                  {skipArmed && (
-                    <div
-                      role="alert"
-                      className="p-4 r-md bg-[var(--app-warning-subtle)] border border-[var(--app-warning-border)] t-caption text-[var(--app-warning)]"
-                    >
-                      {isOffline
-                        ? tx(
-                            'skipConfirmOfflinePlain',
-                            'You appear to be offline and Hermes is not running. Tap Skip for now again to open the app anyway. Chats will not work until Hermes runs.'
-                          )
-                        : tx(
-                            'skipConfirmOnlinePlain',
-                            'Hermes is not running yet. Tap Skip for now again to open the app without it. Chats will not work until Hermes runs.'
-                          )}
-                    </div>
-                  )}
+                  {skipConfirmBlock}
 
-                  <button
-                    onClick={handleSkip}
-                    className="w-full min-h-[44px] inline-flex items-center justify-center text-center t-caption text-[var(--app-text-muted)] hover:text-[var(--app-text)] cursor-pointer transition"
-                  >
-                    {tx('skipForNowPlain', 'Skip for now')}
-                  </button>
+                  {skipButton}
                 </div>
               </div>
             )}

@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronDown,
   CircleCheck,
+  CircleDashed,
   FileText,
   Globe,
   LoaderCircle,
@@ -15,7 +16,7 @@ import {
 import type { ChatMessage } from '../../types/hermes';
 import { withFallback, type Translate } from './translate';
 
-type ToolRunStatus = 'running' | 'done' | 'failed';
+type ToolRunStatus = 'running' | 'done' | 'failed' | 'unknown';
 
 interface ToolRun {
   name: string;
@@ -33,9 +34,12 @@ interface ToolExecutionsBlockProps {
 
 // A tool result that opens with one of these is a failed step. The check is
 // deliberately anchored to the start of the output so prose that merely
-// mentions an error is not reported as a failure.
+// mentions an error is not reported as a failure. Besides plain English it
+// covers JSON error shapes ({"error": …}, {"ok": false}, {"success": false},
+// {"status": "error"}), permission failures, Arabic failure words, and the
+// cross mark glyph.
 const FAILED_SHAPE =
-  /^\s*(?:error|failed|failure|exception|traceback|denied|refused|not found|no such file|timed out|timeout)\b/i;
+  /^\s*(?:[✗✘❌⨯]|"(?:error|errors)"\s*:|"(?:ok|success)"\s*:\s*false|\{[^}\n]{0,200}"(?:error|errors)"\s*:|\{[^}\n]{0,200}"(?:ok|success)"\s*:\s*false|\{[^}\n]{0,200}"status"\s*:\s*"(?:error|failed|failure)"|(?:error|failed|failure|exception|traceback|permission denied|operation not permitted|access denied|denied|refused|not found|no such file|timed out|timeout|EACCES|EPERM)\b|(?:خطأ|فشل|فاشل|مرفوض|ممنوع|تعذر|غير مصرح|غير مسموح|استثناء)(?![\p{L}\p{M}]))|(?:^|\s|[("'])(?:command not found|no such file or directory|npm ERR!|pip (?:ERROR|error)|exit (?:code|status)\s*\d+|returned (?:non-zero|a non-zero)|ENOENT|EACCES|EPERM|Traceback \(most recent call last\)|SyntaxError|TypeError|ReferenceError|ModuleNotFoundError|ImportError|FileNotFoundError|PermissionError|go: (?:.*: )?no |cargo: |error\[E\d+\]|FAILED\b)/iu;
 
 const PREVIEW_CHARS = 80;
 
@@ -59,12 +63,23 @@ const buildRuns = (
   });
 
   return names.map((name) => {
-    const output = toolOutputs.find((entry) => entry.toolName === name)?.output;
+    // A tool can run more than once in a turn; the newest result is the one
+    // still true. find() used to pin the first output, which left a retried
+    // step stuck on its oldest status and preview.
+    let output: string | undefined;
+    for (let i = toolOutputs.length - 1; i >= 0; i--) {
+      if (toolOutputs[i].toolName === name) {
+        output = toolOutputs[i].output;
+        break;
+      }
+    }
     const hasOutput = typeof output === 'string' && output.trim().length > 0;
+    // A finished turn with no output for a tool is Unknown, never Finished:
+    // a check mark would claim success nothing backs up.
     const status: ToolRunStatus = !hasOutput
       ? live
         ? 'running'
-        : 'done'
+        : 'unknown'
       : FAILED_SHAPE.test(output as string)
         ? 'failed'
         : 'done';
@@ -105,6 +120,8 @@ const StatusGlyph: React.FC<{ status: ToolRunStatus; label: string }> = ({ statu
       <XCircle className="w-3.5 h-3.5 text-[var(--app-danger)]" />
     ) : status === 'running' ? (
       <LoaderCircle className="w-3.5 h-3.5 text-[var(--app-accent-text)] animate-spin" />
+    ) : status === 'unknown' ? (
+      <CircleDashed className="w-3.5 h-3.5 text-[var(--app-text-muted)]" />
     ) : (
       <CircleCheck className="w-3.5 h-3.5 text-[var(--app-success)]" />
     );
@@ -132,10 +149,17 @@ export const ToolExecutionsBlock: React.FC<ToolExecutionsBlockProps> = ({
 }) => {
   const tx = withFallback(t);
   const [expanded, setExpanded] = useState(live);
+  // Once the user opens the block by hand it stays open: the live effect
+  // below must never auto-collapse it when the turn finishes.
+  const userOpenedRef = useRef(false);
+  const prevLiveRef = useRef(live);
   const runs = useMemo(() => buildRuns(tools, toolOutputs, live), [tools, toolOutputs, live]);
 
   useEffect(() => {
-    setExpanded(live);
+    if (live && !prevLiveRef.current) userOpenedRef.current = false;
+    prevLiveRef.current = live;
+    if (live) setExpanded(true);
+    else if (!userOpenedRef.current) setExpanded(false);
   }, [live]);
 
   if (runs.length === 0) return null;
@@ -154,7 +178,10 @@ export const ToolExecutionsBlock: React.FC<ToolExecutionsBlockProps> = ({
     <div className="mb-3 r-sm edge bg-[var(--app-card-subtle)] overflow-hidden">
       <button
         type="button"
-        onClick={() => setExpanded((value) => !value)}
+        onClick={() => {
+          userOpenedRef.current = true;
+          setExpanded((value) => !value);
+        }}
         aria-expanded={expanded}
         aria-label={tx('toolBlockAria', '{count} tools ran for this reply. Tap to {action} the list.')
           .replace('{count}', String(count))
@@ -179,14 +206,17 @@ export const ToolExecutionsBlock: React.FC<ToolExecutionsBlockProps> = ({
         <ul className="px-3 pb-3 space-y-1">
           {runs.map((run) => (
             <li key={run.name} className="flex items-center gap-2 min-w-0">
-              <span aria-hidden="true" className="shrink-0 inline-flex text-[var(--app-text-muted)]">
+              <span aria-hidden="true" className={`shrink-0 inline-flex ${run.status === 'running' ? 'text-[var(--app-accent-text)]' : 'text-[var(--app-text-muted)]'}`}>
                 <IconForTool name={run.name} />
               </span>
-              <span className="t-label text-[var(--app-text)] shrink-0 max-w-[45%] truncate">
+              <span className={`t-label shrink-0 max-w-[45%] truncate ${run.status === 'running' ? 'text-[var(--app-accent-text)]' : 'text-[var(--app-text)]'}`}>
                 {run.name}
               </span>
               {run.preview && (
-                <span className="t-caption font-mono text-[var(--app-text-muted)] truncate min-w-0 flex-1">
+                <span
+                  dir="auto"
+                  className="t-caption font-mono text-[var(--app-text-muted)] truncate min-w-0 flex-1 [unicode-bidi:plaintext]"
+                >
                   {run.preview}
                 </span>
               )}
@@ -198,7 +228,9 @@ export const ToolExecutionsBlock: React.FC<ToolExecutionsBlockProps> = ({
                       ? tx('toolStatusFailed', 'Failed')
                       : run.status === 'running'
                         ? tx('toolStatusRunning', 'Running')
-                        : tx('toolStatusDone', 'Finished')
+                        : run.status === 'unknown'
+                          ? tx('toolStatusUnknown', 'Unknown')
+                          : tx('toolStatusDone', 'Finished')
                   }
                 />
               </span>

@@ -114,6 +114,18 @@ export function providerHasCredential(
   return keysValid(profile.provider, resolveProviderKey(profile, secrets), baseUrl ?? profile.baseUrl ?? '');
 }
 
+/**
+ * Fingerprint of a provider profile and its current credential state.
+ * Changes on key rotation, provider switch, or profile edits.
+ */
+export function providerProfileFingerprint(
+  profile: ProviderProfile,
+  secrets: Record<string, string>
+): string {
+  const key = resolveProviderKey(profile, secrets);
+  return `${profile.id}:${normProvider(profile.provider)}:${profile.enabled !== false}:${profile.defaultModel || ''}:${(profile.baseUrl || '').trim()}:${key ? 'has_key:' + key.length : 'no_key'}:${key}`;
+}
+
 function ensureSecretRef(profile: ProviderProfile): ProviderProfile {
   if (isProviderSecretRef(profile.secretRef)) return profile;
   return { ...profile, secretRef: secretRefForProfile(profile.id) };

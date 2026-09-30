@@ -1,10 +1,10 @@
 // secureStore.ts
 // At-rest encryption for app secrets using WebCrypto only.
-// Key derivation: PBKDF2 (SHA-256, 120k iterations, random 16 byte salt)
+// Key derivation: PBKDF2 (SHA-256, 600k iterations, random 16 byte salt)
 // Cipher: AES-GCM-256 with a random 12 byte IV per encryption.
 // The salt, IV and ciphertext travel together as a base64 JSON envelope.
 
-const ITERATIONS = 120_000;
+const ITERATIONS = 600_000;
 const SALT_BYTES = 16;
 const IV_BYTES = 12;
 const SALT_STORAGE_KEY = "hermes.vault.salt";
@@ -22,6 +22,55 @@ interface VaultEnvelope {
 
 let sessionKey: CryptoKey | null = null;
 let sessionSalt: Uint8Array | null = null;
+
+// Hard purge: the WebCrypto key outlives every state blanking unless this
+// runs. Call on lock and on any failed unlock/decrypt.
+export function purgeSessionKey(): void {
+  sessionKey = null;
+  sessionSalt = null;
+}
+
+// Staged PIN rotation: derive under a fresh salt and swap the session key
+// WITHOUT committing salt/verifier yet, so the cipher can be re-encrypted
+// first. commitVaultRotation() lands salt+verifier only after the new cipher
+// saved; rollbackVaultRotation() restores the old key when the save fails.
+// Committing first (the old lockVault order) bricks the vault whenever the
+// cipher write fails afterwards.
+let stagedRotation: {
+  salt: Uint8Array;
+  key: CryptoKey;
+  verifier: string;
+  prevKey: CryptoKey | null;
+  prevSalt: Uint8Array | null;
+} | null = null;
+
+export async function stageVaultRotation(pin: string): Promise<void> {
+  const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES));
+  const key = await deriveKey(pin, salt);
+  const verifier = await encryptWithKey(key, salt, VERIFIER_PLAINTEXT);
+  stagedRotation = { salt, key, verifier, prevKey: sessionKey, prevSalt: sessionSalt };
+  sessionKey = key;
+  sessionSalt = salt;
+}
+
+export function commitVaultRotation(): void {
+  if (!stagedRotation) return;
+  try {
+    localStorage.setItem(SALT_STORAGE_KEY, bytesToBase64(stagedRotation.salt));
+    localStorage.setItem(VERIFIER_STORAGE_KEY, stagedRotation.verifier);
+  } catch {
+    rollbackVaultRotation();
+    throw new Error("Vault storage is unavailable");
+  }
+  stagedRotation = null;
+}
+
+export function rollbackVaultRotation(): void {
+  if (!stagedRotation) return;
+  sessionKey = stagedRotation.prevKey;
+  sessionSalt = stagedRotation.prevSalt;
+  stagedRotation = null;
+}
 
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
