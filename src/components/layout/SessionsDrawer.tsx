@@ -270,7 +270,11 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
 
   const handleFork = async (id: string) => {
     try {
+      // The context already selects the forked session; what was missing is
+      // closing the drawer, which left the user staring at the list with the
+      // copy open behind it and no sign the tap did anything.
       await forkSession(id);
+      onClose();
     } catch {
       showDrawerToast(tx('branchFailed', 'Could not start a copy of this chat. The original chat is unchanged.'), 'error');
     }

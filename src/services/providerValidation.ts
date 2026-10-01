@@ -30,10 +30,26 @@ export interface ProviderValidationCacheEntry {
 export const VALIDATION_MAX_AGE_MS = 5 * 60 * 1000;
 
 // Fingerprint covers exactly the fields that invalidate a validation:
-// normalized provider id, key presence/length is not enough, use the key
-// itself, plus baseUrl. Model changes do not invalidate.
+// normalized provider id, a key signature, plus baseUrl. Model changes do not
+// invalidate. The key itself never enters the string: fingerprints get
+// compared, cached and logged, so the credential must stay out of it.
 export function validationFingerprint(input: ProviderValidationInput): string {
-  return [normProvider(input.provider || ''), (input.apiKey || '').trim(), (input.baseUrl || '').trim()].join('|');
+  const key = (input.apiKey || '').trim();
+  return [
+    normProvider(input.provider || ''),
+    key ? `k${key.length}:${keySignature(key)}` : 'k0',
+    (input.baseUrl || '').trim(),
+  ].join('|');
+}
+
+/** FNV-1a hex digest: identity for change detection only, not a secret. */
+function keySignature(value: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < value.length; i++) {
+    h ^= value.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
 }
 
 export function shouldInvalidateValidation(

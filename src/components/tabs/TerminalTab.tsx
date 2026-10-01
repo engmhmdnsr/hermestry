@@ -48,9 +48,20 @@ const DEV_KEYS = ['Tab', 'Esc', '|', '~', '&&', '/', '\\', '-', '$', ';', '>', '
  * with a pointer to Chat, never faked and never silently dropped.
  */
 export const TerminalTab: React.FC = () => {
-  const { sessions, currentSessionId, models, connected, settings, approvals, t } =
+  const { sessions, currentSessionId, models, connected, gatewayState, settings, approvals, t } =
     useHermes();
   const autoApproveGlobal = settings.autoApproveGlobal === true;
+
+  // Reachable is not the same as working: a live port with the on-device
+  // gateway machine parked on FAILED/STOPPED/NOT_INSTALLED still answers, and
+  // printing ONLINE there would contradict Settings and the header. Only the
+  // states that positively mean "not serving" force the word down, so a web
+  // build without the native bridge is not painted offline by default.
+  const gatewayNotServing =
+    gatewayState === 'FAILED' ||
+    gatewayState === 'STOPPED' ||
+    gatewayState === 'NOT_INSTALLED';
+  const linkOk = connected && !gatewayNotServing;
 
   const tx = (key: string, fallback: string): string => {
     const v = t(key);
@@ -75,9 +86,20 @@ export const TerminalTab: React.FC = () => {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const connWord = connected
+  const connWord = linkOk
     ? tx('termOnline', 'ONLINE')
     : tx('termOffline', 'OFFLINE');
+
+  // One source for the version/boot line: the boot effect and the version
+  // command both print it, and two copies drift apart.
+  const bootLine = (): string => {
+    const tpl = t('termBoot');
+    const bootText = (tpl === 'termBoot' ? TERM_BOOT_FALLBACK : tpl).replace(
+      '{status}',
+      linkOk ? tx('termOnline', 'ONLINE') : tx('termOffline', 'OFFLINE')
+    );
+    return bootText;
+  };
 
   // Boot line is set once the first paint has the live connection state, so
   // it never prints a stale OFFLINE on a connected phone. termBoot carries
@@ -88,11 +110,7 @@ export const TerminalTab: React.FC = () => {
   useEffect(() => {
     if (booted) return;
     setBooted(true);
-    const tpl = t('termBoot');
-    const bootText = (tpl === 'termBoot' ? TERM_BOOT_FALLBACK : tpl).replace(
-      '{status}',
-      connected ? tx('termOnline', 'ONLINE') : tx('termOffline', 'OFFLINE')
-    );
+    const bootText = bootLine();
     setEntries((prev) =>
       prev.map((e) =>
         e.command === 'hermes --version' ? { ...e, output: bootText } : e
@@ -107,15 +125,11 @@ export const TerminalTab: React.FC = () => {
     if (!booted) return;
     setEntries((prev) => {
       if (prev.length !== 1 || prev[0].command !== 'hermes --version') return prev;
-      const tpl = t('termBoot');
-      const bootText = (tpl === 'termBoot' ? TERM_BOOT_FALLBACK : tpl).replace(
-        '{status}',
-        connected ? tx('termOnline', 'ONLINE') : tx('termOffline', 'OFFLINE')
-      );
+      const bootText = bootLine();
       return prev.map((e) => ({ ...e, output: bootText }));
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connected]);
+  }, [linkOk]);
 
   useEffect(() => {
     return () => {
@@ -236,41 +250,49 @@ export const TerminalTab: React.FC = () => {
     setHistory((prev) => [...prev, cmd]);
     setHistoryIndex(-1);
     setInput('');
-    const lower = cmd.toLowerCase();
-    if (lower === 'clear' || lower === 'cls') {
+    // Collapse inner whitespace and accept the documented 'hermes <verb>'
+    // form for every verb: the boot line advertises 'hermes --version' and
+    // 'hermes help', and both used to fall through to Unknown command.
+    const lower = cmd.toLowerCase().replace(/\s+/g, ' ');
+    const bare = lower.startsWith('hermes ') ? lower.slice(7).trim() : lower;
+    if (bare === 'clear' || bare === 'cls') {
       clearScreen(cmd);
       return;
     }
-    if (lower === 'help') {
+    if (bare === 'help' || bare === '--help' || bare === '-h') {
       push(cmd, helpText);
       return;
     }
-    if (lower === 'status' || lower === 'hermes status') {
+    if (bare === '--version' || bare === '-v' || bare === 'version') {
+      push(cmd, bootLine());
+      return;
+    }
+    if (bare === 'status') {
       push(cmd, statusText);
       return;
     }
-    if (lower === 'approval' || lower === 'approval status') {
+    if (bare === 'approval' || bare === 'approval status') {
       push(cmd, approvalText);
       return;
     }
-    if (lower === 'models' || lower === 'hermes models') {
+    if (bare === 'models') {
       push(cmd, modelsText);
       return;
     }
-    if (lower === 'sessions' || lower === 'hermes sessions') {
+    if (bare === 'sessions') {
       push(cmd, sessionsText);
       return;
     }
-    if (lower === 'ping') {
+    if (bare === 'ping') {
       push(
         cmd,
-        connected
+        linkOk
           ? `Gateway reachable (${tx('termOnDevice', 'on-device gateway')})`
           : tx('termPingDown', 'Gateway offline. Check Settings, Gateway.')
       );
       return;
     }
-    if (lower === 'history') {
+    if (bare === 'history') {
       // Read history state directly: pushing inside a setHistory updater
       // would double-fire under StrictMode and duplicate the log entry.
       const full = [...history, cmd];

@@ -123,7 +123,21 @@ export function providerProfileFingerprint(
   secrets: Record<string, string>
 ): string {
   const key = resolveProviderKey(profile, secrets);
-  return `${profile.id}:${normProvider(profile.provider)}:${profile.enabled !== false}:${profile.defaultModel || ''}:${(profile.baseUrl || '').trim()}:${key ? 'has_key:' + key.length : 'no_key'}:${key}`;
+  // The key itself must never enter the fingerprint: this string is compared,
+  // persisted and logged, so embedding the credential writes it in cleartext
+  // outside the vault. A short digest plus length still detects rotation.
+  const keySig = key ? `has_key:${key.length}:${keyDigest(key)}` : 'no_key';
+  return `${profile.id}:${normProvider(profile.provider)}:${profile.enabled !== false}:${profile.defaultModel || ''}:${(profile.baseUrl || '').trim()}:${keySig}`;
+}
+
+/** FNV-1a over the key, hex, truncated: identity for change detection only. */
+function keyDigest(value: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < value.length; i++) {
+    h ^= value.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
 }
 
 function ensureSecretRef(profile: ProviderProfile): ProviderProfile {
