@@ -11,9 +11,11 @@ interface ApprovalCardProps {
   // Optional failure copy for this approval (e.g. ChatTab's approvalFailures
   // entry). Rendered as role="alert" on the card itself.
   error?: string;
-  // True while this card's session-allow is armed and waiting for the
+  // True while this card's broad allow is armed and waiting for the
   // confirming second tap, so the button looks distinct from the unarmed one.
-  confirming?: boolean;
+  // The armed scope rides along: arming "this chat" must never confirm an
+  // "always" tap that follows, so the ring marks exactly the armed button.
+  confirmingScope?: 'session' | 'always' | null;
   // Optional i18n resolver (ChatTab's t). Falls back to document language
   // so the card never renders hardcoded copy when used standalone.
   t?: (key: string) => string;
@@ -53,7 +55,7 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
   onDeny,
   onAllow,
   error,
-  confirming = false,
+  confirmingScope = null,
   t,
 }) => {
   const tr: (key: string) => string =
@@ -65,6 +67,8 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
   const argsText = approval.args && approval.args.length > 0 ? approval.args.join(' ') : null;
   const fullCommand = [approval.command, argsText].filter(Boolean).join(' ');
   const disabled = resolving;
+  const armedRing =
+    'ring-2 ring-[var(--app-accent)] border-[var(--app-accent)]';
 
   // A destructive (high-risk) approval must not present Allow as the primary
   // action: Deny becomes the strong, expected button and Allow drops to the
@@ -168,9 +172,9 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
             // Armed for confirmation: the ring + brighter border is the only
             // change (no new copy), so the user can see the second tap is live.
             className={`flex-1 min-w-[45%] min-h-[44px] py-2 r-md t-caption font-semibold transition cursor-pointer disabled:opacity-50 ${allowSessionCls} ${
-              confirming ? 'ring-2 ring-[var(--app-accent)] border-[var(--app-accent)]' : ''
+              confirmingScope === 'session' ? armedRing : ''
             }`}
-            aria-pressed={confirming || undefined}
+            aria-pressed={confirmingScope === 'session' || undefined}
           >
             {tx('apprAllowSession', 'Allow for this chat')}
           </button>
@@ -182,7 +186,10 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
           <button
             onClick={() => onAllow(approval, 'always')}
             disabled={disabled}
-            className={`flex-1 min-w-[45%] min-h-[44px] py-2 r-md t-caption font-semibold transition cursor-pointer disabled:opacity-50 ${allowSessionCls}`}
+            className={`flex-1 min-w-[45%] min-h-[44px] py-2 r-md t-caption font-semibold transition cursor-pointer disabled:opacity-50 ${allowSessionCls} ${
+              confirmingScope === 'always' ? armedRing : ''
+            }`}
+            aria-pressed={confirmingScope === 'always' || undefined}
           >
             {tx('apprAllowAlways', 'Always allow')}
           </button>

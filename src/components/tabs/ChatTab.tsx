@@ -30,6 +30,7 @@ import {
   revokeRef,
 } from '../../services/attachmentRefs';
 import { ApprovalCard } from '../approvals/ApprovalCard';
+import { approvalKey } from '../approvals/pendingApprovals';
 import { useOverlayBehavior } from '../../hooks/useOverlayBehavior';
 import { isMachineFailure, isTransportFailure, plainGatewayFailure, plainResultLine, localizeAttachmentMessage } from '../../services/plainFailure';
 import { modelLabel } from '../../services/modelLabel';
@@ -237,7 +238,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   const [actionToast, setActionToast] = useState<string | null>(null);
   const [toastKind, setToastKind] = useState<'info' | 'success' | 'error'>('info');
   const [showEffortSheet, setShowEffortSheet] = useState(false);
-  const [confirmSessionRunId, setConfirmSessionRunId] = useState<string | null>(null);
+  const [confirmArm, setConfirmArm] = useState<{ key: string; scope: 'session' | 'always' } | null>(null);
   const [streamErrorDismissed, setStreamErrorDismissed] = useState<string | null>(null);
   const [stickToBottom, setStickToBottom] = useState(true);
   // Approvals: the count is always visible, the queue body is deliberately
@@ -943,17 +944,21 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   ) => {
     // Session-allow and always-allow are broad: require an explicit two-tap
     // confirm, and disarm automatically so an aged tap cannot silently widen
-    // the grant.
+    // the grant. The arm binds run AND scope: tapping session then always
+    // starts a new arm, it never inherits the session tap's confirmation.
+    const key = approvalKey(approval);
     const needsConfirm = allow && (scope === 'session' || scope === 'always');
-    if (needsConfirm && confirmSessionRunId !== approval.runId) {
-      setConfirmSessionRunId(approval.runId);
+    if (needsConfirm && (confirmArm?.key !== key || confirmArm?.scope !== scope)) {
+      setConfirmArm({ key, scope });
       if (confirmDisarmRef.current !== null) window.clearTimeout(confirmDisarmRef.current);
       confirmDisarmRef.current = window.setTimeout(() => {
         confirmDisarmRef.current = null;
-        setConfirmSessionRunId((cur) => (cur === approval.runId ? null : cur));
+        setConfirmArm((cur) => (cur?.key === key ? null : cur));
       }, 5000);
       showActionToast(
-        tx('approveSessionConfirm', 'Tap Allow for this chat again to confirm.'),
+        scope === 'always'
+          ? tx('approveAlwaysConfirm', 'Tap Always allow again to confirm.')
+          : tx('approveSessionConfirm', 'Tap Allow for this chat again to confirm.'),
         'info'
       );
       return;
@@ -962,30 +967,30 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       window.clearTimeout(confirmDisarmRef.current);
       confirmDisarmRef.current = null;
     }
-    setConfirmSessionRunId(null);
-    setResolvingRunId(approval.runId);
+    setConfirmArm(null);
+    setResolvingRunId(key);
     try {
       await resolveApproval(approval, allow, scope);
       // A card that is still pending means the gateway did not confirm the
       // decision. Report it on the card itself instead of letting the failure
       // hide in a chat bubble that is not persisted.
-      const prevTimer = approvalTimersRef.current.get(approval.runId);
+      const prevTimer = approvalTimersRef.current.get(key);
       if (prevTimer !== undefined) window.clearTimeout(prevTimer);
       const timer = window.setTimeout(() => {
-        approvalTimersRef.current.delete(approval.runId);
-        if (approvalsRef.current.some((a) => a.runId === approval.runId)) {
+        approvalTimersRef.current.delete(key);
+        if (approvalsRef.current.some((a) => approvalKey(a) === key)) {
           setApprovalFailures((prev) => ({
             ...prev,
-            [approval.runId]: tx(
+            [key]: tx(
               'approvalNotConfirmedPlain',
               'Hermes did not confirm this decision, so it is still waiting. Retry it, and check the connection if it repeats.'
             ),
           }));
         }
       }, 250);
-      approvalTimersRef.current.set(approval.runId, timer);
+      approvalTimersRef.current.set(key, timer);
     } finally {
-      setResolvingRunId((cur) => (cur === approval.runId ? null : cur));
+      setResolvingRunId((cur) => (cur === key ? null : cur));
     }
   };
 
@@ -2149,12 +2154,14 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           {approvalsExpanded && (
             <div className="px-3 pb-3 space-y-3">
               {pendingApprovals.map((approval) => (
-                <div key={approval.runId} className="space-y-2">
+                <div key={approvalKey(approval)} className="space-y-2">
                   <ApprovalCard
                     approval={approval}
-                    error={approvalFailures[approval.runId]}
-                    resolving={resolvingRunId === approval.runId}
-                    confirming={confirmSessionRunId === approval.runId}
+                    error={approvalFailures[approvalKey(approval)]}
+                    resolving={resolvingRunId === approvalKey(approval)}
+                    confirmingScope={
+                      confirmArm?.key === approvalKey(approval) ? confirmArm.scope : null
+                    }
                     onDeny={(a) => void handleResolveApproval(a, false)}
                     onAllow={(a, scope) => void handleResolveApproval(a, true, scope)}
                   />

@@ -57,9 +57,14 @@ export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChan
   // The gate stays mounted while the policy changes underneath (another
   // surface disables it, a profile switch reloads settings): the draft must
   // follow, or the checkboxes show a policy that is no longer live.
+  // Content-keyed, not ref-keyed: normalizePolicy builds a fresh array every
+  // render, so depending on the array identity would reset the user's
+  // in-progress draft on every render. The serialized key only moves when
+  // the actual policy content changes.
+  const policyKey = `${policy.enabled ? '1' : '0'}:${[...policy.scopes].sort().join(',')}`;
   useEffect(() => {
     setDraftScopes(policy.scopes);
-  }, [policy.enabled, policy.scopes]);
+  }, [policyKey]);
   const [ackRisk, setAckRisk] = useState(false);
   const [confirmText, setConfirmText] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -94,7 +99,9 @@ export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChan
   };
 
   const handleDisable = () => {
-    onChange({ enabled: false, scopes: [] });
+    // Disabling keeps the scope selection: re-enabling restores exactly what
+    // the user had, instead of punishing the kill-switch with lost config.
+    onChange({ enabled: false, scopes: [...policy.scopes] });
     setExpanded(false);
     setConfirmText('');
     setAckRisk(false);

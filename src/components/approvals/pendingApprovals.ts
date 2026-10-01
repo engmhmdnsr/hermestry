@@ -10,6 +10,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** Gateways emit either ms (camelCase) or Unix seconds (snake_case): values
+ *  below 1e11 can only be seconds, so promote them, or a seconds timestamp
+ *  reads as "1970" and the freshness filter drops a live card. */
+export function normTs(v: unknown): number | undefined {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return undefined;
+  return v < 1e11 ? Math.round(v * 1000) : Math.round(v);
+}
+
 /** True while an approval is young enough to still be actionable. A row with
  *  no timestamp is treated as fresh (the gateway omitted it). */
 export function isApprovalFresh(a: PendingApproval, now = Date.now()): boolean {
@@ -44,7 +52,7 @@ export function sanitizeApproval(raw: unknown): PendingApproval | null {
     risk: typeof raw.risk === 'string' ? raw.risk : undefined,
     cwd: typeof raw.cwd === 'string' ? raw.cwd : undefined,
     reason: typeof raw.reason === 'string' ? raw.reason : undefined,
-    createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : undefined,
+    createdAt: normTs(raw.createdAt ?? (raw as Record<string, unknown>).created_at),
     choices,
   };
 }
@@ -86,15 +94,17 @@ export function reconcilePending(
   fresh: PendingApproval[],
   keepNewerThan = 0
 ): PendingApproval[] {
-  const freshById = new Map(fresh.map((a) => [a.runId, a]));
+  const freshByKey = new Map(fresh.map((a) => [approvalKey(a), a]));
   const merged: PendingApproval[] = fresh
     .map((a) => ({ ...a }))
     .filter((a) => isApprovalFresh(a));
-  const freshIds = new Set(freshById.keys());
+  const freshKeys = new Set(freshByKey.keys());
   for (const c of cached) {
-    if (!c.runId || freshIds.has(c.runId)) continue;
+    if (!c.runId || freshKeys.has(approvalKey(c))) continue;
     if (!isApprovalFresh(c)) continue;
-    if (keepNewerThan > 0 && (c.createdAt ?? 0) >= keepNewerThan) {
+    // A cached card without a timestamp carries no age signal: keep it, so a
+    // missing field can never read as "older than everything".
+    if (keepNewerThan > 0 && (c.createdAt ?? Number.MAX_SAFE_INTEGER) >= keepNewerThan) {
       merged.push({ ...c });
     }
   }
@@ -102,11 +112,19 @@ export function reconcilePending(
   return merged;
 }
 
+// Identity covers the action, not just the run: one run may hold several
+// approvals (e.g. read x, then write y), and dedupe by runId alone would
+// swallow every approval after the first.
+export function approvalKey(a: Pick<PendingApproval, 'runId' | 'tool' | 'command'>): string {
+  return `${a.runId}::${a.tool ?? ''}::${a.command ?? ''}`;
+}
+
 export function mergeIncoming(
   current: PendingApproval[],
   incoming: PendingApproval
 ): PendingApproval[] {
-  if (current.some((a) => a.runId === incoming.runId)) return current;
+  const key = approvalKey(incoming);
+  if (current.some((a) => approvalKey(a) === key)) return current;
   return [...current, incoming];
 }
 

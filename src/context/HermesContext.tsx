@@ -64,11 +64,11 @@ import {
   cachePending,
   reconcilePending,
   mergeIncoming,
+  removeResolved,
 } from '../components/approvals/pendingApprovals';
 import {
   normalizePolicy,
   isScopeAllowed,
-  isApprovalScope,
   fromLegacyGlobal,
   DEFAULT_AUTO_APPROVE_POLICY,
   type AutoApprovePolicy,
@@ -371,7 +371,7 @@ interface HermesContextType {
   queueMessage: (text: string, imageDataUrls?: string[]) => boolean;
   cancelQueued: () => void;
   stopStream: () => Promise<void>;
-  resolveApproval: (approval: PendingApproval, allow: boolean, mode?: string) => Promise<void>;
+  resolveApproval: (approval: PendingApproval, allow: boolean, mode?: string) => Promise<'ok' | 'resolved' | 'failed'>;
   
   // Vault (encrypted secrets live decrypted only in memory refs)
   vaultUnlocked: boolean;
@@ -839,6 +839,9 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // runIds already pushed to the system alert channel: the in-app list can
   // re-render freely, but each approval notifies at most once per session.
   const notifiedApprovalIdsRef = useRef<Set<string>>(new Set());
+  // Latest run id seen on the wire this turn: the runTurn finally block
+  // purges that run's cards, and it lives outside streamTurnViaSse's scope.
+  const seenRunIdRef = useRef<string>('');
   // Guards the approvals cache write-back until the startup hydration below
   // has run once (otherwise the initial [] would clobber the stored cache).
   const approvalsHydratedRef = useRef<boolean>(false);
@@ -2768,6 +2771,19 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   };
 
+  // A dead run's cards decide nothing: purge them wherever a run dies
+  // (stop, stream end, session switch, terminal SSE events), so no card
+  // outlives the run that asked for it. The notify tombstone goes too, so
+  // a retried run may alert again.
+  const purgeApprovalsForRun = (deadRunId: string) => {
+    notifiedApprovalIdsRef.current.delete(deadRunId);
+    setApprovals((prev) => {
+      const next = removeResolved(prev, deadRunId);
+      if (next.length !== prev.length) cachePending(next);
+      return next;
+    });
+  };
+
   const selectSession = (id: string) => {
     // Capture the in-flight turn before anything below runs: aborting is what
     // makes its async tail fire, and by the time those callbacks run chat and
@@ -2790,6 +2806,9 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         if (!confirmed) addLog(`Stop for run ${stopping} did not confirm; it may have already finished.`);
       });
       setActiveRunId(null);
+      // The old run's cards belong to the old session: they go with it, so
+      // the new chat never inherits decisions nothing is waiting for.
+      purgeApprovalsForRun(stopping);
     }
     streamingRef.current = false;
     setStreaming(false);
@@ -3012,20 +3031,41 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // when nothing matches: unmapped capabilities default to manual approval
   // (deny), never to auto-allow.
   const approvalScopeOf = (req: PendingApproval): AutoApproveScope | null => {
-    const tool = (req.tool || '').toLowerCase();
+    const norm = (s: string) => s.toLowerCase().replace(/[_-]+/g, ' ');
+    const toolN = norm(req.tool || '');
     const cmd = (req.command || '').toLowerCase();
     // args carry the real payload ('powershell', '-Command', the script):
     // classifying on tool+command alone misses interpreters entirely.
     const argText = (req.args || []).join(' ');
-    const hay = `${tool} ${cmd} ${argText} ${req.path || ''} ${req.summary}`.toLowerCase();
+    // The free-text summary is LLM prose and never classifies: benign verbs
+    // in a description ("show disk status") must not move a dangerous action
+    // into a lesser scope. Identifier glue (run_command) normalizes to
+    // spaces so executor names match their spaced keyword forms.
+    const hay = norm(`${req.tool || ''} ${cmd} ${argText} ${req.path || ''}`);
+    // An executor TOOL NAME is decisive on its own, whatever the args say:
+    // run_command running 'cat /etc/shadow' is exec, not read.
+    if (
+      /(^|[^a-z])(run command|command runner|exec(ute|utor)?|shell|bash|powershell|pwsh|terminal|process|cli|interpreter|subprocess|eval)([^a-z]|$)/.test(
+        toolN
+      )
+    )
+      return 'exec';
+    // A mutator TOOL NAME is decisive too: update_file on 'src/list.ts' is
+    // write even though the path contains the read verb 'list'.
+    if (
+      /(^|[^a-z])(write|edit|create|update|save|append|delete|remove|patch|truncate|touch|mkdir)([^a-z]|$)/.test(
+        toolN
+      )
+    )
+      return 'write';
     // Bare 'install' alone is often a noun ('the install failed'); require a
     // verb-object shape or a package-manager command to call it install.
     if (/(^|[^a-z])(apt( |-get)? |brew |npm (i|install|clean-install) |pip install |cargo add |to install |install (the|a|an|this|that|these|those|all|latest|new|missing|required|dependencies|packages?|modules?|\S+@\S+) )/.test(hay)) return 'install';
-    if (/(^|[^a-z])(exec|execute|shell|bash|sh -|powershell|pwsh|cmd(\.exe)?|python3?|node|perl|ruby|osascript|terminal|run command)([^a-z]|$)/.test(hay)) return 'exec';
+    if (/(^|[^a-z])(exec|execute|shell|bash|sh -|powershell|pwsh|cmd(\.exe)?|python3?|node|perl|ruby|osascript|terminal|run command|rm|mv|cp|sudo|chmod|chown|kill|pkill|dd)([^a-z]|$)/.test(hay)) return 'exec';
     // Write before network: an action doing both ('download and write file')
     // must classify as the more privileged one, never the lesser.
-    if (/(^|[^a-z])(write|edit|create|delete|remove|mkdir|apply_patch)([^a-z]|$)/.test(hay)) return 'write';
-    if (/(^|[^a-z])(fetch|http|curl|wget|network|download|request)([^a-z]|$)/.test(hay)) return 'network';
+    if (/(^|[^a-z])(write|edit|create|update|save|append|delete|remove|mkdir|apply_patch|apply patch|patch|truncate|touch)([^a-z]|$)/.test(hay)) return 'write';
+    if (/(^|[^a-z])(fetch|https?|curl|wget|network|download|request)([^a-z]|$)/.test(hay)) return 'network';
     if (/(^|[^a-z])(read|list|glob|grep|search|show|cat)([^a-z]|$)/.test(hay)) return 'read';
     return null;
   };
@@ -3104,10 +3144,16 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     let failedMessage: string | null = null;
     let stoppedByServer = false;
     let sawTerminal = false;
+    // Every event carrying this turn's run id refreshes it: the runTurn
+    // finally block purges that run's cards, so a card never outlives a
+    // stream that died while the decision was still pending.
     const dispatchEvent = (ev: { event: string; json: unknown; data?: string }) => {
       const data = asRecord(ev.json);
       const runId = asString(data.run_id);
-      if (runId) callbacks.onRunId?.(runId);
+      if (runId) {
+        callbacks.onRunId?.(runId);
+        seenRunIdRef.current = runId;
+      }
       const usage = asRecord(data.usage);
       if (typeof usage.input_tokens === 'number' || typeof usage.output_tokens === 'number') {
         callbacks.onUsage(Number(usage.input_tokens || 0), Number(usage.output_tokens || 0));
@@ -3178,6 +3224,8 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               'errServerMessagePlain',
               'The Hermes server or the provider returned an error. Retry, and check the connection if it repeats.'
             );
+          // The turn is dead: its cards decide nothing anymore.
+          if (runId) purgeApprovalsForRun(runId);
           break;
         }
         case 'run.cancelled':
@@ -3185,6 +3233,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         case 'cancelled':
         case 'stop': {
           stoppedByServer = true;
+          if (runId) purgeApprovalsForRun(runId);
           break;
         }
         default: {
@@ -3316,14 +3365,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setStreaming(false);
     if (runId) {
       setActiveRunId(null);
-      // A cancelled run can no longer consume an approval: leaving its card
-      // up offers a decision that nothing is waiting for. The server releases
-      // the approval event on stop, so the card goes with the run.
-      setApprovals((prev) => {
-        const next = prev.filter((a) => a.runId !== runId);
-        if (next.length !== prev.length) cachePending(next);
-        return next;
-      });
+      purgeApprovalsForRun(runId);
     }
     dropQueued('stream stopped');
     // Mark pending assistant message as finished thinking, and flag the
@@ -3377,6 +3419,9 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     // cancelled turn settling late cannot clear the newer turn's run id,
     // abort handle or bubble.
     const turnToken = ++turnTokenRef.current;
+    // New turn, new run identity: the previous turn's id must not leak into
+    // this turn's end-of-stream purge.
+    seenRunIdRef.current = '';
     const userMessage: ChatMessage = {
       id: userMsgId,
       sender: 'you',
@@ -3432,13 +3477,6 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const startTime = Date.now();
     const activeModel = settingsRef.current.modelId;
     const activeEffort = settingsRef.current.reasoningEffort;
-    // Scoped auto-approve: the legacy global maps to a disabled policy
-    // (fromLegacyGlobal), so only an explicit policy with matching scopes
-    // auto-allows; unmapped capabilities default to manual approval.
-    const autoPolicy = normalizePolicy(
-      (settingsRef.current as unknown as { autoApprovePolicy?: unknown }).autoApprovePolicy ??
-        fromLegacyGlobal(settingsRef.current.autoApproveGlobal)
-    );
     setTurnMeta((prev) => ({
       ...prev,
       [agentMsgId]: { model: activeModel, durationMs: 0 },
@@ -3550,26 +3588,35 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           setUsageOut((prev) => prev + outp);
         },
         onApproval: (req) => {
+          // Fresh policy per decision, not the turn-start snapshot: flipping
+          // the switch mid-turn must take effect on the NEXT approval, or
+          // the emergency kill-switch is decorative until the turn ends.
+          const livePolicy = normalizePolicy(
+            (settingsRef.current as unknown as { autoApprovePolicy?: unknown }).autoApprovePolicy ??
+              fromLegacyGlobal(settingsRef.current.autoApproveGlobal)
+          );
           const scope = approvalScopeOf(req);
-          if (scope && isScopeAllowed(autoPolicy, scope)) {
-            // Auto-approvals default to 'once'. The user's configured scope
-            // (Settings: Approval Scope) is honoured when it is a valid
-            // value, so a session-scope preference is not silently ignored.
-            const savedScope = (settingsRef.current as unknown as { approvalScope?: unknown }).approvalScope;
-            const grantScope: 'once' | 'session' = isApprovalScope(savedScope) ? savedScope : 'once';
-            // resolveApproval logs its own gateway failures; this only stops
-            // an unexpected throw in this stream callback from escaping as an
-            // unhandled rejection (a bare fire-and-forget would do that).
-            void resolveApproval(req, true, grantScope).catch(() => {
-              // Auto-approve could not be delivered: the run stays blocked
-              // waiting on this approval, so the card must reappear for a
-              // manual decision instead of vanishing into a silent catch.
-              setApprovals((prev) => {
-                const merged = mergeIncoming(prev, req);
-                cachePending(merged);
-                return merged;
-              });
-              addLog(`Auto-approval failed for ${req.runId}: awaiting manual decision.`);
+          // A gateway/model risk flag outranks every auto-approve toggle:
+          // high-risk actions always need a human tap.
+          const risk = (req.risk || '').toLowerCase();
+          const highRisk = risk === 'high' || risk === 'critical' || risk === 'severe';
+          if (scope && !highRisk && isScopeAllowed(livePolicy, scope)) {
+            // Auto-approvals always grant 'once': a session grant would hand
+            // the tool server-side execution rights for the rest of the
+            // session with no human ever tapping anything.
+            // resolveApproval never rejects (it returns its outcome), so the
+            // fallback rides on the resolved value: a failed auto-approval
+            // reappears as a manual card instead of blocking the turn
+            // forever behind an invisible decision.
+            void resolveApproval(req, true, 'once').then((outcome) => {
+              if (outcome === 'failed') {
+                setApprovals((prev) => {
+                  const merged = mergeIncoming(prev, req);
+                  cachePending(merged);
+                  return merged;
+                });
+                addLog(`Auto-approval failed for ${req.runId}: awaiting manual decision.`);
+              }
             });
           } else {
             // Closed-app path: the in-app card is invisible, so a best-effort
@@ -3651,6 +3698,11 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           setActiveRunId(null);
           lastAgentMsgIdRef.current = null;
           abortControllerRef.current = null;
+          // A stream that ended (or died) with a decision still pending
+          // leaves a card nothing will ever consume: it goes with the run.
+          // (A live approval keeps the stream open server-side, so reaching
+          // here with cards means this run will never ask again.)
+          if (seenRunIdRef.current) purgeApprovalsForRun(seenRunIdRef.current);
         }
         // Drain any deltas still buffered before turn bookkeeping runs.
         flushStreamBuffers();
@@ -3975,7 +4027,11 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return false;
   };
 
-  const resolveApproval = async (approval: PendingApproval, allow: boolean, mode: string = 'once') => {
+  const resolveApproval = async (
+    approval: PendingApproval,
+    allow: boolean,
+    mode: string = 'once'
+  ): Promise<'ok' | 'resolved' | 'failed'> => {
     let outcome: 'ok' | 'resolved' | 'failed' = 'failed';
     try {
       outcome = await gatewayService.resolveApproval(approval.runId, allow, mode);
@@ -3983,7 +4039,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       outcome = 'failed';
     }
     if (outcome === 'ok' || outcome === 'resolved') {
-      setApprovals((prev) => prev.filter((a) => a.runId !== approval.runId));
+      setApprovals((prev) => removeResolved(prev, approval.runId));
       // Release the notify tombstone: a reused runId must be able to alert
       // again, and the set must not grow for the life of the session.
       notifiedApprovalIdsRef.current.delete(approval.runId);
@@ -4004,6 +4060,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         ),
       );
     }
+    return outcome;
   };
 
   // Jobs Actions

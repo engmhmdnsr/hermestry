@@ -654,7 +654,15 @@ export class GatewayService {
       choices: Array.isArray(raw.choices)
         ? raw.choices.map((c: unknown) => String(c))
         : undefined,
-      createdAt: typeof raw.created_at === 'number' ? raw.created_at : Date.now(),
+      // This gateway emits Unix seconds while the app clocks ms: values below
+      // 1e11 can only be seconds, so promote them, or a live card reads as
+      // "1970" and the freshness filter drops it on arrival.
+      createdAt:
+        typeof raw.created_at === 'number'
+          ? raw.created_at < 1e11
+            ? Math.round(raw.created_at * 1000)
+            : Math.round(raw.created_at)
+          : Date.now(),
     };
   }
 
