@@ -7,6 +7,10 @@ import { plainResultLine } from './plainFailure';
 export interface NativeGatewayStatus {
   running: boolean;
   state: string;
+  // Secure-store health (present on native status()): when the Keystore is
+  // unavailable every secret write is refused, so the UI must say so.
+  secureStoreFallback?: boolean;
+  secureStoreError?: string;
 }
 
 export interface NativeStopVerification {

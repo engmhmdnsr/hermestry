@@ -983,6 +983,10 @@ export const SettingsTab: React.FC = () => {
   // feeds it while the user scrolls, and a chip tap or an opening card moves
   // it immediately. Collapse state stays independent (aria-expanded per chip).
   const [currentSection, setCurrentSection] = useState<SectionId>('connection');
+  // Secure-store health from the native status report: while the Keystore is
+  // unavailable every secret save is refused, so the connection section says
+  // so persistently instead of letting each save fail unexplained.
+  const [secureStoreFallback, setSecureStoreFallback] = useState(false);
   // The provider row's overflow menu, one open sheet at a time.
   const [menuProviderId, setMenuProviderId] = useState<string | null>(null);
   const pendingScrollRef = useRef<SectionId | null>(null);
@@ -1678,6 +1682,28 @@ export const SettingsTab: React.FC = () => {
   const listStateFrom = (live: boolean, count: number): DataState =>
     live ? (count === 0 ? 'empty' : 'ready') : connected ? 'error' : 'offline';
 
+  // Poll the native secure-store flag while this tab is mounted (native
+  // only): fallback is rare and sticky, so a light 15s poll is enough to
+  // raise and clear the banner without a status round-trip per render.
+  useEffect(() => {
+    if (!isNativeGateway()) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const st = await nativeStatus();
+        if (!cancelled) setSecureStoreFallback(st.secureStoreFallback === true);
+      } catch {
+        // A failed poll says nothing: keep the last known flag.
+      }
+    };
+    void poll();
+    const timer = window.setInterval(poll, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
   useEffect(() => {
     const ctrl = new AbortController();
     const { signal } = ctrl;
@@ -2298,6 +2324,16 @@ export const SettingsTab: React.FC = () => {
         id={sectionDomId('connection')}
         badge={activeProvider ? <Badge tone="accent">{t('active')}</Badge> : undefined}
       >
+        {secureStoreFallback && (
+          <Row>
+            <div className="r-sm border border-[var(--app-danger-border)] bg-[var(--app-danger-subtle)] px-4 py-3">
+              <p className="t-label text-[var(--app-danger)]">{tx('secureStoreTitle', 'Encrypted storage unavailable')}</p>
+              <p className="t-caption text-[var(--app-text-muted)] mt-1">
+                {tx('secureStoreBody', 'Keys cannot be saved on this device right now. Saved providers keep working.')}
+              </p>
+            </div>
+          </Row>
+        )}
         <Row>
           <div className="flex items-start justify-between gap-3">
             <div>
