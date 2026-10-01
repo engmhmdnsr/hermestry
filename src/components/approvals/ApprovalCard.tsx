@@ -7,10 +7,13 @@ interface ApprovalCardProps {
   approval: PendingApproval;
   resolving?: boolean;
   onDeny: (approval: PendingApproval) => void;
-  onAllow: (approval: PendingApproval, scope: 'once' | 'session') => void;
+  onAllow: (approval: PendingApproval, scope: 'once' | 'session' | 'always') => void;
   // Optional failure copy for this approval (e.g. ChatTab's approvalFailures
   // entry). Rendered as role="alert" on the card itself.
   error?: string;
+  // True while this card's session-allow is armed and waiting for the
+  // confirming second tap, so the button looks distinct from the unarmed one.
+  confirming?: boolean;
   // Optional i18n resolver (ChatTab's t). Falls back to document language
   // so the card never renders hardcoded copy when used standalone.
   t?: (key: string) => string;
@@ -50,6 +53,7 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
   onDeny,
   onAllow,
   error,
+  confirming = false,
   t,
 }) => {
   const tr: (key: string) => string =
@@ -65,7 +69,9 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
   // A destructive (high-risk) approval must not present Allow as the primary
   // action: Deny becomes the strong, expected button and Allow drops to the
   // neutral treatment so the safer choice is the visually obvious one.
-  const destructive = (approval.risk || '').toLowerCase() === 'high';
+  const destructive = ['high', 'critical', 'severe'].includes(
+    (approval.risk || '').toLowerCase()
+  );
   const riskLabel = (() => {
     const r = (approval.risk || '').toLowerCase();
     if (r === 'high') return tx('apprRiskHigh', 'High');
@@ -137,18 +143,18 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
           {error}
         </p>
       )}
-      <div className="flex items-center gap-2 mt-3 pt-2 hairline border-t">
+      <div className="flex flex-wrap items-center gap-2 mt-3 pt-2 hairline border-t">
         <button
           onClick={() => onDeny(approval)}
           disabled={disabled}
-          className={`flex-1 min-h-[44px] py-2 r-md t-caption font-medium transition cursor-pointer disabled:opacity-50 ${denyCls}`}
+          className={`flex-1 min-w-[45%] min-h-[44px] py-2 r-md t-caption font-medium transition cursor-pointer disabled:opacity-50 ${denyCls}`}
         >
           {tr('deny')}
         </button>
         <button
           onClick={() => onAllow(approval, 'once')}
           disabled={disabled}
-          className={`flex-1 min-h-[44px] py-2 r-md t-caption font-semibold transition cursor-pointer disabled:opacity-50 ${allowOnceCls}`}
+          className={`flex-1 min-w-[45%] min-h-[44px] py-2 r-md t-caption font-semibold transition cursor-pointer disabled:opacity-50 ${allowOnceCls}`}
         >
           {tx('apprAllowOnce', 'Allow once')}
         </button>
@@ -159,9 +165,26 @@ export const ApprovalCard: React.FC<ApprovalCardProps> = ({
           <button
             onClick={() => onAllow(approval, 'session')}
             disabled={disabled}
-            className={`flex-1 min-h-[44px] py-2 r-md t-caption font-semibold transition cursor-pointer disabled:opacity-50 ${allowSessionCls}`}
+            // Armed for confirmation: the ring + brighter border is the only
+            // change (no new copy), so the user can see the second tap is live.
+            className={`flex-1 min-w-[45%] min-h-[44px] py-2 r-md t-caption font-semibold transition cursor-pointer disabled:opacity-50 ${allowSessionCls} ${
+              confirming ? 'ring-2 ring-[var(--app-accent)] border-[var(--app-accent)]' : ''
+            }`}
+            aria-pressed={confirming || undefined}
           >
             {tx('apprAllowSession', 'Allow for this chat')}
+          </button>
+        )}
+        {/* Desktop parity: 'always' widens the grant beyond this chat. The
+            gateway advertises it in choices; a mode it did not offer, or a
+            room-scoped approval, stays hidden rather than dead. */}
+        {(!approval.choices || approval.choices.includes('always')) && (
+          <button
+            onClick={() => onAllow(approval, 'always')}
+            disabled={disabled}
+            className={`flex-1 min-w-[45%] min-h-[44px] py-2 r-md t-caption font-semibold transition cursor-pointer disabled:opacity-50 ${allowSessionCls}`}
+          >
+            {tx('apprAllowAlways', 'Always allow')}
           </button>
         )}
       </div>

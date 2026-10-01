@@ -283,7 +283,11 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   // pending copy or approval re-check instead of firing it into a component
   // that is already gone.
   const copiedTimerRef = useRef<number | null>(null);
-  const approvalTimerRef = useRef<number | null>(null);
+  // One timer PER approval run: a shared ref let one card's resolve check
+  // cancel another card's, so a failed decision on A could hide behind B.
+  const approvalTimersRef = useRef<Map<string, number>>(new Map());
+  // Disarm an armed session-confirm when the user walks away from the card.
+  const confirmDisarmRef = useRef<number | null>(null);
   const getDraftRef = useRef(getDraft);
   getDraftRef.current = getDraft;
   // Latest turn metadata for the stop announcement. Kept in a ref so the
@@ -344,7 +348,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       stagedBySessionRef.current.clear();
       if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
       if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
-      if (approvalTimerRef.current !== null) window.clearTimeout(approvalTimerRef.current);
+      approvalTimersRef.current.forEach((id) => window.clearTimeout(id));
+      approvalTimersRef.current.clear();
+      if (confirmDisarmRef.current !== null) window.clearTimeout(confirmDisarmRef.current);
       if (window.speechSynthesis) window.speechSynthesis.cancel();
       try {
         void getNativeSpeechBridge()?.ttsStop?.();
@@ -933,16 +939,28 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   const handleResolveApproval = async (
     approval: PendingApproval,
     allow: boolean,
-    scope?: 'once' | 'session'
+    scope?: 'once' | 'session' | 'always'
   ) => {
-    // Session-allow is broad: require an explicit two-tap confirm.
-    if (allow && scope === 'session' && confirmSessionRunId !== approval.runId) {
+    // Session-allow and always-allow are broad: require an explicit two-tap
+    // confirm, and disarm automatically so an aged tap cannot silently widen
+    // the grant.
+    const needsConfirm = allow && (scope === 'session' || scope === 'always');
+    if (needsConfirm && confirmSessionRunId !== approval.runId) {
       setConfirmSessionRunId(approval.runId);
+      if (confirmDisarmRef.current !== null) window.clearTimeout(confirmDisarmRef.current);
+      confirmDisarmRef.current = window.setTimeout(() => {
+        confirmDisarmRef.current = null;
+        setConfirmSessionRunId((cur) => (cur === approval.runId ? null : cur));
+      }, 5000);
       showActionToast(
         tx('approveSessionConfirm', 'Tap Allow for this chat again to confirm.'),
         'info'
       );
       return;
+    }
+    if (confirmDisarmRef.current !== null) {
+      window.clearTimeout(confirmDisarmRef.current);
+      confirmDisarmRef.current = null;
     }
     setConfirmSessionRunId(null);
     setResolvingRunId(approval.runId);
@@ -951,9 +969,10 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       // A card that is still pending means the gateway did not confirm the
       // decision. Report it on the card itself instead of letting the failure
       // hide in a chat bubble that is not persisted.
-      if (approvalTimerRef.current !== null) window.clearTimeout(approvalTimerRef.current);
-      approvalTimerRef.current = window.setTimeout(() => {
-        approvalTimerRef.current = null;
+      const prevTimer = approvalTimersRef.current.get(approval.runId);
+      if (prevTimer !== undefined) window.clearTimeout(prevTimer);
+      const timer = window.setTimeout(() => {
+        approvalTimersRef.current.delete(approval.runId);
         if (approvalsRef.current.some((a) => a.runId === approval.runId)) {
           setApprovalFailures((prev) => ({
             ...prev,
@@ -964,6 +983,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           }));
         }
       }, 250);
+      approvalTimersRef.current.set(approval.runId, timer);
     } finally {
       setResolvingRunId((cur) => (cur === approval.runId ? null : cur));
     }
@@ -2134,6 +2154,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                     approval={approval}
                     error={approvalFailures[approval.runId]}
                     resolving={resolvingRunId === approval.runId}
+                    confirming={confirmSessionRunId === approval.runId}
                     onDeny={(a) => void handleResolveApproval(a, false)}
                     onAllow={(a, scope) => void handleResolveApproval(a, true, scope)}
                   />

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AlertTriangle, Check } from 'lucide-react';
 import {
   AUTO_APPROVE_SCOPES,
@@ -54,6 +54,12 @@ export const AutoApproveGate: React.FC<AutoApproveGateProps> = ({ policy, onChan
     tr(key).replace('{phrase}', `⁨${CONFIRM_PHRASE}⁩`);
   const [expanded, setExpanded] = useState(false);
   const [draftScopes, setDraftScopes] = useState<AutoApproveScope[]>(policy.scopes);
+  // The gate stays mounted while the policy changes underneath (another
+  // surface disables it, a profile switch reloads settings): the draft must
+  // follow, or the checkboxes show a policy that is no longer live.
+  useEffect(() => {
+    setDraftScopes(policy.scopes);
+  }, [policy.enabled, policy.scopes]);
   const [ackRisk, setAckRisk] = useState(false);
   const [confirmText, setConfirmText] = useState('');
   const [error, setError] = useState<string | null>(null);

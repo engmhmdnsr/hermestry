@@ -2,8 +2,18 @@ import type { PendingApproval } from '../../types/hermes';
 
 export const PENDING_APPROVALS_KEY = 'hermes_pending_approvals';
 
+/** Approvals older than this are dead context: the run is gone and the user
+ *  has moved on. Dropped on load, on reconcile and on resolve. */
+export const APPROVAL_TTL_MS = 24 * 60 * 60 * 1000;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** True while an approval is young enough to still be actionable. A row with
+ *  no timestamp is treated as fresh (the gateway omitted it). */
+export function isApprovalFresh(a: PendingApproval, now = Date.now()): boolean {
+  return (a.createdAt ?? now) + APPROVAL_TTL_MS > now;
 }
 
 export function sanitizeApproval(raw: unknown): PendingApproval | null {
@@ -14,6 +24,14 @@ export function sanitizeApproval(raw: unknown): PendingApproval | null {
   const summary = raw.summary ?? raw.description ?? raw.command;
   const args = Array.isArray(raw.args)
     ? raw.args.map((a) => String(a))
+    : undefined;
+  // Choice sets come back as plain strings on this gateway; a nested object
+  // form is tolerated by stringifying nothing at all (dropped) rather than
+  // rendering "[object Object]" as a button label.
+  const choices = Array.isArray(raw.choices)
+    ? raw.choices
+        .map((c) => (typeof c === 'string' ? c : ''))
+        .filter((c) => c.length > 0)
     : undefined;
   return {
     runId,
@@ -27,6 +45,7 @@ export function sanitizeApproval(raw: unknown): PendingApproval | null {
     cwd: typeof raw.cwd === 'string' ? raw.cwd : undefined,
     reason: typeof raw.reason === 'string' ? raw.reason : undefined,
     createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : undefined,
+    choices,
   };
 }
 
@@ -39,7 +58,8 @@ export function loadCachedPending(): PendingApproval[] {
     const out: PendingApproval[] = [];
     for (const item of parsed) {
       const clean = sanitizeApproval(item);
-      if (clean) out.push(clean);
+      // Expired rows are dropped at the door, never resurrected into the UI.
+      if (clean && isApprovalFresh(clean)) out.push(clean);
     }
     return out;
   } catch {
@@ -56,20 +76,27 @@ export function cachePending(approvals: PendingApproval[]): void {
 }
 
 // Merge gateway-fresh approvals over locally cached ones. Gateway wins on
-// field content; locally cached entries for runs the gateway no longer
-// reports are dropped, since a WebView reload must not resurrect them.
+// field content, and a live gateway that reports nothing means nothing is
+// pending: cached rows for vanished runs are dropped instead of resurrected.
+// The one exception is a row that arrived while the fetch was in flight
+// (SSE raced the poll): `keepNewerThan` carries the fetch start timestamp so
+// those survive one round instead of flickering out of the UI.
 export function reconcilePending(
   cached: PendingApproval[],
-  fresh: PendingApproval[]
+  fresh: PendingApproval[],
+  keepNewerThan = 0
 ): PendingApproval[] {
   const freshById = new Map(fresh.map((a) => [a.runId, a]));
-  const merged: PendingApproval[] = fresh.map((a) => ({ ...a }));
+  const merged: PendingApproval[] = fresh
+    .map((a) => ({ ...a }))
+    .filter((a) => isApprovalFresh(a));
   const freshIds = new Set(freshById.keys());
   for (const c of cached) {
     if (!c.runId || freshIds.has(c.runId)) continue;
-    // Keep cached entries only when the gateway returned nothing at all
-    // (offline startup). Otherwise drop them as resolved or expired.
-    if (fresh.length === 0) merged.push({ ...c });
+    if (!isApprovalFresh(c)) continue;
+    if (keepNewerThan > 0 && (c.createdAt ?? 0) >= keepNewerThan) {
+      merged.push({ ...c });
+    }
   }
   merged.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
   return merged;

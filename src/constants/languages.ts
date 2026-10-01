@@ -677,6 +677,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     apprSessionLabel: 'Chat',
     apprAllowOnce: 'Allow once',
     apprAllowSession: 'Allow for this chat',
+    apprAllowAlways: 'Always allow',
 
     // P0 additions: composer, send guards, queued and offline copy
     sendNeedsModel: 'Select a model first. Tap send to open the model list.',
@@ -1948,6 +1949,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     apprSessionLabel: 'المحادثة',
     apprAllowOnce: 'السماح مرة واحدة',
     apprAllowSession: 'السماح لهذه المحادثة',
+    apprAllowAlways: 'السماح دائما',
 
     // إضافات P0: الإرسال والانتظار وعدم الاتصال
     sendNeedsModel: 'اختر نموذجًا أولًا. اضغط إرسال لفتح قائمة النماذج.',
@@ -2734,6 +2736,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     applyingShort: '应用中…',
     apprAllowOnce: '仅允许一次',
     apprAllowSession: '允许本次对话',
+    apprAllowAlways: '始终允许',
     apprCommand: '命令',
     apprCwd: '工作目录',
     apprPath: '路径',
@@ -3897,6 +3900,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     applyingShort: '適用中…',
     apprAllowOnce: '1回のみ許可',
     apprAllowSession: 'このチャット中は許可',
+    apprAllowAlways: '常に許可',
     apprCommand: 'コマンド',
     apprCwd: '作業ディレクトリ',
     apprPath: 'パス',
@@ -5060,6 +5064,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     applyingShort: 'Применение…',
     apprAllowOnce: 'Разрешить раз',
     apprAllowSession: 'Разрешить для этого чата',
+    apprAllowAlways: 'Разрешать всегда',
     apprCommand: 'Команда',
     apprCwd: 'Рабочая папка',
     apprPath: 'Путь',
@@ -6223,6 +6228,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     applyingShort: 'Application…',
     apprAllowOnce: 'Autoriser une fois',
     apprAllowSession: 'Autoriser pour ce chat',
+    apprAllowAlways: 'Toujours autoriser',
     apprCommand: 'Commande',
     apprCwd: 'Dossier de travail',
     apprPath: 'Chemin',
@@ -7386,6 +7392,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     applyingShort: 'Wird übernommen…',
     apprAllowOnce: 'Einmal erlauben',
     apprAllowSession: 'Für diesen Chat erlauben',
+    apprAllowAlways: 'Immer erlauben',
     apprCommand: 'Befehl',
     apprCwd: 'Arbeitsverzeichnis',
     apprPath: 'Pfad',
@@ -8548,6 +8555,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     applyingShort: 'Aplicando…',
     apprAllowOnce: 'Permitir una vez',
     apprAllowSession: 'Permitir en este chat',
+    apprAllowAlways: 'Permitir siempre',
     apprCommand: 'Comando',
     apprCwd: 'Directorio de trabajo',
     apprPath: 'Ruta',

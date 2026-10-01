@@ -63,10 +63,12 @@ import {
   loadCachedPending,
   cachePending,
   reconcilePending,
+  mergeIncoming,
 } from '../components/approvals/pendingApprovals';
 import {
   normalizePolicy,
   isScopeAllowed,
+  isApprovalScope,
   fromLegacyGlobal,
   DEFAULT_AUTO_APPROVE_POLICY,
   type AutoApprovePolicy,
@@ -2000,6 +2002,10 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setApprovals(cachedPending);
     approvalsHydratedRef.current = true;
     cachePending(cachedPending);
+    // Everything cached at this instant is older than the fetch: rows with a
+    // createdAt past this mark arrived while the fetch was in flight (an SSE
+    // approval racing the poll) and must survive one reconcile round.
+    const fetchStart = Date.now();
     gatewayService
       .listPendingApprovals()
       .then((fresh) => {
@@ -2010,9 +2016,14 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           addLog('Approvals kept from cache: gateway did not answer.');
           return;
         }
-        const merged = reconcilePending(cachedPending, fresh.items);
-        setApprovals(merged);
-        cachePending(merged);
+        // Reconcile against the CURRENT list, not the startup snapshot: the
+        // cached array captured above is stale the moment an SSE approval
+        // lands, and a plain setApprovals(merged) would drop it.
+        setApprovals((prev) => {
+          const merged = reconcilePending(prev, fresh.items, fetchStart);
+          cachePending(merged);
+          return merged;
+        });
       })
       .catch(() => {
         // Offline gateway: the cached list stands; refreshNow logged health.
@@ -3003,11 +3014,14 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const approvalScopeOf = (req: PendingApproval): AutoApproveScope | null => {
     const tool = (req.tool || '').toLowerCase();
     const cmd = (req.command || '').toLowerCase();
-    const hay = `${tool} ${cmd} ${req.path || ''} ${req.summary}`.toLowerCase();
+    // args carry the real payload ('powershell', '-Command', the script):
+    // classifying on tool+command alone misses interpreters entirely.
+    const argText = (req.args || []).join(' ');
+    const hay = `${tool} ${cmd} ${argText} ${req.path || ''} ${req.summary}`.toLowerCase();
     // Bare 'install' alone is often a noun ('the install failed'); require a
     // verb-object shape or a package-manager command to call it install.
     if (/(^|[^a-z])(apt( |-get)? |brew |npm (i|install|clean-install) |pip install |cargo add |to install |install (the|a|an|this|that|these|those|all|latest|new|missing|required|dependencies|packages?|modules?|\S+@\S+) )/.test(hay)) return 'install';
-    if (/(^|[^a-z])(exec|execute|shell|bash|sh -|terminal|run command)([^a-z]|$)/.test(hay)) return 'exec';
+    if (/(^|[^a-z])(exec|execute|shell|bash|sh -|powershell|pwsh|cmd(\.exe)?|python3?|node|perl|ruby|osascript|terminal|run command)([^a-z]|$)/.test(hay)) return 'exec';
     // Write before network: an action doing both ('download and write file')
     // must classify as the more privileged one, never the lesser.
     if (/(^|[^a-z])(write|edit|create|delete|remove|mkdir|apply_patch)([^a-z]|$)/.test(hay)) return 'write';
@@ -3300,7 +3314,17 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     // Flags clear first so stop-then-send works sync (state lags a render).
     streamingRef.current = false;
     setStreaming(false);
-    if (runId) setActiveRunId(null);
+    if (runId) {
+      setActiveRunId(null);
+      // A cancelled run can no longer consume an approval: leaving its card
+      // up offers a decision that nothing is waiting for. The server releases
+      // the approval event on stop, so the card goes with the run.
+      setApprovals((prev) => {
+        const next = prev.filter((a) => a.runId !== runId);
+        if (next.length !== prev.length) cachePending(next);
+        return next;
+      });
+    }
     dropQueued('stream stopped');
     // Mark pending assistant message as finished thinking, and flag the
     // in-flight turn as stopped so its meta reads stopped:true, not success.
@@ -3528,14 +3552,25 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         onApproval: (req) => {
           const scope = approvalScopeOf(req);
           if (scope && isScopeAllowed(autoPolicy, scope)) {
-            // Auto-approvals are always 'once': the manual button's default
-            // scope must never widen into a session grant by itself.
+            // Auto-approvals default to 'once'. The user's configured scope
+            // (Settings: Approval Scope) is honoured when it is a valid
+            // value, so a session-scope preference is not silently ignored.
+            const savedScope = (settingsRef.current as unknown as { approvalScope?: unknown }).approvalScope;
+            const grantScope: 'once' | 'session' = isApprovalScope(savedScope) ? savedScope : 'once';
             // resolveApproval logs its own gateway failures; this only stops
             // an unexpected throw in this stream callback from escaping as an
             // unhandled rejection (a bare fire-and-forget would do that).
-            void resolveApproval(req, true, 'once').catch(
-              () => undefined
-            );
+            void resolveApproval(req, true, grantScope).catch(() => {
+              // Auto-approve could not be delivered: the run stays blocked
+              // waiting on this approval, so the card must reappear for a
+              // manual decision instead of vanishing into a silent catch.
+              setApprovals((prev) => {
+                const merged = mergeIncoming(prev, req);
+                cachePending(merged);
+                return merged;
+              });
+              addLog(`Auto-approval failed for ${req.runId}: awaiting manual decision.`);
+            });
           } else {
             // Closed-app path: the in-app card is invisible, so a best-effort
             // system alert carries genuinely new approvals. The notified set
