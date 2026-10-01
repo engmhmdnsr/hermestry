@@ -34,6 +34,7 @@ import {
   providerLabel,
   DEFAULT_MODELS,
   keysValid,
+  KEYLESS_PROVIDERS,
   PROVIDER_DEFAULT_BASE_URL,
 } from '../../constants/providers';
 import { THEME_PALETTES, ThemeMode } from '../../constants/themes';
@@ -448,6 +449,10 @@ export const SettingsTab: React.FC = () => {
   const [newProvBaseUrl, setNewProvBaseUrl] = useState('');
   const [newProvModel, setNewProvModel] = useState('');
   const [showNewKey, setShowNewKey] = useState(false);
+  // Explicit custom-model mode for the model picker: the text input used to
+  // be derived from !testedModels.includes(model), so typing a prefix of a
+  // listed model unmounted the field mid-keystroke and stole focus.
+  const [customModelMode, setCustomModelMode] = useState(false);
   // New profiles stay inactive until the user explicitly opts into
   // activation (checkbox in the modal, unchecked by default).
   const [activateNewProvider, setActivateNewProvider] = useState(false);
@@ -468,6 +473,7 @@ export const SettingsTab: React.FC = () => {
     setKeyOk(null);
     setShowNewKey(false);
     setActivateNewProvider(false);
+    setCustomModelMode(false);
   };
 
   const handleDeleteProvider = (prov: ConfiguredProvider) => {
@@ -1307,6 +1313,11 @@ export const SettingsTab: React.FC = () => {
     serverKey?: string;
     tgToken?: string;
     discordToken?: string;
+    // Profile identity for the native converge logic: a blank apiKey on the
+    // wire means 'unknown', and only with the profile id can native restore
+    // that profile's stored key (or clear a previous profile's key instead
+    // of leaking it into the new profile's session).
+    activeProfileId?: string;
   };
 
   const [applyingProvider, setApplyingProvider] = useState(false);
@@ -1377,6 +1388,7 @@ export const SettingsTab: React.FC = () => {
           apiKey: prov.apiKey || '',
           baseUrl: prov.baseUrl || '',
           model: prov.defaultModel || '',
+          ...(profileId ? { activeProfileId: profileId } : {}),
         }
       : opts?.clearWhenMissing
         ? { provider: '', apiKey: '', baseUrl: '', model: '' }
@@ -1555,6 +1567,7 @@ export const SettingsTab: React.FC = () => {
     setTestedModels([]);
     setShowNewKey(false);
     setActivateNewProvider(false);
+    setCustomModelMode(false);
     setShowAddModal(true);
   };
 
@@ -1564,7 +1577,8 @@ export const SettingsTab: React.FC = () => {
   const handleTestProvider = async (prov: ConfiguredProvider) => {
     setMenuProviderId(null);
     const cleaned = (prov.apiKey || '').trim();
-    if (!cleaned) {
+    // Keyless local providers are tested by reachability, not by key.
+    if (!cleaned && !KEYLESS_PROVIDERS.has(normProvider(prov.provider))) {
       showToast(`${prov.name}: ${t('keyRequired')}`, 'error');
       return;
     }
@@ -1750,14 +1764,15 @@ export const SettingsTab: React.FC = () => {
   };
 
   const handleTestKey = async () => {
-    if (!newProvKey.trim()) return;
+    const norm = normProvider(newProvType);
+    // Keyless local providers prove reachability, not a key.
+    if (!newProvKey.trim() && !KEYLESS_PROVIDERS.has(norm)) return;
     setTestingKey(true);
     setKeyResult(null);
     setKeyOk(null);
     setTestedFingerprint('');
     setTestedModels([]);
 
-    const norm = normProvider(newProvType);
     const cleaned = newProvKey.trim();
     const directBase = (newProvBaseUrl.trim() || PROVIDER_DEFAULT_BASE_URL[norm] || '').replace(
     /\/+$/,
@@ -1804,15 +1819,50 @@ export const SettingsTab: React.FC = () => {
             ? (data as { data: Array<{ id?: unknown }> }).data
             : [];
           const live = arr.map((m) => String(m?.id || '')).filter((m) => m.trim());
-          setTestingKey(false);
-          setTestedFingerprint(validationFingerprint({ provider: norm, [PROVIDER_CREDENTIAL_FIELD]: cleaned, baseUrl: newProvBaseUrl.trim() }));
-          setKeyOk(true);
-          setKeyResult(tx('keyValidPlain', 'This key works.'));
-          setTestedModels(live);
-          if (live.length > 0 && !newProvModel.trim()) {
-            setNewProvModel(live[0]);
+          // An empty model list proves nothing about the key (captive portal
+          // pages and error JSON also arrive as 200 OK): stay inconclusive
+          // and let the gateway path below report its own outcome.
+          if (live.length === 0) {
+            // fall through to the gateway validation below
+          } else {
+            // Some catalog endpoints are public (no key needed): a 200 here
+            // would declare ANY string a working key. Control probe with no
+            // key: if it also returns models, this endpoint cannot prove the
+            // key and the result stays inconclusive.
+            const ctrl2 = new AbortController();
+            const timer2 = setTimeout(() => ctrl2.abort(), 15000);
+            let publicCatalog = false;
+            try {
+              const bare = await directModelsFetch(`${directBase}/models`, '', ctrl2.signal);
+              if (bare.ok) {
+                const bareData = await bare.json().catch(() => null);
+                const bareArr = bareData && Array.isArray((bareData as { data?: unknown }).data)
+                  ? (bareData as { data: Array<{ id?: unknown }> }).data
+                  : [];
+                publicCatalog = bareArr.some((m) => String((m as { id?: unknown })?.id || '').trim());
+              }
+            } catch {
+              // No-key probe failed: the endpoint wants auth, keyed 200 stands.
+            } finally {
+              clearTimeout(timer2);
+            }
+            if (!publicCatalog || KEYLESS_PROVIDERS.has(norm)) {
+              // Keyless providers are public by design: the model list is
+              // the whole point of the test, no key to prove.
+              setTestingKey(false);
+              setTestedFingerprint(validationFingerprint({ provider: norm, [PROVIDER_CREDENTIAL_FIELD]: cleaned, baseUrl: newProvBaseUrl.trim() }));
+              setKeyOk(true);
+              setKeyResult(tx('keyValidPlain', 'This key works.'));
+              setTestedModels(live);
+              if (live.length > 0 && !newProvModel.trim()) {
+                setNewProvModel(live[0]);
+                setCustomModelMode(false);
+              }
+              return;
+            }
+            // Public catalog: fall through to the gateway validation below
+            // instead of stamping an unproven key as working.
           }
-          return;
         }
         if (res.status === 401 || res.status === 403) {
           setTestingKey(false);
@@ -1842,6 +1892,7 @@ export const SettingsTab: React.FC = () => {
       // Pre-fill the default model when empty so nothing must be typed.
       if (live.length > 0 && !newProvModel.trim()) {
         setNewProvModel(live[0]);
+        setCustomModelMode(false);
       }
     } else if (valid === false) {
       setKeyOk(false);
@@ -2266,6 +2317,7 @@ export const SettingsTab: React.FC = () => {
                 setTestedFingerprint('');
                 setShowNewKey(false);
                 setActivateNewProvider(false);
+                setCustomModelMode(false);
                 setShowAddModal(true);
               }}
               className="hm-hit inline-flex items-center px-4 py-2 min-h-[36px] r-sm bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] t-label text-[var(--app-on-accent)] transition cursor-pointer shrink-0"
@@ -3663,6 +3715,21 @@ export const SettingsTab: React.FC = () => {
                     setNewProvType(val);
                     const opt = PROVIDER_OPTIONS.find(([id]) => id === val);
                     if (opt) setNewProvName(opt[1]);
+                    // A provider change invalidates everything tested before:
+                    // key verdict, fingerprint, model list. Without this the
+                    // modal keeps showing the previous provider's green
+                    // "works" next to the new provider's name.
+                    setKeyResult(null);
+                    setKeyOk(null);
+                    setTestedFingerprint('');
+                    setTestedModels([]);
+                    setCustomModelMode(false);
+                    // Pre-fill the static default so Save is not stuck
+                    // disabled behind a placeholder that looks populated.
+                    if (!newProvModel.trim()) {
+                      const def = DEFAULT_MODELS[val]?.[0] || '';
+                      if (def) setNewProvModel(def);
+                    }
                   }}
                   className="w-full px-4 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)]"
                 >
@@ -3719,7 +3786,7 @@ export const SettingsTab: React.FC = () => {
                   <button
                     type="button"
                     onClick={handleTestKey}
-                    disabled={!newProvKey.trim() || testingKey}
+                    disabled={(!newProvKey.trim() && !KEYLESS_PROVIDERS.has(normProvider(newProvType))) || testingKey}
                     className="hm-hit inline-flex items-center px-3 py-2 min-h-[36px] r-sm edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] t-label text-[var(--app-text)] transition cursor-pointer disabled:opacity-40"
                   >
                     {testingKey ? t('testingKey') : t('testKey')}
@@ -3741,10 +3808,17 @@ export const SettingsTab: React.FC = () => {
                 {testedModels.length > 0 ? (
                   <>
                     <select
-                      value={testedModels.includes(newProvModel) ? newProvModel : '__custom'}
+                      value={customModelMode || !testedModels.includes(newProvModel) ? '__custom' : newProvModel}
                       onChange={(e) => {
-                        if (e.target.value === '__custom') setNewProvModel('');
-                        else setNewProvModel(e.target.value);
+                        if (e.target.value === '__custom') {
+                          // Enter custom mode without clearing: the typed text
+                          // stays, and typing a listed prefix no longer
+                          // unmounts the input mid-keystroke.
+                          setCustomModelMode(true);
+                        } else {
+                          setCustomModelMode(false);
+                          setNewProvModel(e.target.value);
+                        }
                       }}
                       className="w-full px-4 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)] font-mono cursor-pointer"
                     >
@@ -3757,7 +3831,7 @@ export const SettingsTab: React.FC = () => {
                         {tx('customModelPlain', 'Custom model…')}
                       </option>
                     </select>
-                    {!testedModels.includes(newProvModel) && (
+                    {(customModelMode || !testedModels.includes(newProvModel)) && (
                       <input
                         type="text"
                         value={newProvModel}

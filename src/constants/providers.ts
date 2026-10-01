@@ -238,7 +238,9 @@ export const STATIC_PROVIDER_ENTRIES: StaticProviderEntry[] = PROVIDER_OPTIONS.m
 
 export function formatFallbackDisplayName(id: string): string {
   const parts = id.split('/');
-  const rawName = parts.length > 1 ? parts[1] : parts[0];
+  // The model name is the LAST segment: azure/openai/gpt-4o used to display
+  // 'openai' (parts[1]) and drop the actual model identifier.
+  const rawName = parts.length > 1 ? parts[parts.length - 1] : parts[0];
   const clean = rawName
     .replace(/[-_]/g, ' ')
     .replace(/\b([a-z])/g, (c) => c.toUpperCase());

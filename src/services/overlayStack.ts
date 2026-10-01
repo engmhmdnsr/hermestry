@@ -33,12 +33,16 @@ export function registerOverlay(close: OverlayCloseHandler): () => void {
 export function closeTopOverlay(): boolean {
   while (stack.length > 0) {
     const entry = stack[stack.length - 1];
-    stack = stack.slice(0, -1);
     try {
+      // Peek, do not pop: the overlay's own unmount cleanup unregisters its
+      // entry. Popping first orphaned overlays whose close handler keeps
+      // them mounted (onboarding step-back, skip-arm): the next back press
+      // found an empty stack and hard-exited the app mid-onboarding.
       entry.close();
       return true;
     } catch (err) {
-      // A broken handler must not trap the back button; try the next one.
+      // A broken handler must not trap the back button; drop it, try next.
+      stack = stack.filter((e) => e.id !== entry.id);
       // eslint-disable-next-line no-console
       console.warn('[overlayStack] close handler failed', err);
     }

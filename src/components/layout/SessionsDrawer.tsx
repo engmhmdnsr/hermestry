@@ -205,6 +205,10 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       } catch (e) {
         if (cancelled) return;
         setPageError(plainServiceFailure(e, tx));
+        // A thrown fetch is not 'live with zero chats': mark the meta
+        // not-live so the list resolves to its error state with retry
+        // instead of a misleading empty screen.
+        setPageMeta({ live: false, stale: true, lastSyncedAt: null, error: e instanceof Error ? e.message : undefined });
       } finally {
         if (!cancelled) setMetaLoading(false);
       }
@@ -251,6 +255,9 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       setNextOffset(page.nextOffset);
     } catch (e) {
       setPageError(plainServiceFailure(e, tx));
+      // Same not-live rule as the open effect: a failed refresh must show
+      // the error state, never an empty list.
+      setPageMeta({ live: false, stale: true, lastSyncedAt: null, error: e instanceof Error ? e.message : undefined });
     }
   };
 

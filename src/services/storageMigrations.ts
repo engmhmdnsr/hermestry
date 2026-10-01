@@ -1,5 +1,9 @@
 import type { ConfiguredProvider } from '../types/hermes';
 
+// Keyless local providers carry no key by design; a migration that demands
+// !!apiKey wipes a working lmstudio/ollama setup back to empty.
+const KEYLESS_MIGRATION_OK = new Set(['lmstudio', 'ollama-cloud']);
+
 // Versioned settings storage. Every persisted `hermes_settings` payload
 // carries a `schemaVersion`; on load, pending migrations run in order.
 // Callers must never mutate stored state ad hoc at init: add a migration
@@ -48,7 +52,9 @@ export const migrateV1toV2: Migration = (parsed) => {
   providers = providers.filter((p) => !(p.id === 'prov_deepseek_default' && !p.apiKey));
   next.providers = providers;
   if (typeof next.provider === 'string' && next.provider) {
-    const hasKeyed = providers.some((p) => p.provider === next.provider && !!p.apiKey);
+    const hasKeyed = providers.some(
+      (p) => p.provider === next.provider && (!!p.apiKey || KEYLESS_MIGRATION_OK.has(p.provider))
+    );
     if (!hasKeyed) {
       next.provider = '';
       next.modelId = '';

@@ -480,7 +480,7 @@ export const TerminalTab: React.FC = () => {
       {/* Input line. */}
       <div className="shrink-0 bg-[var(--app-term-header-bg)] border-t border-[var(--app-term-card-border)] px-[10px] py-2 flex items-center gap-1">
         <span className="font-mono text-[13px] font-bold text-[var(--app-term-green)] shrink-0" aria-hidden="true">
-          hermes:~$
+          ~$
         </span>
         <input
           ref={inputRef}
@@ -510,7 +510,7 @@ export const TerminalTab: React.FC = () => {
             <button
               type="button"
               onClick={() => recall(1)}
-              className="min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition cursor-pointer shrink-0"
+              className="min-w-[40px] min-h-[40px] flex items-center justify-center text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition cursor-pointer shrink-0"
               title={tx('termPrevCmd', 'Previous command')}
               aria-label={tx('termPrevCmd', 'Previous command')}
             >
@@ -519,7 +519,7 @@ export const TerminalTab: React.FC = () => {
             <button
               type="button"
               onClick={() => recall(-1)}
-              className="min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition cursor-pointer shrink-0"
+              className="min-w-[40px] min-h-[40px] flex items-center justify-center text-[var(--app-text-muted)] hover:text-[var(--app-text)] transition cursor-pointer shrink-0"
               title={tx('termNextCmd', 'Next command')}
               aria-label={tx('termNextCmd', 'Next command')}
             >

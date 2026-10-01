@@ -254,7 +254,7 @@ export function activateProvider(
  * via createProvider/updateProvider after a true result.
  */
 export async function validateProviderKey(
-  validateFn: (provider: string, envVar: string, key: string) => Promise<boolean | null>,
+  validateFn: (provider: string, envVar: string, key: string, baseUrl?: string) => Promise<boolean | null>,
   provider: string,
   key: string,
   baseUrl: string
@@ -263,7 +263,9 @@ export async function validateProviderKey(
   const cleaned = key.trim();
   if (!keysValid(slug, cleaned, baseUrl.trim())) return false;
   if (!hasSecret(cleaned)) return true; // keyless provider, nothing to check
-  return validateFn(slug, 'HERMES_API_KEY', cleaned);
+  // The base URL rides along: dropping it here used to fail every
+  // local/custom provider validation before it started.
+  return validateFn(slug, 'HERMES_API_KEY', cleaned, baseUrl.trim());
 }
 
 export interface LegacyProviderEntry {

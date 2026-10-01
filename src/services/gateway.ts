@@ -89,6 +89,7 @@ import { plainGatewayFailure, plainListStale, plainServiceFailure } from './plai
 import { createAppError } from './appErrors';
 import { withRetry } from './retry';
 import { validateProvider, type ProviderValidationInput } from './providerValidation';
+import { KEYLESS_PROVIDERS, normProvider } from '../constants/providers';
 export { REDACTED } from './redaction';
 
 export class GatewayService {
@@ -1296,6 +1297,12 @@ export class GatewayService {
     baseUrl: string = '',
     callerSignal?: AbortSignal
   ): Promise<boolean | null> {
+    // Keyless local providers (LM Studio, Ollama) carry no key by design:
+    // rejecting them as invalid is a false failure. What can be proven is
+    // reachability, so answer that honestly instead of false.
+    if (!key.trim() && KEYLESS_PROVIDERS.has(normProvider(provider))) {
+      return (await this.health(callerSignal)) ? true : null;
+    }
     if (!key.trim()) return false;
     // Never send the key when the gateway is unreachable. Probe reachability
     // first with a keyless health check and bail out before any network call
@@ -1341,6 +1348,10 @@ export class GatewayService {
     baseUrl: string = '',
     callerSignal?: AbortSignal
   ): Promise<{ valid: boolean; models: string[] } | null> {
+    // Same keyless rule as providersValidate: reachability, not key proof.
+    if (!key.trim() && KEYLESS_PROVIDERS.has(normProvider(provider))) {
+      return (await this.health(callerSignal)) ? { valid: true, models: [] } : null;
+    }
     if (!key.trim()) return { valid: false, models: [] };
     const reachable = await this.health(callerSignal);
     if (!reachable) return null;

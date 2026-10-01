@@ -294,7 +294,16 @@ export const App: React.FC = () => {
     // the visual viewport barely moves, so height loss (not vv occlusion)
     // is the keyboard signal here. The max updates on growth (rotation).
     let maxH = window.innerHeight;
+    let maxW = window.innerWidth;
     const measureApp = () => {
+      // A wider viewport is a new geometry (rotation, fold, split-screen),
+      // never a keyboard: keyboards only take height. Rebase both maxima so
+      // a portrait max cannot fake an open keyboard for a whole landscape
+      // session, even where orientationchange fires late or never.
+      if (window.innerWidth > maxW) {
+        maxW = window.innerWidth;
+        maxH = window.innerHeight;
+      }
       if (window.innerHeight > maxH) maxH = window.innerHeight;
       setKeyboardOpen(maxH - window.innerHeight >= 120);
     };
