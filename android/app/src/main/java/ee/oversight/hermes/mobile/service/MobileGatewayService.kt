@@ -12,6 +12,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import androidx.annotation.RequiresApi
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
@@ -76,6 +77,10 @@ class MobileGatewayService : Service() {
   /** startId of the INSTALL intent that owns runInstall(); see stopSelf(id). */
   @Volatile private var installStartId = 0
   @Volatile private var wantRun = false
+  /** Start/stop generation: a deferred STOP teardown must not kill a newer START. */
+  @Volatile private var startGen = 0
+  /** Elapsed-realtime mark of the current healthy stretch start (0 = none). */
+  @Volatile private var healthySince = 0L
 
   override fun onBind(intent: Intent?): IBinder? = null
 
@@ -112,13 +117,25 @@ class MobileGatewayService : Service() {
       // still winding down sees a stale non-null job and silently does nothing.
       watchJob?.cancel()
       watchJob = null
+      // STOP must also drop an in-flight install: otherwise the service is
+      // demoted to background while the 305MB download + unpack still runs,
+      // and LMK kills it mid-write leaving a corrupt rootfs.
+      installJob?.cancel()
+      installJob = null
       // stopGateway() blocks up to ~10s (SIGTERM wait + forced kill + orphan
       // sweep) and onStartCommand runs on the main thread: doing it inline
       // here is an ANR. The teardown runs on the service scope instead; the
       // plugin's verified-stop poll already waits for the outcome async.
+      // Generation-guarded: a START arriving before this coroutine runs bumps
+      // startGen, and this stale STOP then exits without touching the fresh
+      // process or stripping its foreground notification.
+      startGen++
       val sid = startId
+      val gen = startGen
       scope.launch {
+        if (gen != startGen) return@launch
         try { stopGateway() } catch (_: Exception) { }
+        if (gen != startGen) return@launch
         try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (_: Exception) { }
         // STOPPED comes from markStoppedVerified() after the plugin verifies
         // process exit + port closed + health false (GATEWAY-05). onDestroy
@@ -159,6 +176,7 @@ class MobileGatewayService : Service() {
       watchJob?.cancel()
     }
     everStarted = true
+    startGen++
     noteStart()
     setMachineState(GatewayMachineState.CHECKING)
     setPhase(StartupPhase.RENDER_CONFIG)
@@ -273,7 +291,9 @@ class MobileGatewayService : Service() {
       val req = androidx.work.OneTimeWorkRequestBuilder<BootWorker>().build()
       androidx.work.WorkManager.getInstance(this).enqueue(req)
     } catch (_: Exception) { }
-    try { stopSelf(startId) } catch (_: Exception) { }
+    // Unconditional: with a specific startId the stop is refused when newer
+    // intents queued, and Android 15 then crashes us for missing the window.
+    try { stopSelf() } catch (_: Exception) { }
   }
 
   override fun onDestroy() {
@@ -288,7 +308,13 @@ class MobileGatewayService : Service() {
       // job not individually cancelled) is a child of it, and the SupervisorJob
       // is never otherwise released, so children could outlive the service.
       scope.cancel()
-      stopGateway()
+      // stopGateway() blocks up to ~10s (SIGTERM wait + forced kill + orphan
+      // sweep): on the main thread that is an ANR. Run it on a daemon thread
+      // with a bounded join instead.
+      val killer = Thread { try { stopGateway() } catch (_: Throwable) { } }
+      killer.isDaemon = true
+      killer.start()
+      try { killer.join(3_000L) } catch (_: Exception) { }
       if (gatewayState.value == GatewayMachineState.STOPPING)
         setMachineState(GatewayMachineState.STOPPED)
       try { wakeLock?.release() } catch (_: Exception) { }
@@ -369,6 +395,10 @@ class MobileGatewayService : Service() {
       superviseLoop { p -> launchedProc = p }
     } finally {
       stopGateway(launchedProc)
+      // Normal-stop path: onDestroy releases too, but if the service object
+      // outlives supervise (sticky restart, pending intents) the 10-minute
+      // lock would burn battery. Release here as well.
+      try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (_: Exception) { }
     }
   }
 
@@ -418,7 +448,10 @@ class MobileGatewayService : Service() {
           // the instant the wait began, so the UI never showed the wait).
           setPhase(StartupPhase.HEALTH_PROBE)
           appendLog("gateway listening on 127.0.0.1:8080")
-          failures = 0
+          // Stability-gated reset: a crash right after listen must NOT clear
+          // the counter, or a crash-after-listen loop spins forever without
+          // ever tripping the breaker. healthySince marks this stretch start.
+          healthySince = SystemClock.elapsedRealtime()
           backoff = START_BACKOFF_MS
           setPhase(StartupPhase.READY)
           setMachineState(GatewayMachineState.RUNNING)
@@ -427,6 +460,12 @@ class MobileGatewayService : Service() {
             delay(PROCESS_POLL_MS)
           }
           if (!wantRun) break
+          // Reset the breaker only after a proven-stable stretch (60s+ of
+          // healthy running). Anything shorter counts toward MAX_RESTARTS.
+          if (healthySince > 0L && SystemClock.elapsedRealtime() - healthySince >= STABLE_RESET_MS) {
+            failures = 0
+          }
+          healthySince = 0L
           failures++
           setMachineState(GatewayMachineState.DEGRADED)
           appendLog("gateway exited, restarting... (attempt $failures/$MAX_RESTARTS)")
@@ -752,6 +791,7 @@ class MobileGatewayService : Service() {
    */
   private fun sweepOrphanedGuests() {
     try {
+      var kills = 0
       val marker = filesDir.absolutePath
       val self = android.os.Process.myPid()
       java.io.File("/proc").listFiles()?.forEach { dir ->
@@ -765,9 +805,11 @@ class MobileGatewayService : Service() {
             cmd.contains("/opt/python314")
           ) {
             android.os.Process.killProcess(pid)
+            kills++
           }
         } catch (_: Exception) { }
       }
+      if (kills > 0) appendLog("orphan sweep killed $kills")
     } catch (_: Exception) { }
   }
 
@@ -825,6 +867,8 @@ class MobileGatewayService : Service() {
     private const val INSTALL_WAKE_MS = 45 * 60 * 1_000L
     /** Circuit breaker: stop auto-retry after this many consecutive failures. */
     private const val MAX_RESTARTS = 5
+    /** Healthy stretch required before the restart breaker resets (60s). */
+    private const val STABLE_RESET_MS = 60_000L
     /** First restart gap; doubles per failure up to [MAX_BACKOFF_MS]. */
     private const val START_BACKOFF_MS = 5_000L
     private const val MAX_BACKOFF_MS = 60_000L

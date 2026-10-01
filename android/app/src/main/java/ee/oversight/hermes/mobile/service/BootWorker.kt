@@ -75,6 +75,10 @@ class BootWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
     // out, so re-check explicit consent here instead of starting blindly.
     val p = applicationContext.getSharedPreferences("hermes_mobile", Context.MODE_PRIVATE)
     if (!p.getBoolean("autostart", false)) return Result.success()
+    // BOOT_COMPLETED can follow USER_UNLOCKED after the first worker already
+    // SUCCEEDED (KEEP dedupes enqueued/running work only): a second worker
+    // must not tear down and restart a running gateway.
+    if (MobileGatewayService.gatewayState.value == MobileGatewayService.GatewayMachineState.RUNNING) return Result.success()
     return try {
       MobileGatewayService.start(applicationContext)
       Result.success()

@@ -162,7 +162,9 @@ class HermesGatewayPlugin : Plugin() {
           ?.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "hermes:install")
       } catch (_: Exception) { null }
       try {
-        wakeLock?.acquire(30 * 60 * 1000L)
+        // Bounded by the install tail loop (~10 min), not the service 45-min
+        // window: a stalled download must not hold the CPU for half an hour.
+        wakeLock?.acquire(10 * 60 * 1000L)
       } catch (_: Exception) { }
       try {
         // WifiLock has no timed acquire (unlike WakeLock): it is held until
@@ -296,10 +298,12 @@ class HermesGatewayPlugin : Plugin() {
 
   @PluginMethod
   fun start(call: PluginCall) {
-    try {
+    // Keystore crypto + multi-file disk I/O must not run on the main thread.
+    val t = Thread {
+      try {
       if (!Bootstrap.isInstalled(context)) {
         call.reject("not_installed: run install() first")
-        return
+        return@Thread
       }
       // Consult compat metadata at start and refuse an incompatible image:
       // a stale/mixed rootfs fails later with obscure proot errors.
@@ -308,14 +312,17 @@ class HermesGatewayPlugin : Plugin() {
       if (Bootstrap.arch() == "aarch64" && !Bootstrap.isImageCompatible(context)) {
         call.reject("incompatible_image: on-disk image does not match " +
           "${compat?.imageVersion ?: Bootstrap.IMAGE_VERSION}, reinstall")
-        return
+        return@Thread
       }
       Bootstrap.renderConfig(context)
       MobileGatewayService.start(context)
       call.resolve(JSObject().put("ok", true))
     } catch (e: Exception) {
       call.reject(stableFailure(e, "start_failed"))
+      }
     }
+    t.isDaemon = true
+    t.start()
   }
 
   /**

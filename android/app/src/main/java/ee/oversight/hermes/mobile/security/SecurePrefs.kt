@@ -53,6 +53,8 @@ object SecurePrefs {
   @Volatile private var cache: SharedPreferences? = null
   @Volatile private var fallback = false
   @Volatile private var lastError: String? = null
+  /** True while credential storage is still locked (Direct Boot). */
+  @Volatile private var directBoot = false
 
   /** True when encryption was unavailable and plain prefs are in use. */
   fun isFallback(): Boolean = fallback
@@ -62,6 +64,13 @@ object SecurePrefs {
 
   /** Clears the sticky failure notice (e.g. after the user re-saves keys). */
   fun clearError() { lastError = null }
+
+  /** Wipe-worthy only on proof of corruption (wrong key / torn write). */
+  private fun isProvenCorruption(e: Throwable): Boolean {
+    val msg = e.message.orEmpty()
+    return msg.contains("AEADBadTagException", ignoreCase = true) ||
+      msg.contains("Tag mismatch", ignoreCase = true)
+  }
 
   private fun isCryptoCorruption(e: Throwable): Boolean {
     val msg = e.message.orEmpty()
@@ -87,10 +96,13 @@ object SecurePrefs {
       )
     } catch (e: Exception) {
       Log.w(TAG, "EncryptedSharedPreferences creation failed", e)
-      if (isCryptoCorruption(e)) {
+      if (isProvenCorruption(e)) {
         Log.e(TAG, "Crypto corruption detected, attempting recovery by resetting encrypted store", e)
         recoverEncryptedPrefs(app)
       } else {
+        // Transient (keystore busy, locked, IPC hiccup): keep the file and
+        // the key, retry next access. Wiping here burned user secrets.
+        Log.w(TAG, "transient crypto failure, keeping encrypted store for retry", e)
         null
       }
     }
@@ -141,8 +153,10 @@ object SecurePrefs {
     // Android Keystore cannot be accessed. Do not poison cache or set permanent fallback.
     if (!UserManagerCompat.isUserUnlocked(app)) {
       Log.w(TAG, "Device locked (Direct Boot); returning plain prefs without caching fallback")
+      directBoot = true
       return app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
+    directBoot = false
 
     val enc = createEncryptedPrefs(app)
     if (enc != null) {
@@ -160,6 +174,9 @@ object SecurePrefs {
 
   private fun migrateIfNeeded(app: Context, enc: SharedPreferences) {
     val plain = app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    // Scrub cleartext ONLY when the encrypted copy is known good: wiping on
+    // a failed migration destroys the only surviving secrets.
+    var migrated = true
     try {
       if (!enc.getBoolean(MIGRATED_FLAG, false)) {
         val ed = enc.edit()
@@ -170,13 +187,15 @@ object SecurePrefs {
           }
         }
         ed.putBoolean(MIGRATED_FLAG, true)
-        try { ed.apply() } catch (_: Exception) { }
+        try { ed.apply() } catch (_: Exception) { migrated = false }
         Log.i(TAG, "migrated secrets to encrypted store")
       }
     } catch (e: Exception) {
-      Log.w(TAG, "secret migration failed, continuing without migration", e)
+      migrated = false
+      Log.w(TAG, "secret migration failed, keeping cleartext copies", e)
     } finally {
-      // Always scrub cleartext copies while the encrypted store is open, even
+      if (!migrated) return
+      // Scrub cleartext copies while the encrypted store is open, even
       // when the flag was already set: a copy planted while Keystore was down
       // must not linger unforgotten in the plain file.
       try {
@@ -187,6 +206,7 @@ object SecurePrefs {
     }
   }
 
+  @Synchronized
   fun getString(ctx: Context, key: String, default: String = ""): String {
     return try {
       prefs(ctx).getString(key, default) ?: default
@@ -216,6 +236,7 @@ object SecurePrefs {
     }
   }
 
+  @Synchronized
   fun putString(ctx: Context, key: String, value: String): Boolean {
     try {
       // prefs() first: it is what flips fallback, so checking the flag before
@@ -227,7 +248,7 @@ object SecurePrefs {
       // and only known non-secret keys pass. Today there are none, every
       // caller stores credentials, so any write on fallback refuses loudly
       // instead of landing a provider key or token in cleartext.
-      if (fallback && key !in NON_SECRET_KEYS) {
+      if ((fallback || directBoot) && key !in NON_SECRET_KEYS) {
         // Fail closed (P0): the plain file must never receive a secret, and it
         // must never happen silently. Recording the refusal makes the caller
         // (setProvider/setServerKey/secretSet/renderConfig) reject with this
@@ -262,6 +283,7 @@ object SecurePrefs {
     }
   }
 
+  @Synchronized
   fun remove(ctx: Context, key: String): Boolean {
     return try {
       prefs(ctx).edit().remove(key).commit()

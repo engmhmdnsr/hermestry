@@ -27,8 +27,8 @@ class BootReceiver : BroadcastReceiver() {
             .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
             .build()
           // Unique boot work: BOOT_COMPLETED + USER_UNLOCKED can both fire for
-          // one boot, and a plain enqueue would start two gateway workers.
-          // KEEP means the first request wins; a later one is a no-op.
+          // one boot. KEEP dedupes enqueued/running work only, not a repeat
+          // after SUCCEEDED, so BootWorker exits early when already RUNNING.
           WorkManager.getInstance(ctx).enqueueUniqueWork(
             "hermes-boot-start",
             ExistingWorkPolicy.KEEP,
