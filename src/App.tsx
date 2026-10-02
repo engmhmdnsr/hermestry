@@ -17,6 +17,7 @@ import {
 } from './components/ui/Skeleton';
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
 import { TAB_HASHES } from './constants/tabs';
+import { AuthScreens } from './components/auth/AuthScreens';
 
 // PERF-01: code-split every tab so the initial bundle stays lean. Home and
 // Chat used to be imported eagerly and kept a 719KB chunk inside the entry
@@ -107,6 +108,7 @@ export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState<number>(readInitialTab);
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
   const [isUnlocked, setIsUnlocked] = useState<boolean>(false);
+  const [authOpen, setAuthOpen] = useState<boolean>(false);
 
   // i18n with an English fallback, same pattern the tabs use: t() returns the
   // key itself when no locale bundle ships it, and languages.ts is not ours to
@@ -380,12 +382,22 @@ export const App: React.FC = () => {
       // The history.back() issued by the back listener has landed (or an
       // in-page navigation arrived): either way the wait is over.
       backInFlightRef.current = false;
+      if (window.location.hash === '#/auth') {
+        setAuthOpen(true);
+        return;
+      }
       const idx = (TAB_HASHES as readonly string[]).indexOf(window.location.hash);
       // An unknown or malformed hash is ignored: it cannot select a tab.
       if (idx >= 0) setCurrentTab(idx);
     };
+    const handleOpenAuth = () => setAuthOpen(true);
     window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
+    window.addEventListener('hermes:openAuth' as never, handleOpenAuth as never);
+    if (window.location.hash === '#/auth') setAuthOpen(true);
+    return () => {
+      window.removeEventListener('hashchange', handleHashChange);
+      window.removeEventListener('hermes:openAuth' as never, handleOpenAuth as never);
+    };
   }, []);
 
   // 1. First run wizard
@@ -632,6 +644,14 @@ export const App: React.FC = () => {
           setCurrentTab(1);
         }}
       />
+      {authOpen && (
+        <AuthScreens
+          onClose={() => {
+            setAuthOpen(false);
+            if (window.location.hash === '#/auth') window.history.replaceState(null, '', '#/settings');
+          }}
+        />
+      )}
     </div>
   );
 };

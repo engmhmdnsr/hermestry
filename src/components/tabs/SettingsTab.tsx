@@ -2337,6 +2337,23 @@ export const SettingsTab: React.FC = () => {
         <Row>
           <div className="flex items-start justify-between gap-3">
             <div>
+              <p className="t-body text-[var(--app-text)]">{tx('authAccountSectionTitle', 'Account')}</p>
+              <p className="t-caption text-[var(--app-text-muted)] mt-1">{tx('authAccountSectionDesc', 'Manage your Hermes account')}</p>
+            </div>
+            <button
+              onClick={() => {
+                try { window.history.pushState(null, '', '#/auth'); } catch {}
+                window.dispatchEvent(new CustomEvent('hermes:openAuth'));
+              }}
+              className="hm-hit inline-flex items-center px-4 py-2 min-h-[36px] r-sm bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] t-label text-[var(--app-on-accent)] transition cursor-pointer shrink-0"
+            >
+              {tx('authOpenAccount', 'Open account')}
+            </button>
+          </div>
+        </Row>
+        <Row>
+          <div className="flex items-start justify-between gap-3">
+            <div>
               <p className="t-body text-[var(--app-text)]">{t('configuredProviders')}</p>
               <p className="t-caption text-[var(--app-text-muted)] mt-1">{t('providersDesc')}</p>
             </div>
