@@ -16,6 +16,7 @@ import {
   UsageAnalytics,
 } from '../types/hermes';
 import type { ListSyncResult, PagedResult } from './syncState';
+import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import {
   DEFAULT_MESSAGES_PAGE_SIZE,
   DEFAULT_RUNS_PAGE_SIZE,
@@ -35,6 +36,37 @@ import {
   writeSyncedAt,
   type PageParams,
 } from './pagination';
+
+// Same-origin fetch is blocked on device: the WebView runs on
+// https://localhost while the gateway listens on http://127.0.0.1:8080,
+// and the gateway sends no CORS headers, so every plain fetch to it dies
+// with 'blocked by CORS policy' (memory, routines, sessions, provider
+// validation, jobs: all of them). On native, route through CapacitorHttp,
+// which runs on the native stack with no origin check; on web keep fetch.
+// The result is shaped as a real Response, so call sites stay unchanged.
+async function gwFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  if (!Capacitor.isNativePlatform()) return fetch(input, init);
+  const method = (init.method || 'GET').toUpperCase();
+  const headers: Record<string, string> = {};
+  if (init.headers) new Headers(init.headers).forEach((v, k) => {
+    headers[k] = v;
+  });
+  const res = await CapacitorHttp.request({
+    url: input,
+    method: method as 'GET',
+    headers,
+    data: (init.body as string | undefined) ?? undefined,
+    connectTimeout: 15000,
+    readTimeout: 60000,
+  });
+  const text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data ?? '');
+  const outHeaders = new Headers();
+  for (const [k, v] of Object.entries(res.headers || {})) outHeaders.append(k, String(v));
+  if (!outHeaders.has('content-type') && typeof res.data !== 'string') {
+    outHeaders.set('content-type', 'application/json');
+  }
+  return new Response(text, { status: res.status, headers: outHeaders });
+}
 
 export interface StreamChatCallbacks {
   onRunId?: (runId: string) => void;
@@ -160,7 +192,7 @@ export class GatewayService {
 
   async health(callerSignal?: AbortSignal): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/health`, {
+      const res = await gwFetch(`${this.baseUrl}/health`, {
         signal: this.requestSignal(callerSignal, HEALTH_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
@@ -174,7 +206,7 @@ export class GatewayService {
 
   async healthDetailed(callerSignal?: AbortSignal): Promise<GatewayStatus> {
     try {
-      const res = await fetch(`${this.baseUrl}/health/detailed`, {
+      const res = await gwFetch(`${this.baseUrl}/health/detailed`, {
         signal: this.requestSignal(callerSignal, HEALTH_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
@@ -224,7 +256,7 @@ export class GatewayService {
       const url = hint
         ? `${this.baseUrl}/api/model/options?provider=${encodeURIComponent(hint)}`
         : `${this.baseUrl}/api/model/options`;
-      const res = await fetch(url, {
+      const res = await gwFetch(url, {
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
@@ -433,7 +465,7 @@ export class GatewayService {
   ): Promise<PagedResult<MobileSession>> {
     const page = clampPage(params, DEFAULT_SESSIONS_PAGE_SIZE, MAX_SESSIONS_PAGE_SIZE);
     try {
-      const res = await fetch(`${this.baseUrl}/api/sessions${buildPageQuery(page, 'latest')}`, {
+      const res = await gwFetch(`${this.baseUrl}/api/sessions${buildPageQuery(page, 'latest')}`, {
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
@@ -466,7 +498,7 @@ export class GatewayService {
   }
 
   async createSession(model: string, title?: string, callerSignal?: AbortSignal): Promise<string> {
-    const res = await fetch(`${this.baseUrl}/api/sessions`, {
+    const res = await gwFetch(`${this.baseUrl}/api/sessions`, {
       method: 'POST',
       signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
       headers: this.getHeaders(),
@@ -485,7 +517,7 @@ export class GatewayService {
 
   async deleteSession(id: string, callerSignal?: AbortSignal): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/sessions/${encodeURIComponent(id)}`, {
+      const res = await gwFetch(`${this.baseUrl}/api/sessions/${encodeURIComponent(id)}`, {
         method: 'DELETE',
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
@@ -500,7 +532,7 @@ export class GatewayService {
 
   async renameSession(id: string, title: string, callerSignal?: AbortSignal): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/sessions/${encodeURIComponent(id)}`, {
+      const res = await gwFetch(`${this.baseUrl}/api/sessions/${encodeURIComponent(id)}`, {
         method: 'PATCH',
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
@@ -514,7 +546,7 @@ export class GatewayService {
 
   async forkSession(id: string, callerSignal?: AbortSignal): Promise<string | null> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/sessions/${encodeURIComponent(id)}/fork`, {
+      const res = await gwFetch(`${this.baseUrl}/api/sessions/${encodeURIComponent(id)}/fork`, {
         method: 'POST',
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
@@ -542,7 +574,7 @@ export class GatewayService {
     const page = clampPage(params, DEFAULT_MESSAGES_PAGE_SIZE, MAX_MESSAGES_PAGE_SIZE);
     const syncKey = GatewayService.SYNC_KEYS.messages(sessionId);
     try {
-      const res = await fetch(
+      const res = await gwFetch(
         `${this.baseUrl}/api/sessions/${encodeURIComponent(sessionId)}/messages${buildPageQuery(page, 'latest')}`,
         {
           signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
@@ -599,7 +631,7 @@ export class GatewayService {
 
   async stopRun(runId: string, callerSignal?: AbortSignal): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/v1/runs/${encodeURIComponent(runId)}/stop`, {
+      const res = await gwFetch(`${this.baseUrl}/v1/runs/${encodeURIComponent(runId)}/stop`, {
         method: 'POST',
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
@@ -615,7 +647,7 @@ export class GatewayService {
     const paths = ['/v1/runs/pending', '/api/runs/pending', '/v1/approvals/pending'];
     for (const p of paths) {
       try {
-        const res = await fetch(`${this.baseUrl}${p}`, {
+        const res = await gwFetch(`${this.baseUrl}${p}`, {
           signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
           headers: this.getHeaders(),
         });
@@ -676,7 +708,7 @@ export class GatewayService {
       const body = {
         choice: allow ? mode : 'deny',
       };
-      const res = await fetch(`${this.baseUrl}/v1/runs/${encodeURIComponent(runId)}/approval`, {
+      const res = await gwFetch(`${this.baseUrl}/v1/runs/${encodeURIComponent(runId)}/approval`, {
         method: 'POST',
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
@@ -698,7 +730,7 @@ export class GatewayService {
   // Jobs CRUD (DATA-04: envelope distinguishes empty vs stale vs error)
   async jobsWithState(callerSignal?: AbortSignal): Promise<ListSyncResult<CronJob>> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/jobs`, {
+      const res = await gwFetch(`${this.baseUrl}/api/jobs`, {
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
@@ -733,7 +765,7 @@ export class GatewayService {
     callerSignal?: AbortSignal
   ): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/jobs`, {
+      const res = await gwFetch(`${this.baseUrl}/api/jobs`, {
         method: 'POST',
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
@@ -753,7 +785,7 @@ export class GatewayService {
     try {
       // The gateway registers PATCH /api/jobs/{id} only; PUT was never
       // routed, so every edit used to fail closed as a 404/405.
-      const res = await fetch(`${this.baseUrl}/api/jobs/${encodeURIComponent(id)}`, {
+      const res = await gwFetch(`${this.baseUrl}/api/jobs/${encodeURIComponent(id)}`, {
         method: 'PATCH',
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
@@ -771,7 +803,7 @@ export class GatewayService {
       // Delete follows REST: DELETE /api/jobs/{id}. Other actions POST
       // to /api/jobs/{id}/{action}.
       const isDelete = action === 'delete';
-      const res = await fetch(
+      const res = await gwFetch(
         isDelete
           ? `${this.baseUrl}/api/jobs/${encodeURIComponent(id)}`
           : `${this.baseUrl}/api/jobs/${encodeURIComponent(id)}/${encodeURIComponent(action)}`,
@@ -797,7 +829,7 @@ export class GatewayService {
     // Runs are a jobs-domain list: own page size, never the sessions one.
     const page = clampPage(params, DEFAULT_RUNS_PAGE_SIZE, MAX_RUNS_PAGE_SIZE);
     try {
-      const res = await fetch(
+      const res = await gwFetch(
         `${this.baseUrl}/api/jobs/${encodeURIComponent(jobId)}/runs${buildPageQuery(page, 'latest')}`,
         {
           signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
@@ -854,7 +886,7 @@ export class GatewayService {
     let serverStatus = '';
     for (const url of candidates) {
       try {
-        const res = await fetch(url, {
+        const res = await gwFetch(url, {
           signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
           headers: this.getHeaders(),
         });
@@ -946,7 +978,7 @@ export class GatewayService {
     ];
     for (const a of attempts) {
       try {
-        const res = await fetch(a.url, a.init);
+        const res = await gwFetch(a.url, a.init);
         if (res.ok) {
           this.lastToggleStatus = null;
           return true;
@@ -965,7 +997,7 @@ export class GatewayService {
   // Memory
   async memoryGet(callerSignal?: AbortSignal): Promise<LiveValue<MemoryInfo>> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/memory`, {
+      const res = await gwFetch(`${this.baseUrl}/api/memory`, {
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
@@ -1060,7 +1092,7 @@ export class GatewayService {
     ];
     for (const a of attempts) {
       try {
-        const res = await fetch(a.url, a.init);
+        const res = await gwFetch(a.url, a.init);
         if (res.ok) {
           this.lastToggleStatus = null;
           return true;
@@ -1077,7 +1109,7 @@ export class GatewayService {
   // Blueprints with sync envelope (DATA-05).
   async blueprintsWithState(callerSignal?: AbortSignal): Promise<ListSyncResult<Blueprint>> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/blueprints`, {
+      const res = await gwFetch(`${this.baseUrl}/api/blueprints`, {
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
@@ -1120,7 +1152,7 @@ export class GatewayService {
     callerSignal?: AbortSignal
   ): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/blueprints/${encodeURIComponent(id)}/instantiate`, {
+      const res = await gwFetch(`${this.baseUrl}/api/blueprints/${encodeURIComponent(id)}/instantiate`, {
         method: 'POST',
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
@@ -1135,7 +1167,7 @@ export class GatewayService {
   // Diagnostics & Ops
   async doctor(callerSignal?: AbortSignal): Promise<DoctorReport> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/doctor`, {
+      const res = await gwFetch(`${this.baseUrl}/api/doctor`, {
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });
@@ -1161,7 +1193,7 @@ export class GatewayService {
 
   async backup(callerSignal?: AbortSignal): Promise<BackupResult> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/backup`, {
+      const res = await gwFetch(`${this.baseUrl}/api/backup`, {
         method: 'POST',
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
@@ -1186,7 +1218,7 @@ export class GatewayService {
 
   async debugShare(callerSignal?: AbortSignal): Promise<DebugShare> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/debug/share`, {
+      const res = await gwFetch(`${this.baseUrl}/api/debug/share`, {
         method: 'POST',
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
@@ -1226,7 +1258,7 @@ export class GatewayService {
   ): Promise<PagedResult<LogLine>> {
     const page = clampPage(params, DEFAULT_SESSIONS_PAGE_SIZE, MAX_SESSIONS_PAGE_SIZE);
     try {
-      const res = await fetch(
+      const res = await gwFetch(
         `${this.baseUrl}/api/logs?level=${encodeURIComponent(level)}&query=${encodeURIComponent(query)}&limit=${page.limit}&offset=${page.offset}`,
         {
           signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
@@ -1258,7 +1290,7 @@ export class GatewayService {
     callerSignal?: AbortSignal
   ): Promise<LiveList<LogLine>> {
     try {
-      const res = await fetch(
+      const res = await gwFetch(
         `${this.baseUrl}/api/logs?level=${encodeURIComponent(level)}&query=${encodeURIComponent(query)}&limit=${limit}`,
         {
           signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
@@ -1284,7 +1316,7 @@ export class GatewayService {
       outputTokens: 0,
     };
     try {
-      const res = await fetch(`${this.baseUrl}/api/usage?range=${encodeURIComponent(range)}`, {
+      const res = await gwFetch(`${this.baseUrl}/api/usage?range=${encodeURIComponent(range)}`, {
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
       });

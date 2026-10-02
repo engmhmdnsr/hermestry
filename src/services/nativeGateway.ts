@@ -71,9 +71,16 @@ interface HermesGatewayPlugin {
   }): Promise<void>;
   setAutostart?(options: { enabled: boolean }): Promise<void>;
   addListener(
-    event: 'installLog' | 'installProgress' | 'installPhase' | 'installDone',
+    event: string,
     cb: (info: Record<string, unknown>) => void
   ): Promise<{ remove: () => void }>;
+  streamPost?(options: {
+    id: string;
+    url: string;
+    headers: Record<string, string>;
+    body: string;
+  }): Promise<void>;
+  streamAbort?(options: { id: string }): Promise<void>;
 }
 
 function getPlugin(): HermesGatewayPlugin | null {
@@ -426,4 +433,99 @@ export async function nativeRestart(): Promise<void> {
     await nativeStop();
   }
   await nativeStart();
+}
+
+// Chat SSE over the native stream bridge (streamPost/streamAbort): the
+// WebView cannot fetch() the gateway (CORS), and CapacitorHttp cannot
+// stream, so the POST runs on HttpURLConnection and ships raw bytes as
+// base64 chunks. Resolves 'done' on clean EOF, 'cancelled' on abort,
+// 'error' otherwise; non-2xx goes through onStatus like res.ok handling.
+export async function nativeStreamPost(opts: {
+  url: string;
+  headers: Record<string, string>;
+  body: string;
+  signal?: AbortSignal;
+  onStatus: (status: number) => void;
+  onBytes: (bytes: Uint8Array) => void;
+}): Promise<'done' | 'cancelled' | 'error'> {
+  const plugin = getPlugin();
+  if (!plugin || typeof plugin.streamPost !== 'function') return 'error';
+  const id = `s${Date.now().toString(36)}${Math.floor(Math.random() * 0xffff).toString(36)}`;
+  const subs: Array<{ remove: () => void }> = [];
+  let settle: ((v: 'done' | 'cancelled' | 'error') => void) | null = null;
+  const finished = new Promise<'done' | 'cancelled' | 'error'>((resolve) => {
+    settle = resolve;
+  });
+  const cleanup = () => {
+    for (const s of subs) {
+      try {
+        s.remove();
+      } catch {
+        /* ignore */
+      }
+    }
+    subs.length = 0;
+  };
+  const forId = (info: Record<string, unknown>, fn: () => void) => {
+    if (String(info.id ?? '') === id) fn();
+  };
+  try {
+    subs.push(
+      await plugin.addListener('gwStreamChunk', (info) =>
+        forId(info, () => {
+          const b64 = String(info.chunk ?? '');
+          if (!b64) return;
+          const bin = atob(b64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+          opts.onBytes(bytes);
+        })
+      )
+    );
+    subs.push(
+      await plugin.addListener('gwStreamDone', (info) =>
+        forId(info, () => settle?.('done'))
+      )
+    );
+    subs.push(
+      await plugin.addListener('gwStreamError', (info) =>
+        forId(info, () => settle?.(info.cancelled === true ? 'cancelled' : 'error'))
+      )
+    );
+    subs.push(
+      await plugin.addListener('gwStreamStatus', (info) =>
+        forId(info, () => {
+          opts.onStatus(Number(info.status ?? 0));
+          settle?.('error');
+        })
+      )
+    );
+    const onAbort = () => {
+      try {
+        void plugin.streamAbort?.({ id });
+      } catch {
+        /* ignore */
+      }
+    };
+    if (opts.signal) {
+      if (opts.signal.aborted) {
+        onAbort();
+        return 'cancelled';
+      }
+      opts.signal.addEventListener('abort', onAbort, { once: true });
+      try {
+        await plugin.streamPost({ id, url: opts.url, headers: opts.headers, body: opts.body });
+      } finally {
+        opts.signal.removeEventListener('abort', onAbort);
+      }
+    } else {
+      await plugin.streamPost({ id, url: opts.url, headers: opts.headers, body: opts.body });
+    }
+    return await finished;
+  } catch {
+    return 'error';
+  } finally {
+    cleanup();
+    settle = null;
+  }
 }

@@ -836,6 +836,79 @@ class HermesGatewayPlugin : Plugin() {
     super.handleOnDestroy()
   }
 
+  // --- Native HTTP stream bridge (chat SSE without WebView CORS) ---
+  //
+  // The WebView (https://localhost) cannot fetch() the gateway
+  // (http://127.0.0.1:8080): no CORS headers come back. JSON calls go
+  // through CapacitorHttp, but chat is a long-lived POST stream, which
+  // CapacitorHttp cannot do. So the stream runs here on HttpURLConnection
+  // and ships raw bytes as base64 chunks (base64 keeps multibyte UTF-8
+  // split across reads intact: decoding stays on the JS TextDecoder).
+  private val activeStreamConns = java.util.concurrent.ConcurrentHashMap<String, HttpURLConnection>()
+  private val abortedStreamIds = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+  @PluginMethod
+  fun streamPost(call: PluginCall) {
+    val id = call.getString("id") ?: return call.reject("missing id")
+    val urlStr = call.getString("url") ?: return call.reject("missing url")
+    call.setKeepAlive(true)
+    scope.launch {
+      var conn: HttpURLConnection? = null
+      try {
+        conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
+          requestMethod = "POST"
+          connectTimeout = 15000
+          readTimeout = 0
+          doOutput = true
+          setRequestProperty("Content-Type", "application/json")
+          call.getObject("headers")?.keys()?.forEach { k ->
+            setRequestProperty(k, call.getObject("headers")!!.getString(k) ?: "")
+          }
+        }
+        activeStreamConns[id] = conn
+        conn.outputStream.use { it.write((call.getString("body") ?: "").toByteArray(Charsets.UTF_8)) }
+        val status = conn.responseCode
+        if (status !in 200..299) {
+          notifyListeners("gwStreamStatus", JSObject().put("id", id).put("status", status))
+          return@launch
+        }
+        val buf = ByteArray(8192)
+        conn.inputStream.use { inp ->
+          while (true) {
+            val n = inp.read(buf)
+            if (n < 0) break
+            val b64 = android.util.Base64.encodeToString(buf.copyOf(n), android.util.Base64.NO_WRAP)
+            notifyListeners("gwStreamChunk", JSObject().put("id", id).put("chunk", b64))
+          }
+        }
+        notifyListeners("gwStreamDone", JSObject().put("id", id))
+      } catch (e: Exception) {
+        // streamAbort() disconnects the connection, which surfaces here as
+        // an IOException on read: report it as cancelled, not as a failure.
+        val cancelled = abortedStreamIds.remove(id) != null
+        notifyListeners(
+          "gwStreamError",
+          JSObject().put("id", id).put("cancelled", cancelled)
+            .put("message", if (cancelled) "aborted" else (e.message ?: "stream failed"))
+        )
+      } finally {
+        activeStreamConns.remove(id)
+        try { conn?.disconnect() } catch (_: Exception) {}
+        call.resolve()
+      }
+    }
+  }
+
+  @PluginMethod
+  fun streamAbort(call: PluginCall) {
+    val id = call.getString("id")
+    if (id != null) {
+      abortedStreamIds[id] = true
+      try { activeStreamConns.remove(id)?.disconnect() } catch (_: Exception) {}
+    }
+    call.resolve()
+  }
+
   private companion object {
     // Atomic notifier id: wall-clock millis truncated to Int can collide and
     // overwrite a previous alert still sitting in the tray.

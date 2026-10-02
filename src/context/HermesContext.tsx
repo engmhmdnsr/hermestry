@@ -31,6 +31,7 @@ import {
   nativeNotifyAlert,
   nativeSetAutostart,
   nativeSetProvider,
+  nativeStreamPost,
 } from '../services/nativeGateway';
 import {
   mapNativeStatusToGatewayState,
@@ -3105,33 +3106,40 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     if (reasoningEffort && reasoningEffort !== 'none') {
       body.model_options = { reasoning_effort: reasoningEffort.toLowerCase() };
     }
-    let res: Response;
-    try {
-      res = await fetch(
-        `http://127.0.0.1:8080/api/sessions/${encodeURIComponent(sessionId)}/chat/stream`,
-        { method: 'POST', headers, body: JSON.stringify(body), signal: abortSignal }
-      );
-    } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        callbacks.onStopped?.();
+    // On device the WebView fetch below never runs: https://localhost to
+    // http://127.0.0.1:8080 gets no CORS headers back. The native bridge
+    // takes the stream instead (see the reader try below).
+    const nativeStream = isNativeGateway();
+    let res: Response | null = null;
+    if (!nativeStream) {
+      try {
+        const webRes = await fetch(
+          `http://127.0.0.1:8080/api/sessions/${encodeURIComponent(sessionId)}/chat/stream`,
+          { method: 'POST', headers, body: JSON.stringify(body), signal: abortSignal }
+        );
+        res = webRes;
+      } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') {
+          callbacks.onStopped?.();
+          return;
+        }
+        // Never surface raw transport text ('Failed to fetch') to the user.
+        callbacks.onError?.(isNetworkFailure(err) ? unreachableCopy() : streamClosedCopy());
         return;
       }
-      // Never surface raw transport text ('Failed to fetch') to the user.
-      callbacks.onError?.(isNetworkFailure(err) ? unreachableCopy() : streamClosedCopy());
-      return;
-    }
-    if (!res.ok) {
-      // 401/403 while /health is green means a stale key, so say that and
-      // flag the gateway distinctly; 404 means this chat is gone. No raw
-      // 'Stream failed: HTTP 404' reaches the chat error banner.
-      if (isHttpAuthStatus(res.status)) markGatewayUnauthorized('chat stream', res.status);
-      callbacks.onError?.(httpStatusCopy(res.status));
-      addLog(`Chat stream rejected by the gateway (HTTP ${res.status})`);
-      return;
-    }
-    if (!res.body) {
-      callbacks.onError?.(streamClosedCopy());
-      return;
+      if (!res.ok) {
+        // 401/403 while /health is green means a stale key, so say that and
+        // flag the gateway distinctly; 404 means this chat is gone. No raw
+        // 'Stream failed: HTTP 404' reaches the chat error banner.
+        if (isHttpAuthStatus(res.status)) markGatewayUnauthorized('chat stream', res.status);
+        callbacks.onError?.(httpStatusCopy(res.status));
+        addLog(`Chat stream rejected by the gateway (HTTP ${res.status})`);
+        return;
+      }
+      if (!res.body) {
+        callbacks.onError?.(streamClosedCopy());
+        return;
+      }
     }
     const asRecord = (v: unknown): Record<string, unknown> =>
       v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
@@ -3284,21 +3292,10 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         );
       }
     };
-    try {
-      const bodyReader = res.body.getReader();
-      reader = bodyReader;
-      for (;;) {
-        const { done, value } = await bodyReader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        for (const ev of parser.feed(chunk)) dispatch(ev);
-      }
-      // Flush the decoder first: a multibyte character split across the last
-      // chunk would otherwise be dropped. Then drain the tail: a final event
-      // without a trailing blank line still counts.
-      const tail = decoder.decode();
-      if (tail) for (const ev of parser.feed(tail)) dispatch(ev);
-      for (const ev of parser.flush()) dispatch(ev);
+    // Shared turn-end verdict for both transports (WebView fetch and the
+    // native stream bridge): a dead turn reports honestly instead of
+    // presenting a truncated reply as success.
+    const finishStream = () => {
       if (failedMessage) {
         // Backend failure text is not user copy: the classifier keeps an
         // honest sentence and replaces raw transport or platform payloads.
@@ -3321,6 +3318,62 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       } else {
         callbacks.onThinkingDone();
       }
+    };
+    try {
+      // Native bridge path: same parser, same tail, same end verdict as the
+      // web path below. The POST runs on HttpURLConnection (no WebView
+      // CORS) and arrives as raw byte chunks; decoding stays streamed, so
+      // multibyte characters split across chunks survive intact.
+      if (nativeStream) {
+        let nativeStatus = 0;
+        const outcome = await nativeStreamPost({
+          url: `http://127.0.0.1:8080/api/sessions/${encodeURIComponent(sessionId)}/chat/stream`,
+          headers,
+          body: JSON.stringify(body),
+          signal: abortSignal,
+          onStatus: (s) => {
+            nativeStatus = s;
+          },
+          onBytes: (bytes) => {
+            const chunk = decoder.decode(bytes, { stream: true });
+            for (const ev of parser.feed(chunk)) dispatch(ev);
+          },
+        });
+        if (nativeStatus) {
+          if (isHttpAuthStatus(nativeStatus)) markGatewayUnauthorized('chat stream', nativeStatus);
+          callbacks.onError?.(httpStatusCopy(nativeStatus));
+          addLog(`Chat stream rejected by the gateway (HTTP ${nativeStatus})`);
+          return;
+        }
+        if (outcome === 'cancelled') {
+          callbacks.onStopped?.();
+          return;
+        }
+        if (outcome === 'error') {
+          callbacks.onError?.(streamClosedCopy());
+          return;
+        }
+        const tail = decoder.decode();
+        if (tail) for (const ev of parser.feed(tail)) dispatch(ev);
+        for (const ev of parser.flush()) dispatch(ev);
+        finishStream();
+        return;
+      }
+      const bodyReader = res!.body!.getReader();
+      reader = bodyReader;
+      for (;;) {
+        const { done, value } = await bodyReader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        for (const ev of parser.feed(chunk)) dispatch(ev);
+      }
+      // Flush the decoder first: a multibyte character split across the last
+      // chunk would otherwise be dropped. Then drain the tail: a final event
+      // without a trailing blank line still counts.
+      const tail = decoder.decode();
+      if (tail) for (const ev of parser.feed(tail)) dispatch(ev);
+      for (const ev of parser.flush()) dispatch(ev);
+      finishStream();
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         callbacks.onStopped?.();
