@@ -10,7 +10,7 @@ import {
   resetPassword as authReset,
 } from '../../services/auth';
 
-export const AUTH_BASE_URL = 'http://100.112.74.9:8082';
+export const AUTH_BASE_URL = 'https://she-islands-ribbon-robin.trycloudflare.com';
 
 type AuthView = 'login' | 'register' | 'verify' | 'forgot' | 'reset';
 

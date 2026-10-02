@@ -1,7 +1,7 @@
 import { isNativeGateway, nativeSecretGet, nativeSecretSet } from './nativeGateway';
 import { gwFetch } from './gwFetch';
 
-export const AUTH_BASE_URL = 'http://100.112.74.9:8082';
+export const AUTH_BASE_URL = 'https://she-islands-ribbon-robin.trycloudflare.com';
 
 // Storage keys: localStorage on web, lockout.* slots on native (SecurePrefs, allowlisted)
 const LS_ACCESS = 'hermes.auth.accessToken';
