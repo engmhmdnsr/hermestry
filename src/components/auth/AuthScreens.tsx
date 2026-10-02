@@ -1,6 +1,14 @@
 import React, { useState } from 'react';
 import { X, Mail, Lock, User, KeyRound, ArrowLeft } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
+import {
+  login as authLogin,
+  register as authRegister,
+  verifyEmail as authVerify,
+  resendVerification as authResend,
+  forgotPassword as authForgot,
+  resetPassword as authReset,
+} from '../../services/auth';
 
 export const AUTH_BASE_URL = 'http://100.112.74.9:8082';
 
@@ -9,6 +17,7 @@ type AuthView = 'login' | 'register' | 'verify' | 'forgot' | 'reset';
 type AuthScreensProps = {
   initialView?: AuthView;
   baseUrl?: string;
+  forced?: boolean;
   onClose?: () => void;
   onAuthenticated?: (payload: { accessToken: string; refreshToken: string; user: unknown }) => void;
 };
@@ -19,22 +28,6 @@ function useTx() {
     const v = t(key);
     return !v || v === key ? fallback : v;
   };
-}
-
-async function postJson(url: string, body: Record<string, unknown>): Promise<{ ok: boolean; status: number; data: unknown }> {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  let data: unknown = null;
-  try {
-    const text = await res.text();
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = null;
-  }
-  return { ok: res.ok, status: res.status, data };
 }
 
 const Field: React.FC<{
@@ -86,24 +79,26 @@ const GhostButton: React.FC<{ children: React.ReactNode; onClick?: () => void }>
   </button>
 );
 
-export const AuthScreens: React.FC<AuthScreensProps> = ({ initialView = 'login', baseUrl = AUTH_BASE_URL, onClose, onAuthenticated }) => {
+export const AuthScreens: React.FC<AuthScreensProps> = ({ initialView = 'login', forced = false, onClose, onAuthenticated }) => {
   const tx = useTx();
   const [view, setView] = useState<AuthView>(initialView);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [token, setToken] = useState('');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const base = (baseUrl || AUTH_BASE_URL).replace(/\/+$/, '');
-
   const clearFeedback = () => {
     setMessage(null);
     setError(null);
   };
+
+  const failMessage = (e: unknown) =>
+    e instanceof Error && e.message ? e.message : tx('authErrorGeneric', 'Something went wrong. Try again.');
 
   const handleRegister = async () => {
     clearFeedback();
@@ -111,18 +106,17 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ initialView = 'login',
       setError(tx('authErrorGeneric', 'Something went wrong. Try again.'));
       return;
     }
+    if (password !== confirmPassword) {
+      setError(tx('authPasswordMismatch', 'Passwords do not match.'));
+      return;
+    }
     setLoading(true);
     try {
-      const r = await postJson(`${base}/api/auth/register`, { name: name.trim(), email: email.trim(), password });
-      if (!r.ok) {
-        const msg = (r.data as { message?: string; error?: string })?.message || (r.data as { error?: string })?.error || '';
-        setError(msg || tx('authErrorGeneric', 'Something went wrong. Try again.'));
-        return;
-      }
+      await authRegister({ name: name.trim(), email: email.trim(), password });
       setMessage(tx('authSuccessRegister', 'Account created. Check your email to verify.'));
       setView('verify');
-    } catch {
-      setError(tx('authErrorGeneric', 'Something went wrong. Try again.'));
+    } catch (e) {
+      setError(failMessage(e));
     } finally {
       setLoading(false);
     }
@@ -136,26 +130,11 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ initialView = 'login',
     }
     setLoading(true);
     try {
-      const r = await postJson(`${base}/api/auth/login`, { email: email.trim(), password });
-      if (!r.ok) {
-        const msg = (r.data as { message?: string; error?: string })?.message || (r.data as { error?: string })?.error || '';
-        setError(msg || tx('authErrorGeneric', 'Something went wrong. Try again.'));
-        return;
-      }
-      const d = r.data as { access_token?: string; refresh_token?: string; user?: unknown };
+      const r = await authLogin({ email: email.trim(), password });
       setMessage(tx('authSuccessLogin', 'Signed in.'));
-      if (d?.access_token) {
-        try {
-          localStorage.setItem('hermes_access_token', d.access_token);
-          if (d.refresh_token) localStorage.setItem('hermes_refresh_token', d.refresh_token);
-          if (d.user) localStorage.setItem('hermes_user', JSON.stringify(d.user));
-        } catch {
-          // ignore storage write failures
-        }
-        onAuthenticated?.({ accessToken: d.access_token, refreshToken: d.refresh_token || '', user: d.user || null });
-      }
-    } catch {
-      setError(tx('authErrorGeneric', 'Something went wrong. Try again.'));
+      onAuthenticated?.({ accessToken: r.accessToken, refreshToken: r.refreshToken, user: r.user });
+    } catch (e) {
+      setError(failMessage(e));
     } finally {
       setLoading(false);
     }
@@ -169,16 +148,11 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ initialView = 'login',
     }
     setLoading(true);
     try {
-      const r = await postJson(`${base}/api/auth/verify-email`, { token: token.trim() });
-      if (!r.ok) {
-        const msg = (r.data as { message?: string; error?: string })?.message || (r.data as { error?: string })?.error || '';
-        setError(msg || tx('authErrorGeneric', 'Something went wrong. Try again.'));
-        return;
-      }
+      await authVerify({ token: token.trim() });
       setMessage(tx('authSuccessVerify', 'Email verified.'));
       setView('login');
-    } catch {
-      setError(tx('authErrorGeneric', 'Something went wrong. Try again.'));
+    } catch (e) {
+      setError(failMessage(e));
     } finally {
       setLoading(false);
     }
@@ -192,15 +166,10 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ initialView = 'login',
     }
     setLoading(true);
     try {
-      const r = await postJson(`${base}/api/auth/resend-verification`, { email: email.trim() });
-      if (!r.ok) {
-        const msg = (r.data as { message?: string; error?: string })?.message || (r.data as { error?: string })?.error || '';
-        setError(msg || tx('authErrorGeneric', 'Something went wrong. Try again.'));
-        return;
-      }
+      await authResend(email.trim());
       setMessage(tx('authSuccessResend', 'Verification code sent.'));
-    } catch {
-      setError(tx('authErrorGeneric', 'Something went wrong. Try again.'));
+    } catch (e) {
+      setError(failMessage(e));
     } finally {
       setLoading(false);
     }
@@ -214,15 +183,10 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ initialView = 'login',
     }
     setLoading(true);
     try {
-      const r = await postJson(`${base}/api/auth/forgot-password`, { email: email.trim() });
-      if (!r.ok) {
-        const msg = (r.data as { message?: string; error?: string })?.message || (r.data as { error?: string })?.error || '';
-        setError(msg || tx('authErrorGeneric', 'Something went wrong. Try again.'));
-        return;
-      }
+      await authForgot({ email: email.trim() });
       setMessage(tx('authSuccessForgot', 'If that email exists, a reset link was sent.'));
-    } catch {
-      setError(tx('authErrorGeneric', 'Something went wrong. Try again.'));
+    } catch (e) {
+      setError(failMessage(e));
     } finally {
       setLoading(false);
     }
@@ -236,16 +200,11 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ initialView = 'login',
     }
     setLoading(true);
     try {
-      const r = await postJson(`${base}/api/auth/reset-password`, { token: token.trim(), new_password: newPassword });
-      if (!r.ok) {
-        const msg = (r.data as { message?: string; error?: string })?.message || (r.data as { error?: string })?.error || '';
-        setError(msg || tx('authErrorGeneric', 'Something went wrong. Try again.'));
-        return;
-      }
+      await authReset({ token: token.trim(), password: newPassword });
       setMessage(tx('authSuccessReset', 'Password updated. You can now sign in.'));
       setView('login');
-    } catch {
-      setError(tx('authErrorGeneric', 'Something went wrong. Try again.'));
+    } catch (e) {
+      setError(failMessage(e));
     } finally {
       setLoading(false);
     }
@@ -288,13 +247,15 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ initialView = 'login',
             </h2>
             <p className="t-caption text-[var(--app-text-muted)] mt-1">{subtitle}</p>
           </div>
-          <button
-            onClick={onClose}
-            aria-label={tx('authClose', 'Close')}
-            className="w-11 h-11 flex items-center justify-center r-sm text-[var(--app-text-muted)] hover:text-[var(--app-text)] cursor-pointer shrink-0"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          {!forced && (
+            <button
+              onClick={onClose}
+              aria-label={tx('authClose', 'Close')}
+              className="w-11 h-11 flex items-center justify-center r-sm text-[var(--app-text-muted)] hover:text-[var(--app-text)] cursor-pointer shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
 
         {loading && <p className="t-caption text-[var(--app-text-dim)]">{tx('authLoading', 'Please wait')}</p>}
@@ -313,17 +274,21 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ initialView = 'login',
           <div className="space-y-4">
             <Field label={tx('authEmailLabel', 'Email')} value={email} onChange={setEmail} placeholder={tx('authEmailPlaceholder', 'you@example.com')} autoComplete="email" id="auth-email" />
             <Field label={tx('authPasswordLabel', 'Password')} type="password" value={password} onChange={setPassword} placeholder={tx('authPasswordPlaceholder', 'Your password')} autoComplete="current-password" id="auth-password" />
-            <PrimaryButton loading={loading} onClick={handleLogin}>
-              {loading ? tx('authLoading', 'Please wait') : tx('authLoginAction', 'Sign in')}
-            </PrimaryButton>
-            <div className="flex flex-col gap-2">
-              <button type="button" onClick={() => { clearFeedback(); setView('forgot'); }} className="t-caption text-[var(--app-accent-text)] underline text-start cursor-pointer">
-                {tx('authForgotLink', 'Forgot your password?')}
-              </button>
-              <button type="button" onClick={() => { clearFeedback(); setView('register'); }} className="t-caption text-[var(--app-text-muted)] underline text-start cursor-pointer">
-                {tx('authNoAccount', 'No account? Create one')}
-              </button>
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <PrimaryButton loading={loading} onClick={handleLogin}>
+                  {loading ? tx('authLoading', 'Please wait') : tx('authLoginAction', 'Sign in')}
+                </PrimaryButton>
+              </div>
+              <div className="flex-1">
+                <GhostButton onClick={() => { clearFeedback(); setView('register'); }}>
+                  {tx('authRegisterAction', 'Create account')}
+                </GhostButton>
+              </div>
             </div>
+            <button type="button" onClick={() => { clearFeedback(); setView('forgot'); }} className="t-caption text-[var(--app-accent-text)] underline text-start cursor-pointer">
+              {tx('authForgotLink', 'Forgot your password?')}
+            </button>
           </div>
         )}
 
@@ -332,12 +297,19 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ initialView = 'login',
             <Field label={tx('authNameLabel', 'Name')} value={name} onChange={setName} placeholder={tx('authNamePlaceholder', 'Your name')} autoComplete="name" id="auth-name" />
             <Field label={tx('authEmailLabel', 'Email')} value={email} onChange={setEmail} placeholder={tx('authEmailPlaceholder', 'you@example.com')} autoComplete="email" id="auth-email-reg" />
             <Field label={tx('authPasswordLabel', 'Password')} type="password" value={password} onChange={setPassword} placeholder={tx('authPasswordPlaceholder', 'Your password')} autoComplete="new-password" id="auth-password-reg" />
-            <PrimaryButton loading={loading} onClick={handleRegister}>
-              {loading ? tx('authLoading', 'Please wait') : tx('authRegisterAction', 'Create account')}
-            </PrimaryButton>
-            <button type="button" onClick={() => { clearFeedback(); setView('login'); }} className="t-caption text-[var(--app-text-muted)] underline text-start cursor-pointer">
-              {tx('authHaveAccount', 'Already have an account? Sign in')}
-            </button>
+            <Field label={tx('authConfirmPasswordLabel', 'Confirm password')} type="password" value={confirmPassword} onChange={setConfirmPassword} placeholder={tx('authPasswordPlaceholder', 'Your password')} autoComplete="new-password" id="auth-password-confirm" />
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <PrimaryButton loading={loading} onClick={handleRegister}>
+                  {loading ? tx('authLoading', 'Please wait') : tx('authRegisterAction', 'Create account')}
+                </PrimaryButton>
+              </div>
+              <div className="flex-1">
+                <GhostButton onClick={() => { clearFeedback(); setView('login'); }}>
+                  {tx('authLoginAction', 'Sign in')}
+                </GhostButton>
+              </div>
+            </div>
           </div>
         )}
 

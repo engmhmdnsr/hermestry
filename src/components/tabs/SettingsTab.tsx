@@ -55,6 +55,7 @@ import { plainGatewayFailure, plainResultLine } from '../../services/plainFailur
 import { assertNoPlaintextSecrets } from '../../services/debugSafety';
 import { runRedactionSelfTests } from '../../services/redaction';
 import { AutoApproveGate } from '../approvals/AutoApproveGate';
+import { getStoredUser, logout as authLogout, type AuthUser } from '../../services/auth';
 import { useOverlayBehavior } from '../../hooks/useOverlayBehavior';
 import {
   APPROVAL_SCOPES,
@@ -73,11 +74,11 @@ import {
   ConfiguredProvider,
 } from '../../types/hermes';
 
-type SectionId = 'connection' | 'security' | 'gateway' | 'automation' | 'appearance' | 'advanced';
+type SectionId = 'account' | 'connection' | 'security' | 'gateway' | 'automation' | 'appearance' | 'advanced';
 
 // Fixed order of the section rail and the DOM ids its chips control. Module
 // scope so the scroll tracker and the chips share one source of truth.
-const SECTION_IDS: SectionId[] = ['connection', 'security', 'gateway', 'automation', 'appearance', 'advanced'];
+const SECTION_IDS: SectionId[] = ['account', 'connection', 'security', 'gateway', 'automation', 'appearance', 'advanced'];
 const sectionDomId = (id: SectionId) => `settings-section-${id}`;
 // The tab scrolls inside #main-content under a sticky header; the small offset
 // keeps an opened card clear of that header instead of half hidden beneath it.
@@ -972,6 +973,7 @@ export const SettingsTab: React.FC = () => {
   // Section grouping with progressive disclosure (UX-02). Connection and
   // Security start open; the rest disclose on tap so the page stays scannable.
   const [openSections, setOpenSections] = useState<Record<SectionId, boolean>>({
+    account: true,
     connection: true,
     security: true,
     gateway: false,
@@ -2113,7 +2115,32 @@ export const SettingsTab: React.FC = () => {
     ? configuredProviders.find((p) => p.id === settings.activeProviderId)
     : configuredProviders.find((p) => p.provider === settings.provider);
 
+  // Account section: signed-in user card + sign out. The subscription row
+  // lives here later (plan already flows from /me).
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  useEffect(() => {
+    let live = true;
+    const reload = () => {
+      getStoredUser().then((u) => { if (live) setAuthUser(u); }).catch(() => {});
+    };
+    reload();
+    const onChange = () => reload();
+    window.addEventListener('hermes:authChanged' as never, onChange as never);
+    return () => {
+      live = false;
+      window.removeEventListener('hermes:authChanged' as never, onChange as never);
+    };
+  }, []);
+  const handleSignOut = async () => {
+    try { await authLogout(); } catch {}
+    setAuthUser(null);
+    window.dispatchEvent(new CustomEvent('hermes:authChanged'));
+    showToast(tx('authSignedOut', 'Signed out.'), 'info');
+  };
+  const authPlan = typeof authUser?.plan === 'string' ? authUser.plan : 'free';
+
   const sectionChips: Array<{ id: SectionId; label: string }> = [
+    { id: 'account', label: tx('sectionAccount', 'Account') },
     { id: 'connection', label: tx('sectionConnection', 'Connection') },
     { id: 'security', label: tx('sectionSecurity', 'Security') },
     { id: 'gateway', label: tx('sectionServer', 'Hermes server') },
@@ -2314,6 +2341,58 @@ export const SettingsTab: React.FC = () => {
       </nav>
 
       {/* ========================================================= */}
+      {/* ACCOUNT: signed-in user, plan home for future subscriptions */}
+      {/* ========================================================= */}
+      <Section
+        title={tx('sectionAccount', 'Account')}
+        subtitle={authUser ? (authUser.email || '') : tx('authAccountSectionDesc', 'Manage your Hermes account')}
+        open={openSections.account}
+        onToggle={() => toggleSection('account')}
+        id={sectionDomId('account')}
+        badge={authUser ? <Badge tone="accent">{authPlan === 'pro' ? tx('authPlanPro', 'Pro') : tx('authPlanFree', 'Free')}</Badge> : undefined}
+      >
+        {authUser ? (
+          <Row>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="t-body text-[var(--app-text)] truncate">
+                  {tx('authSignedInAs', 'Signed in as')} {authUser.name || authUser.email}
+                </p>
+                <p className="t-caption text-[var(--app-text-muted)] mt-1 truncate">{authUser.email}</p>
+                <p className="t-caption text-[var(--app-text-muted)] mt-1">
+                  {tx('authPlanLabel', 'Plan')}: {authPlan === 'pro' ? tx('authPlanPro', 'Pro') : tx('authPlanFree', 'Free')}
+                </p>
+              </div>
+              <button
+                onClick={() => void handleSignOut()}
+                className="hm-hit inline-flex items-center px-4 py-2 min-h-[36px] r-sm edge t-label text-[var(--app-text)] hover:bg-[var(--app-card-hover)] transition cursor-pointer shrink-0"
+              >
+                {tx('authSignOut', 'Sign out')}
+              </button>
+            </div>
+          </Row>
+        ) : (
+          <Row>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="t-body text-[var(--app-text)]">{tx('authAccountSectionTitle', 'Account')}</p>
+                <p className="t-caption text-[var(--app-text-muted)] mt-1">{tx('authAccountSectionDesc', 'Manage your Hermes account')}</p>
+              </div>
+              <button
+                onClick={() => {
+                  try { window.history.pushState(null, '', '#/auth'); } catch {}
+                  window.dispatchEvent(new CustomEvent('hermes:openAuth'));
+                }}
+                className="hm-hit inline-flex items-center px-4 py-2 min-h-[36px] r-sm bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] t-label text-[var(--app-on-accent)] transition cursor-pointer shrink-0"
+              >
+                {tx('authOpenAccount', 'Open account')}
+              </button>
+            </div>
+          </Row>
+        )}
+      </Section>
+
+      {/* ========================================================= */}
       {/* CONNECTION: primary task first (active provider), then list */}
       {/* ========================================================= */}
       <Section
@@ -2334,23 +2413,6 @@ export const SettingsTab: React.FC = () => {
             </div>
           </Row>
         )}
-        <Row>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="t-body text-[var(--app-text)]">{tx('authAccountSectionTitle', 'Account')}</p>
-              <p className="t-caption text-[var(--app-text-muted)] mt-1">{tx('authAccountSectionDesc', 'Manage your Hermes account')}</p>
-            </div>
-            <button
-              onClick={() => {
-                try { window.history.pushState(null, '', '#/auth'); } catch {}
-                window.dispatchEvent(new CustomEvent('hermes:openAuth'));
-              }}
-              className="hm-hit inline-flex items-center px-4 py-2 min-h-[36px] r-sm bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] t-label text-[var(--app-on-accent)] transition cursor-pointer shrink-0"
-            >
-              {tx('authOpenAccount', 'Open account')}
-            </button>
-          </div>
-        </Row>
         <Row>
           <div className="flex items-start justify-between gap-3">
             <div>

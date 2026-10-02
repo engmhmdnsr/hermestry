@@ -18,6 +18,7 @@ import {
 import { ErrorBoundary } from './components/ui/ErrorBoundary';
 import { TAB_HASHES } from './constants/tabs';
 import { AuthScreens } from './components/auth/AuthScreens';
+import { isAuthenticated } from './services/auth';
 
 // PERF-01: code-split every tab so the initial bundle stays lean. Home and
 // Chat used to be imported eagerly and kept a 719KB chunk inside the entry
@@ -109,6 +110,27 @@ export const App: React.FC = () => {
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
   const [isUnlocked, setIsUnlocked] = useState<boolean>(false);
   const [authOpen, setAuthOpen] = useState<boolean>(false);
+  // Auth wall: no stored account means no app. Checked once at boot and
+  // again whenever auth state changes (sign in/out anywhere).
+  const [authChecked, setAuthChecked] = useState<boolean>(false);
+  const [authRequired, setAuthRequired] = useState<boolean>(false);
+  useEffect(() => {
+    let live = true;
+    const recheck = () => {
+      isAuthenticated().then((ok) => {
+        if (live) { setAuthRequired(!ok); setAuthChecked(true); }
+      }).catch(() => {
+        if (live) { setAuthRequired(true); setAuthChecked(true); }
+      });
+    };
+    recheck();
+    const onChange = () => recheck();
+    window.addEventListener('hermes:authChanged' as never, onChange as never);
+    return () => {
+      live = false;
+      window.removeEventListener('hermes:authChanged' as never, onChange as never);
+    };
+  }, []);
 
   // i18n with an English fallback, same pattern the tabs use: t() returns the
   // key itself when no locale bundle ships it, and languages.ts is not ours to
@@ -411,6 +433,22 @@ export const App: React.FC = () => {
     );
   }
 
+  // 2. Auth wall: without an account there is no app. Forced (no close),
+  // sign-in and sign-up sit side by side inside.
+  if (authChecked && authRequired) {
+    return (
+      <AuthScreens
+        forced
+        initialView="login"
+        onAuthenticated={() => {
+          window.dispatchEvent(new CustomEvent('hermes:authChanged'));
+          setAuthRequired(false);
+          setAuthOpen(false);
+        }}
+      />
+    );
+  }
+
   // 2. PIN Security Gate
   if (settings.appLockEnabled && !isUnlocked) {
     return <AppLockGate onUnlocked={() => setIsUnlocked(true)} />;
@@ -647,6 +685,11 @@ export const App: React.FC = () => {
       {authOpen && (
         <AuthScreens
           onClose={() => {
+            setAuthOpen(false);
+            if (window.location.hash === '#/auth') window.history.replaceState(null, '', '#/settings');
+          }}
+          onAuthenticated={() => {
+            window.dispatchEvent(new CustomEvent('hermes:authChanged'));
             setAuthOpen(false);
             if (window.location.hash === '#/auth') window.history.replaceState(null, '', '#/settings');
           }}

@@ -16,6 +16,7 @@ export interface AuthUser {
   email: string;
   name?: string;
   emailVerified?: boolean;
+  plan?: string;
   createdAt?: string;
   updatedAt?: string;
   [key: string]: unknown;
@@ -491,7 +492,7 @@ export async function resetPassword(payload: ResetPasswordPayload): Promise<void
   const res = await unauthedFetch('/api/auth/reset-password', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ token: payload.token, new_password: payload.password }),
   });
   const data = await parseJsonSafe(res);
   ensureOk(res, data);
