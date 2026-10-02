@@ -1,4 +1,5 @@
 import { isNativeGateway, nativeSecretGet, nativeSecretSet } from './nativeGateway';
+import { gwFetch } from './gwFetch';
 
 export const AUTH_BASE_URL = 'http://100.112.74.9:8082';
 
@@ -311,7 +312,9 @@ async function parseJsonSafe(res: Response): Promise<Record<string, unknown>> {
 }
 
 async function unauthedFetch(path: string, init: RequestInit): Promise<Response> {
-  return fetch(`${AUTH_BASE_URL}${path}`, init);
+  // Same CORS death as the gateway calls (vc76): route through the native
+  // bridge on device, plain fetch on web.
+  return gwFetch(`${AUTH_BASE_URL}${path}`, init);
 }
 
 async function doRefresh(): Promise<string | null> {
@@ -365,13 +368,13 @@ async function authedFetch(path: string, init: RequestInit = {}): Promise<Respon
   if (!headers['Content-Type'] && init.body) headers['Content-Type'] = 'application/json';
   if (memAccess) headers['Authorization'] = `Bearer ${memAccess}`;
 
-  let res = await fetch(`${AUTH_BASE_URL}${path}`, { ...init, headers });
+  let res = await gwFetch(`${AUTH_BASE_URL}${path}`, { ...init, headers });
 
   if (res.status === 401 && memRefresh) {
     const newAccess = await doRefresh();
     if (newAccess) {
-      const retryHeaders: Record<string, string> = { ...headers, Authorization: `Bearer ${newAccess}` };
-      res = await fetch(`${AUTH_BASE_URL}${path}`, { ...init, headers: retryHeaders });
+      const retryHeaders: Record<string, string> = { ...headers, Authorization: 'Bearer ' + newAccess };
+      res = await gwFetch(`${AUTH_BASE_URL}${path}`, { ...init, headers: retryHeaders });
     }
   }
   return res;
@@ -443,7 +446,7 @@ export async function logout(): Promise<void> {
   try {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (memAccess) headers['Authorization'] = `Bearer ${memAccess}`;
-    await fetch(`${AUTH_BASE_URL}/api/auth/logout`, {
+    await gwFetch(`${AUTH_BASE_URL}/api/auth/logout`, {
       method: 'POST',
       headers,
       body: JSON.stringify(rt ? { refresh_token: rt } : {}),
