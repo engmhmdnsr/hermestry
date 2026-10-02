@@ -8,6 +8,16 @@ export interface MobileSession {
   source: string;
 }
 
+// On-device project: a host folder symlinked into the gateway so agent
+// turns can work on device files. guestPath is /root/.projects/<id>.
+export interface Project {
+  id: string;
+  name: string;
+  hostPath: string;
+  guestPath: string;
+  createdAt: number;
+}
+
 export interface ChatMessage {
   id: string;
   sender: 'you' | 'hermes';

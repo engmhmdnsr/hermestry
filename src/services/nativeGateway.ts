@@ -81,6 +81,9 @@ interface HermesGatewayPlugin {
     body: string;
   }): Promise<void>;
   streamAbort?(options: { id: string }): Promise<void>;
+  pickProjectDir?(): Promise<{ uri?: string; name?: string; hostPath?: string }>;
+  storageAccess?(): Promise<{ granted?: boolean }>;
+  requestStorageAccess?(): Promise<{ opened?: boolean }>;
 }
 
 function getPlugin(): HermesGatewayPlugin | null {
@@ -293,6 +296,54 @@ export async function nativeServerKey(): Promise<string> {
     if (attempt + 1 < SERVER_KEY_ATTEMPTS) await waitMs(SERVER_KEY_RETRY_MS);
   }
   return '';
+}
+
+export interface PickedProjectDir {
+  uri: string;
+  name: string;
+  hostPath: string;
+}
+
+// Project folders: SAF tree picker on the native side (persisted URI
+// permission, primary volume only). Returns null when the user cancels,
+// when the bridge is absent (web), or on older APKs without the method.
+export async function nativePickProjectDir(): Promise<PickedProjectDir | null> {
+  if (!isNativeGateway()) return null;
+  const plugin = await waitForBridge();
+  if (!plugin || typeof plugin.pickProjectDir !== 'function') return null;
+  try {
+    const res = await plugin.pickProjectDir();
+    const hostPath = typeof res?.hostPath === 'string' ? res.hostPath : '';
+    if (!hostPath) return null;
+    return {
+      uri: typeof res?.uri === 'string' ? res.uri : '',
+      name: typeof res?.name === 'string' && res.name ? res.name : 'project',
+      hostPath,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// All-files access for project folders (Android 11+). Web and older APKs
+// report granted so callers never block there.
+export async function nativeStorageAccess(): Promise<boolean> {
+  if (!isNativeGateway()) return true;
+  const plugin = await waitForBridge();
+  if (!plugin || typeof plugin.storageAccess !== 'function') return true;
+  try {
+    const res = await plugin.storageAccess();
+    return res?.granted !== false;
+  } catch {
+    return true;
+  }
+}
+
+export async function nativeRequestStorageAccess(): Promise<void> {
+  if (!isNativeGateway()) return;
+  const plugin = await waitForBridge();
+  if (!plugin || typeof plugin.requestStorageAccess !== 'function') return;
+  try { await plugin.requestStorageAccess(); } catch { /* settings page failed: user retries */ }
 }
 
 // Encrypted secret slots (SecurePrefs). Present only in the APK; on plain

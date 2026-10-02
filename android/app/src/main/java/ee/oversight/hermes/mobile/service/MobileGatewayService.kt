@@ -648,6 +648,10 @@ class MobileGatewayService : Service() {
     val pb = ProcessBuilder(
       proot, "-r", fs,
       "-b", "/dev", "-b", "/proc", "-b", "/sys",
+      // Projects: user folders on /storage must resolve inside the guest or
+      // project symlinks dangle. No restart to switch: binds are fixed at
+      // launch, per-project links are created live under /root/.projects.
+      "-b", "/storage", "-b", "/sdcard",
       "-b", "$home:/root",
       "-b", "$cfg:/root/config.yaml",
       "-w", "/root",

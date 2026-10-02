@@ -7,6 +7,10 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Environment
+import android.provider.DocumentsContract
+import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
@@ -59,6 +63,10 @@ class HermesGatewayPlugin : Plugin() {
   private val REQ_SPEECH = 0x48E7
   private var pendingSpeechCall: PluginCall? = null
   private var pendingSpeechMax = 500
+  // Project folders: SAF tree picker (persisted URI permission). Only the
+  // primary volume resolves to a host path the gateway can symlink.
+  private val REQ_PROJECT_DIR = 0x49A1
+  private var pendingProjectCall: PluginCall? = null
   private var tts: TextToSpeech? = null
   private var ttsReady = false
   private var ttsDead = false
@@ -88,8 +96,79 @@ class HermesGatewayPlugin : Plugin() {
     startActivityForResult(call, intent, REQ_SPEECH)
   }
 
+  // Projects: raw /storage paths need All-files access on Android 11+
+  // (SAF URIs alone are not paths the gateway can follow). Checked when
+  // the user creates a project; the settings page cannot report back, so
+  // the app re-checks on the next attempt.
+  @PluginMethod
+  fun storageAccess(call: PluginCall) {
+    val granted = android.os.Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()
+    val ret = JSObject()
+    ret.put("granted", granted)
+    call.resolve(ret)
+  }
+
+  @PluginMethod
+  fun requestStorageAccess(call: PluginCall) {
+    if (android.os.Build.VERSION.SDK_INT < 30) {
+      val ret = JSObject()
+      ret.put("opened", true)
+      call.resolve(ret)
+      return
+    }
+    try {
+      var intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+        data = Uri.parse("package:" + context.packageName)
+      }
+      if (intent.resolveActivity(context.packageManager) == null) {
+        intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+      }
+      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      context.startActivity(intent)
+      val ret = JSObject()
+      ret.put("opened", true)
+      call.resolve(ret)
+    } catch (_: Exception) { call.reject("unavailable") }
+  }
+
+  @PluginMethod
+  fun pickProjectDir(call: PluginCall) {
+    if (pendingProjectCall != null) { call.reject("busy"); return }
+    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+      addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or
+        Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+        Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+    }
+    if (intent.resolveActivity(context.packageManager) == null) { call.reject("unavailable"); return }
+    pendingProjectCall = call
+    startActivityForResult(call, intent, REQ_PROJECT_DIR)
+  }
+
   override fun handleOnActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
     super.handleOnActivityResult(requestCode, resultCode, data)
+    if (requestCode == REQ_PROJECT_DIR) {
+      val call = pendingProjectCall
+      pendingProjectCall = null
+      if (call == null) return
+      if (resultCode != Activity.RESULT_OK || data?.data == null) { call.reject("cancelled"); return }
+      val uri = data.data!!
+      try {
+        context.contentResolver.takePersistableUriPermission(
+          uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+        )
+      } catch (_: Exception) { call.reject("permission"); return }
+      val treeId = try { DocumentsContract.getTreeDocumentId(uri) } catch (_: Exception) { null }
+      val hostPath = if (treeId != null && treeId.startsWith("primary:")) {
+        "/storage/emulated/0/" + treeId.removePrefix("primary:")
+      } else null
+      if (hostPath == null) { call.reject("external_storage_unsupported"); return }
+      val ret = JSObject()
+      ret.put("uri", uri.toString())
+      ret.put("name", hostPath.trimEnd('/').substringAfterLast('/').ifEmpty { "project" })
+      ret.put("hostPath", hostPath.trimEnd('/'))
+      call.resolve(ret)
+      return
+    }
     if (requestCode != REQ_SPEECH) return
     val call = pendingSpeechCall
     pendingSpeechCall = null

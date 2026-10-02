@@ -1133,6 +1133,41 @@ export class GatewayService {
     }
   }
 
+  // Projects: host folders symlinked into the gateway (/root/.projects/<id>)
+  // so agent turns can work on device files with no gateway restart.
+  async bindProject(
+    id: string,
+    hostPath: string,
+    callerSignal?: AbortSignal
+  ): Promise<{ ok: boolean; guestPath: string; error?: string }> {
+    try {
+      const res = await gwFetch(`${this.baseUrl}/api/projects/bind`, {
+        method: 'POST',
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+        headers: this.getHeaders(),
+        body: JSON.stringify({ id, host_path: hostPath }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return { ok: false, guestPath: '', error: typeof data.error === 'string' ? data.error : `HTTP ${res.status}` };
+      return { ok: true, guestPath: typeof data.guest_path === 'string' ? data.guest_path : '' };
+    } catch (e: unknown) {
+      return { ok: false, guestPath: '', error: e instanceof Error ? e.message : 'gateway unreachable' };
+    }
+  }
+
+  async unbindProject(id: string, callerSignal?: AbortSignal): Promise<boolean> {
+    try {
+      const res = await gwFetch(`${this.baseUrl}/api/projects/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+        headers: this.getHeaders(),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
   // Diagnostics & Ops
   async doctor(callerSignal?: AbortSignal): Promise<DoctorReport> {
     try {

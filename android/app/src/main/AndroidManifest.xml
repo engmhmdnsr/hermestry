@@ -82,6 +82,11 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Projects: the agent works on the user's own folders. Raw paths under
+         /storage are unreadable on Android 11+ without this (SAF URIs alone
+         are not filesystem paths the gateway can follow). Requested only when
+         the user creates their first project; Play flavor may drop it. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />

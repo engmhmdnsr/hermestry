@@ -24,6 +24,35 @@ def _home_dir() -> str:
     return str(get_hermes_home())
 
 
+def _projects_dir() -> str:
+    path = os.path.join(_home_dir(), ".projects")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _valid_project_id(raw: Any) -> str:
+    pid = str(raw or "").strip()
+    if not pid or len(pid) > 64:
+        raise ValueError("bad project id")
+    if not all(c.isascii() and (c.isalnum() or c in "-_") for c in pid):
+        raise ValueError("bad project id")
+    return pid
+
+
+def _resolve_host_path(raw: Any) -> str:
+    # Primary internal storage only: SAF tree URIs from other volumes have
+    # no stable host path the gateway can follow.
+    want = os.path.realpath(str(raw or ""))
+    root = os.path.realpath("/storage/emulated/0")
+    if not want or want != root and not want.startswith(root + os.sep):
+        raise ValueError("only folders on internal storage are supported")
+    if not os.path.isdir(want):
+        raise ValueError("folder not found on this device")
+    if not os.access(want, os.R_OK | os.X_OK):
+        raise ValueError("cannot read that folder on this device")
+    return want
+
+
 # Desktop parity (config_env._CREDENTIAL_PROBES): env var -> (probe URL, auth style).
 _CRED_PROBES: dict[str, tuple[str, str]] = {
     "OPENROUTER_API_KEY": ("https://openrouter.ai/api/v1/key", "bearer"),
@@ -279,10 +308,87 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
         except Exception as exc:
             return web.json_response({"valid": False, "models": [], "error": str(exc)})
 
+    async def _get_projects(request):
+        # Live binds: every entry under .projects/ that still resolves.
+        from aiohttp import web
+
+        items = []
+        try:
+            base = _projects_dir()
+            for pid in sorted(os.listdir(base)):
+                try:
+                    _valid_project_id(pid)
+                except ValueError:
+                    continue
+                link = os.path.join(base, pid)
+                if not os.path.islink(link):
+                    continue
+                try:
+                    target = os.path.realpath(link)
+                except OSError:
+                    continue
+                items.append({"id": pid, "guest_path": link, "host_path": target,
+                              "alive": os.path.isdir(target)})
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+        return web.json_response({"projects": items})
+
+    async def _post_projects_bind(request):
+        # Symlink a host folder into the gateway. No restart: a symlink is a
+        # plain filesystem entry, unlike a proot -b mount.
+        from aiohttp import web
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        try:
+            pid = _valid_project_id(body.get("id"))
+            target = _resolve_host_path(body.get("host_path"))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        try:
+            link = os.path.join(_projects_dir(), pid)
+            if os.path.islink(link) or os.path.exists(link):
+                if os.path.islink(link) and os.path.realpath(link) == target:
+                    return web.json_response({"ok": True, "guest_path": link})
+                try:
+                    if os.path.islink(link):
+                        os.unlink(link)
+                    else:
+                        return web.json_response(
+                            {"error": "a non-link entry owns that id"}, status=409)
+                except OSError as exc:
+                    return web.json_response({"error": str(exc)}, status=500)
+            os.symlink(target, link)
+            return web.json_response({"ok": True, "guest_path": link})
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    async def _delete_project(request):
+        # Drop the link only: device files are never touched.
+        from aiohttp import web
+
+        try:
+            pid = _valid_project_id(request.match_info.get("id", ""))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        link = os.path.join(_projects_dir(), pid)
+        try:
+            if not os.path.islink(link):
+                return web.json_response({"error": "Unknown project"}, status=404)
+            os.unlink(link)
+            return web.json_response({"ok": True})
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
     return [
         ("GET", "/api/memory", _get_memory),
         ("POST", "/api/memory/toggle", _post_memory_toggle),
         ("GET", "/api/blueprints", _get_blueprints),
         ("POST", "/api/blueprints/{id}/instantiate", _post_instantiate),
         ("POST", "/api/providers/validate", _post_providers_validate),
+        ("GET", "/api/projects", _get_projects),
+        ("POST", "/api/projects/bind", _post_projects_bind),
+        ("DELETE", "/api/projects/{id}", _delete_project),
     ]

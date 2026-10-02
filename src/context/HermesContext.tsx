@@ -12,6 +12,7 @@ import type {
   MemoryInfo,
   MobileSession,
   PendingApproval,
+  Project,
   QueuedMessage,
   SkillInfo,
   TurnMeta,
@@ -31,6 +32,9 @@ import {
   nativeNotifyAlert,
   nativeSetAutostart,
   nativeSetProvider,
+  nativePickProjectDir,
+  nativeStorageAccess,
+  nativeRequestStorageAccess,
   nativeStreamPost,
 } from '../services/nativeGateway';
 import {
@@ -349,6 +353,13 @@ interface HermesContextType {
   // directly (drawer pagination, export) must use this instead of building
   // their own keyless GatewayService, which the server rejects with 401.
   gatewayService: GatewayService;
+  // Projects: host folders bound into the gateway (no restart to switch).
+  projects: Project[];
+  activeProjectId: string | null;
+  sessionProjects: Record<string, string>;
+  createProject: () => Promise<{ ok: boolean; error?: string }>;
+  selectProject: (id: string | null) => void;
+  removeProject: (id: string) => Promise<void>;
   modelsLiveInfo: {
     error: string | null;
     liveCount: number;
@@ -675,6 +686,27 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   // Sessions and Chat
   const [sessions, setSessions] = useState<MobileSession[]>([]);
+  // Projects: host folders bound into the gateway. sessionProjects tags
+  // chats; activeProjectId filters the drawer and is inherited by new
+  // chats. All three persist in localStorage; the server bind lives in
+  // /root/.projects/<id> and is recreated on demand.
+  const [projects, setProjects] = useState<Project[]>(() => {
+    try {
+      const raw = localStorage.getItem('hermes_projects');
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr.filter((p) => p && typeof p.id === 'string') : [];
+    } catch { return []; }
+  });
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(() => {
+    try { return localStorage.getItem('hermes_active_project') || null; } catch { return null; }
+  });
+  const [sessionProjects, setSessionProjects] = useState<Record<string, string>>(() => {
+    try {
+      const raw = localStorage.getItem('hermes_session_projects');
+      const p = raw ? JSON.parse(raw) : {};
+      return p && typeof p === 'object' ? p : {};
+    } catch { return {}; }
+  });
   // Tombstones for ids deleted while a list screen holds stale pages: the
   // drawer merges loaded-more pages the context refresh never reprunes.
   const [deletedSessionIds, setDeletedSessionIds] = useState<string[]>([]);
@@ -828,6 +860,12 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const refreshTokenRef = useRef<number>(0);
   const sessionsRef = useRef<MobileSession[]>(sessions);
   sessionsRef.current = sessions;
+  const projectsRef = useRef<Project[]>(projects);
+  projectsRef.current = projects;
+  const activeProjectIdRef = useRef<string | null>(activeProjectId);
+  activeProjectIdRef.current = activeProjectId;
+  const sessionProjectsRef = useRef<Record<string, string>>(sessionProjects);
+  sessionProjectsRef.current = sessionProjects;
   // Per-turn usage tracking for the estimation fallback.
   const turnUsageSeenRef = useRef<boolean>(false);
   const turnOutCharsRef = useRef<number>(0);
@@ -2887,6 +2925,86 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   };
 
   const newSessionInFlightRef = useRef<Promise<string> | null>(null);
+  // --- Projects: host folders bound into the gateway ---------------------
+  const persistProjects = (list: Project[]) => {
+    try { localStorage.setItem('hermes_projects', JSON.stringify(list)); } catch {}
+  };
+  const persistSessionProjects = (map: Record<string, string>) => {
+    try { localStorage.setItem('hermes_session_projects', JSON.stringify(map)); } catch {}
+  };
+  const projectForSession = (sessionId: string): Project | null => {
+    const pid = sessionProjectsRef.current[sessionId];
+    if (!pid) return null;
+    return projectsRef.current.find((p) => p.id === pid) || null;
+  };
+  const projectSystemPrompt = (proj: Project): string =>
+    `The user works in project '${proj.name}'. Project root: ${proj.guestPath} ` +
+    `(device folder: ${proj.hostPath}). Read and modify files under it with ` +
+    `absolute paths, and run commands with that directory.`;
+  const tagSessionProject = (sessionId: string) => {
+    const active = activeProjectIdRef.current;
+    if (!active || !projectsRef.current.some((p) => p.id === active)) return;
+    setSessionProjects((prev) => {
+      if (prev[sessionId] === active) return prev;
+      const next = { ...prev, [sessionId]: active };
+      persistSessionProjects(next);
+      return next;
+    });
+  };
+  const selectProject = (id: string | null) => {
+    setActiveProjectId(id);
+    try {
+      if (id) localStorage.setItem('hermes_active_project', id);
+      else localStorage.removeItem('hermes_active_project');
+    } catch {}
+    addLog(id ? `Project selected: ${id}` : 'Project filter cleared');
+  };
+  const createProject = async (): Promise<{ ok: boolean; error?: string }> => {
+    // Raw /storage paths need All-files access: open settings once, the
+    // user retries after granting (the settings page reports nothing back).
+    if (!(await nativeStorageAccess())) {
+      await nativeRequestStorageAccess();
+      return { ok: false, error: 'storage_permission' };
+    }
+    const picked = await nativePickProjectDir();
+    if (!picked) return { ok: false, error: 'cancelled' };
+    const slug = picked.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'project';
+    const id = `${slug}-${Date.now().toString(36)}`;
+    const bound = await gatewayService.bindProject(id, picked.hostPath);
+    if (!bound.ok || !bound.guestPath) {
+      addLog(`Project bind failed: ${bound.error || 'no guest path'}`);
+      return { ok: false, error: bound.error || 'bind failed' };
+    }
+    const proj: Project = {
+      id, name: picked.name, hostPath: picked.hostPath,
+      guestPath: bound.guestPath, createdAt: Date.now(),
+    };
+    setProjects((prev) => {
+      const next = [...prev, proj];
+      persistProjects(next);
+      return next;
+    });
+    selectProject(id);
+    addLog(`Project created: ${proj.name} -> ${proj.guestPath}`);
+    return { ok: true };
+  };
+  const removeProject = async (id: string) => {
+    try { await gatewayService.unbindProject(id); } catch {}
+    setProjects((prev) => {
+      const next = prev.filter((p) => p.id !== id);
+      persistProjects(next);
+      return next;
+    });
+    setSessionProjects((prev) => {
+      const next: Record<string, string> = {};
+      for (const [sid, pid] of Object.entries(prev)) if (pid !== id) next[sid] = pid;
+      persistSessionProjects(next);
+      return next;
+    });
+    if (activeProjectIdRef.current === id) selectProject(null);
+    addLog(`Project removed: ${id}`);
+  };
+
   const newSession = async (): Promise<string> => {
     // Single-flight: two entry points (drawer/Home guard locally, the Chat
     // failure card and /new do not) must never mint two chats.
@@ -2919,6 +3037,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
       setSessions(updated);
       selectSession(id);
+      tagSessionProject(id);
       addLog(`Created session ${id}`);
       return id;
     } catch (e) {
@@ -3110,6 +3229,10 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     if (reasoningEffort && reasoningEffort !== 'none') {
       body.model_options = { reasoning_effort: reasoningEffort.toLowerCase() };
     }
+    // Project chats carry their root as an ephemeral system prompt so the
+    // agent works on device files. The user text stays untouched.
+    const turnProject = projectForSession(sessionId);
+    if (turnProject) body.system_message = projectSystemPrompt(turnProject);
     // On device the WebView fetch below never runs: https://localhost to
     // http://127.0.0.1:8080 gets no CORS headers back. The native bridge
     // takes the stream instead (see the reader try below).
@@ -3931,6 +4054,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         gatewayService.saveLocalSessions(nextKnown);
         setSessions(nextKnown);
         setCurrentSessionId(createdId);
+        tagSessionProject(createdId);
         addLog(`Created session ${createdId} on the gateway before the first message`);
         // A Stop during the create must stick: without this guard the turn
         // fires anyway after the user cancelled it.
@@ -4275,6 +4399,12 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         refreshModels,
         ensureServerKey,
         gatewayService,
+        projects,
+        activeProjectId,
+        sessionProjects,
+        createProject,
+        selectProject,
+        removeProject,
         modelsLiveInfo,
         skills,
         setSkills,

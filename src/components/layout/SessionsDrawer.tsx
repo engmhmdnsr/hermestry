@@ -12,6 +12,8 @@ import {
   MoreHorizontal,
   CalendarClock,
   ChevronDown,
+  Folder,
+  FolderPlus,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import { resolveListUiState } from '../../services/pagination';
@@ -49,6 +51,12 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     pinnedIds,
     togglePin,
     deletedSessionIds,
+    projects,
+    activeProjectId,
+    sessionProjects,
+    createProject,
+    selectProject,
+    removeProject,
     jobs,
     t,
   } = useHermes();
@@ -90,6 +98,9 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
   // newSession() awaits a bridge lookup plus two gateway round trips before it
   // returns, so a second tap inside that window would mint a second chat.
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  // Projects: picker in flight, select-list expansion.
+  const [isCreatingProject, setIsCreatingProject] = useState(false);
+  const [projectsOpen, setProjectsOpen] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Paginated session list truthfulness (DATA-01/03/04/05). The context owns
@@ -177,6 +188,27 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
       if (toastTimer.current) clearTimeout(toastTimer.current);
     };
   }, []);
+
+  // Projects: SAF picker then server bind. Silent on user cancel.
+  const handleNewProject = async () => {
+    if (isCreatingProject) return;
+    setIsCreatingProject(true);
+    try {
+      const r = await createProject();
+      if (!r.ok && r.error && r.error !== 'cancelled') {
+        showDrawerToast(
+          r.error === 'storage_permission'
+            ? tx('grantStorageAccess', 'Allow file access in Settings, then tap New project again.')
+            : r.error,
+          'error'
+        );
+      }
+    } finally {
+      setIsCreatingProject(false);
+    }
+  };
+  const projectChatCount = (pid: string) => allSessions.filter((s) => sessionProjects[s.id] === pid).length;
+  const activeProject = projects.find((p) => p.id === activeProjectId) || null;
 
   const showDrawerToast = (msg: string, kind: 'info' | 'success' | 'error' = 'info') => {
     setDrawerToast(msg);
@@ -306,6 +338,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
 
   const visibleSessions = useMemo(() => {
     let list = allSessions.filter((s) => {
+      if (activeProjectId && sessionProjects[s.id] !== activeProjectId) return false;
       const q = query.toLowerCase().trim();
       return (
         !q ||
@@ -322,7 +355,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     });
 
     return list;
-  }, [allSessions, query, sortMode]);
+  }, [allSessions, query, sortMode, activeProjectId, sessionProjects]);
 
   const pinnedSessions = useMemo(() => {
     return visibleSessions.filter((s) => pinnedIds.includes(s.id));
@@ -540,6 +573,91 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
               <X className="w-4 h-4" />
             </button>
           </div>
+        </div>
+
+        {/* Projects: device folders the agent works on. No restart to switch. */}
+        <div className="px-3 py-2 hairline border-b space-y-2">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleNewProject()}
+              disabled={isCreatingProject}
+              className="flex-1 h-9 r-sm edge t-caption font-medium flex items-center justify-center gap-1.5 text-[var(--app-text)] hover:bg-[var(--app-card-hover)] transition disabled:opacity-50"
+            >
+              <FolderPlus className="w-4 h-4" />
+              {tx('newProject', 'New project')}
+            </button>
+            <button
+              type="button"
+              onClick={() => setProjectsOpen((v) => !v)}
+              aria-expanded={projectsOpen}
+              className={`flex-1 h-9 r-sm edge t-caption font-medium flex items-center justify-center gap-1.5 transition ${projectsOpen ? 'bg-[var(--app-accent-subtle)] text-[var(--app-accent-text)]' : 'text-[var(--app-text)] hover:bg-[var(--app-card-hover)]'}`}
+            >
+              <Folder className="w-4 h-4" />
+              {tx('selectProject', 'Select project')}
+            </button>
+          </div>
+          {activeProject && (
+            <div className="flex items-center gap-1.5 px-2 h-8 r-sm bg-[var(--app-accent-subtle)] text-[var(--app-accent-text)] t-caption min-w-0">
+              <Folder className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate flex-1">{activeProject.name}</span>
+              <span className="shrink-0 opacity-70">{projectChatCount(activeProject.id)}</span>
+              <button
+                type="button"
+                onClick={() => selectProject(null)}
+                aria-label={tx('clearProject', 'Show all chats')}
+                className="w-6 h-6 flex items-center justify-center r-sm hover:opacity-70 shrink-0"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+          {projectsOpen && (
+            <div className="space-y-1 max-h-44 overflow-y-auto">
+              <button
+                type="button"
+                onClick={() => { selectProject(null); setProjectsOpen(false); }}
+                className={`w-full px-2 h-9 r-sm t-caption flex items-center gap-2 transition ${!activeProjectId ? 'bg-[var(--app-accent-subtle)] text-[var(--app-accent-text)] font-medium' : 'text-[var(--app-text-muted)] hover:text-[var(--app-text)] hover:bg-[var(--app-card-hover)]'}`}
+              >
+                {tx('allChats', 'All chats')}
+              </button>
+              {projects.map((p) => (
+                <div
+                  key={p.id}
+                  className={`w-full r-sm flex items-center gap-1 transition ${p.id === activeProjectId ? 'bg-[var(--app-accent-subtle)]' : 'hover:bg-[var(--app-card-hover)]'}`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => { selectProject(p.id); setProjectsOpen(false); }}
+                    className="flex-1 px-2 h-9 t-caption flex items-center gap-2 min-w-0 text-start"
+                  >
+                    <Folder className="w-3.5 h-3.5 shrink-0 text-[var(--app-text-dim)]" />
+                    <span className={`truncate flex-1 ${p.id === activeProjectId ? 'text-[var(--app-accent-text)] font-medium' : 'text-[var(--app-text)]'}`}>
+                      {p.name}
+                    </span>
+                    <span className="t-caption text-[var(--app-text-dim)] shrink-0">{projectChatCount(p.id)}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm(tx('deleteProjectConfirm', `Remove project '${p.name}'? Files stay on the device.`))) {
+                        void removeProject(p.id);
+                      }
+                    }}
+                    aria-label={tx('deleteProject', 'Remove project')}
+                    className="w-8 h-8 flex items-center justify-center r-sm text-[var(--app-text-dim)] hover:text-[var(--app-danger-text)] shrink-0"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+              {projects.length === 0 && (
+                <p className="t-caption text-[var(--app-text-dim)] px-2 py-1">
+                  {tx('noProjects', 'No projects yet.')}
+                </p>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Search & Filters */}
