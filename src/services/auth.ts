@@ -461,6 +461,34 @@ export async function logout(): Promise<void> {
   }
 }
 
+export async function deleteAccount(password: string): Promise<void> {
+  // Play policy: an account created in the app must be deletable in the app.
+  // The server re-checks the password, then drops the user row and every
+  // table hanging off it; local tokens are wiped either way.
+  await ensureLoaded();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (memAccess) headers['Authorization'] = `Bearer ${memAccess}`;
+  let res: Response;
+  try {
+    res = await gwFetch(`${AUTH_BASE_URL}/api/auth/account`, {
+      method: 'DELETE',
+      headers,
+      body: JSON.stringify({ password }),
+    });
+  } catch {
+    throw new Error('Could not reach the account service.');
+  }
+  const data = await parseJsonSafe(res);
+  if (!res.ok) {
+    const detail = typeof data.detail === 'string' ? data.detail : '';
+    throw new Error(detail || `HTTP ${res.status}`);
+  }
+  await clearAuthStorage();
+  await removeAccessToken();
+  await removeRefreshToken();
+  await removeUser();
+}
+
 export async function verifyEmail(payload: VerifyEmailPayload): Promise<void> {
   const res = await unauthedFetch('/api/auth/verify-email', {
     method: 'POST',

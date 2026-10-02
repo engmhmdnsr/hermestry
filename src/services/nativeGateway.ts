@@ -82,8 +82,8 @@ interface HermesGatewayPlugin {
   }): Promise<void>;
   streamAbort?(options: { id: string }): Promise<void>;
   pickProjectDir?(): Promise<{ uri?: string; name?: string; hostPath?: string }>;
-  storageAccess?(): Promise<{ granted?: boolean }>;
-  requestStorageAccess?(): Promise<{ opened?: boolean }>;
+  importProjectTree?(options: { uri: string; id: string }): Promise<{ count?: number; guestPath?: string }>;
+  exportProjectTree?(options: { id: string }): Promise<{ count?: number }>;
 }
 
 function getPlugin(): HermesGatewayPlugin | null {
@@ -305,45 +305,66 @@ export interface PickedProjectDir {
 }
 
 // Project folders: SAF tree picker on the native side (persisted URI
-// permission, primary volume only). Returns null when the user cancels,
-// when the bridge is absent (web), or on older APKs without the method.
+// permission, any volume the picker offers). The folder is then imported
+// into app-private storage, so hostPath is display-only and may be empty.
+// Returns null when the user cancels or the bridge is absent (web).
 export async function nativePickProjectDir(): Promise<PickedProjectDir | null> {
   if (!isNativeGateway()) return null;
   const plugin = await waitForBridge();
   if (!plugin || typeof plugin.pickProjectDir !== 'function') return null;
   try {
     const res = await plugin.pickProjectDir();
-    const hostPath = typeof res?.hostPath === 'string' ? res.hostPath : '';
-    if (!hostPath) return null;
+    const uri = typeof res?.uri === 'string' ? res.uri : '';
+    if (!uri) return null;
     return {
-      uri: typeof res?.uri === 'string' ? res.uri : '',
+      uri,
       name: typeof res?.name === 'string' && res.name ? res.name : 'project',
-      hostPath,
+      hostPath: typeof res?.hostPath === 'string' ? res.hostPath : '',
     };
   } catch {
     return null;
   }
 }
 
-// All-files access for project folders (Android 11+). Web and older APKs
-// report granted so callers never block there.
-export async function nativeStorageAccess(): Promise<boolean> {
-  if (!isNativeGateway()) return true;
+// Import a picked SAF tree into app-private storage
+// (files/debian/hermes_home/.projects/<id>). Present only in the APK;
+// rejects with too_large past the native cap, cancelled, copy_failed.
+export async function nativeImportProjectTree(
+  uri: string,
+  id: string
+): Promise<{ ok: boolean; count: number; error?: string }> {
+  if (!isNativeGateway()) return { ok: false, count: 0, error: 'web' };
   const plugin = await waitForBridge();
-  if (!plugin || typeof plugin.storageAccess !== 'function') return true;
+  if (!plugin || typeof plugin.importProjectTree !== 'function')
+    return { ok: false, count: 0, error: 'unsupported' };
   try {
-    const res = await plugin.storageAccess();
-    return res?.granted !== false;
-  } catch {
-    return true;
+    const res = await plugin.importProjectTree({ uri, id });
+    return { ok: true, count: typeof res?.count === 'number' ? res.count : 0 };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : '';
+    const code = /too_large|cancelled|copy_failed|exists|bad_id|bad_uri|unsupported/.exec(msg)?.[0];
+    return { ok: false, count: 0, error: code || 'copy_failed' };
   }
 }
 
-export async function nativeRequestStorageAccess(): Promise<void> {
-  if (!isNativeGateway()) return;
+// Export an imported project copy back out to a user-picked folder.
+// Silent null when the user cancels.
+export async function nativeExportProjectTree(
+  id: string
+): Promise<{ ok: boolean; count: number; error?: string }> {
+  if (!isNativeGateway()) return { ok: false, count: 0, error: 'web' };
   const plugin = await waitForBridge();
-  if (!plugin || typeof plugin.requestStorageAccess !== 'function') return;
-  try { await plugin.requestStorageAccess(); } catch { /* settings page failed: user retries */ }
+  if (!plugin || typeof plugin.exportProjectTree !== 'function')
+    return { ok: false, count: 0, error: 'unsupported' };
+  try {
+    const res = await plugin.exportProjectTree({ id });
+    return { ok: true, count: typeof res?.count === 'number' ? res.count : 0 };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : '';
+    const code = /cancelled|not_found|copy_failed|bad_id|busy|unsupported/.exec(msg)?.[0];
+    if (code === 'cancelled') return { ok: false, count: 0 };
+    return { ok: false, count: 0, error: code || 'copy_failed' };
+  }
 }
 
 // Encrypted secret slots (SecurePrefs). Present only in the APK; on plain

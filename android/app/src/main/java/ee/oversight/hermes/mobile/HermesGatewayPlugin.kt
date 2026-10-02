@@ -8,9 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Environment
 import android.provider.DocumentsContract
-import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
@@ -64,9 +62,17 @@ class HermesGatewayPlugin : Plugin() {
   private var pendingSpeechCall: PluginCall? = null
   private var pendingSpeechMax = 500
   // Project folders: SAF tree picker (persisted URI permission). Only the
-  // primary volume resolves to a host path the gateway can symlink.
+  // (SAF tree IDs are opaque; primary volume also resolves to a host path
+  // for display, everything else imports straight from the URI).
   private val REQ_PROJECT_DIR = 0x49A1
   private var pendingProjectCall: PluginCall? = null
+  private val REQ_EXPORT_DIR = 0x49A2
+  private var pendingExportId: String? = null
+  private var pendingExportCall: PluginCall? = null
+  // Project ids come from the app (slug + base36 stamp): keep them
+  // filesystem-safe before they reach .projects/<id>.
+  private val ID_RE = Regex("[A-Za-z0-9_-]{1,64}")
+  private val IMPORT_BYTE_CAP = 100L * 1024 * 1024
   private var tts: TextToSpeech? = null
   private var ttsReady = false
   private var ttsDead = false
@@ -96,39 +102,100 @@ class HermesGatewayPlugin : Plugin() {
     startActivityForResult(call, intent, REQ_SPEECH)
   }
 
-  // Projects: raw /storage paths need All-files access on Android 11+
-  // (SAF URIs alone are not paths the gateway can follow). Checked when
-  // the user creates a project; the settings page cannot report back, so
-  // the app re-checks on the next attempt.
+  // Projects: the user's folder is IMPORTED into app-private storage
+  // (files/debian/hermes_home/.projects/<id>) via the SAF tree the user
+  // picked. No MANAGE_EXTERNAL_STORAGE: raw /storage paths are unreadable
+  // on Android 11+, and Play rejects that permission for non-file-manager
+  // apps. The gateway works on the imported copy; exportProjectTree copies
+  // it back out. Bonus: any volume the picker offers (SD card, USB,
+  // Downloads provider) is importable, not just primary storage.
   @PluginMethod
-  fun storageAccess(call: PluginCall) {
-    val granted = android.os.Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()
-    val ret = JSObject()
-    ret.put("granted", granted)
-    call.resolve(ret)
+  fun importProjectTree(call: PluginCall) {
+    val uriStr = call.getString("uri") ?: ""
+    val id = call.getString("id") ?: ""
+    if (!ID_RE.matches(id)) { call.reject("bad_id"); return }
+    val uri = try { Uri.parse(uriStr) } catch (_: Exception) { call.reject("bad_uri"); return }
+    if (uri == null) { call.reject("bad_uri"); return }
+    scope.launch {
+      try {
+        val dest = java.io.File(Bootstrap.hermesHome(context), ".projects/$id")
+        if (dest.exists()) { call.reject("exists"); return@launch }
+        val root = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, uri)
+          ?: run { call.reject("bad_uri"); return@launch }
+        var count = 0
+        var bytes = 0L
+        copyDocTree(root, dest) { n, b ->
+          count += n; bytes += b
+          if (bytes > IMPORT_BYTE_CAP) throw ImportTooLarge()
+        }
+        val ret = JSObject()
+        ret.put("count", count)
+        ret.put("guestPath", "/root/.projects/$id")
+        call.resolve(ret)
+      } catch (e: ImportTooLarge) {
+        try { java.io.File(Bootstrap.hermesHome(context), ".projects/$id").deleteRecursively() } catch (_: Exception) { }
+        call.reject("too_large")
+      } catch (_: Exception) {
+        try { java.io.File(Bootstrap.hermesHome(context), ".projects/$id").deleteRecursively() } catch (_: Exception) { }
+        call.reject("copy_failed")
+      }
+    }
   }
 
   @PluginMethod
-  fun requestStorageAccess(call: PluginCall) {
-    if (android.os.Build.VERSION.SDK_INT < 30) {
-      val ret = JSObject()
-      ret.put("opened", true)
-      call.resolve(ret)
+  fun exportProjectTree(call: PluginCall) {
+    val id = call.getString("id") ?: ""
+    if (!ID_RE.matches(id)) { call.reject("bad_id"); return }
+    val src = java.io.File(Bootstrap.hermesHome(context), ".projects/$id")
+    if (!src.isDirectory) { call.reject("not_found"); return }
+    if (pendingExportCall != null) { call.reject("busy"); return }
+    val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+      addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or
+        Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+        Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+    }
+    if (intent.resolveActivity(context.packageManager) == null) { call.reject("unavailable"); return }
+    pendingExportId = id
+    pendingExportCall = call
+    startActivityForResult(call, intent, REQ_EXPORT_DIR)
+  }
+
+  private class ImportTooLarge : Exception()
+
+  private fun copyDocTree(src: androidx.documentfile.provider.DocumentFile, dest: java.io.File, onBytes: (files: Int, bytes: Long) -> Unit) {
+    if (src.isDirectory) {
+      dest.mkdirs()
+      for (child in src.listFiles()) {
+        val name = child.name ?: continue
+        copyDocTree(child, java.io.File(dest, name), onBytes)
+      }
       return
     }
-    try {
-      var intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
-        data = Uri.parse("package:" + context.packageName)
+    val len = src.length()
+    dest.parentFile?.mkdirs()
+    context.contentResolver.openInputStream(src.uri)?.use { ins ->
+      dest.outputStream().use { outs -> ins.copyTo(outs) }
+    } ?: throw java.io.IOException("unreadable ${src.uri}")
+    onBytes(1, if (len > 0) len else dest.length())
+  }
+
+  private fun copyFileTreeToDoc(src: java.io.File, destDir: androidx.documentfile.provider.DocumentFile): Int {
+    var count = 0
+    for (child in src.listFiles() ?: return 0) {
+      if (child.isDirectory) {
+        val sub = destDir.createDirectory(child.name) ?: continue
+        count += copyFileTreeToDoc(child, sub)
+      } else {
+        val mime = android.webkit.MimeTypeMap.getSingleton()
+          .getMimeTypeFromExtension(child.extension.lowercase()) ?: "application/octet-stream"
+        val doc = destDir.createFile(mime, child.name) ?: continue
+        context.contentResolver.openOutputStream(doc.uri)?.use { outs ->
+          child.inputStream().use { ins -> ins.copyTo(outs) }
+        } ?: continue
+        count++
       }
-      if (intent.resolveActivity(context.packageManager) == null) {
-        intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
-      }
-      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-      context.startActivity(intent)
-      val ret = JSObject()
-      ret.put("opened", true)
-      call.resolve(ret)
-    } catch (_: Exception) { call.reject("unavailable") }
+    }
+    return count
   }
 
   @PluginMethod
@@ -146,6 +213,33 @@ class HermesGatewayPlugin : Plugin() {
 
   override fun handleOnActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
     super.handleOnActivityResult(requestCode, resultCode, data)
+    if (requestCode == REQ_EXPORT_DIR) {
+      val call = pendingExportCall
+      val id = pendingExportId
+      pendingExportCall = null
+      pendingExportId = null
+      if (call == null || id == null) return
+      if (resultCode != Activity.RESULT_OK || data?.data == null) { call.reject("cancelled"); return }
+      val uri = data.data!!
+      scope.launch {
+        try {
+          try {
+            context.contentResolver.takePersistableUriPermission(
+              uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+          } catch (_: Exception) { }
+          val destRoot = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, uri)
+            ?: run { call.reject("bad_uri"); return@launch }
+          val src = java.io.File(Bootstrap.hermesHome(context), ".projects/$id")
+          if (!src.isDirectory) { call.reject("not_found"); return@launch }
+          val count = copyFileTreeToDoc(src, destRoot)
+          val ret = JSObject()
+          ret.put("count", count)
+          call.resolve(ret)
+        } catch (_: Exception) { call.reject("copy_failed") }
+      }
+      return
+    }
     if (requestCode == REQ_PROJECT_DIR) {
       val call = pendingProjectCall
       pendingProjectCall = null
@@ -158,13 +252,16 @@ class HermesGatewayPlugin : Plugin() {
         )
       } catch (_: Exception) { call.reject("permission"); return }
       val treeId = try { DocumentsContract.getTreeDocumentId(uri) } catch (_: Exception) { null }
+      // Primary volume resolves to a host path (legacy symlink binds use
+      // it); anything else imports from the URI with hostPath left empty.
       val hostPath = if (treeId != null && treeId.startsWith("primary:")) {
         "/storage/emulated/0/" + treeId.removePrefix("primary:")
-      } else null
-      if (hostPath == null) { call.reject("external_storage_unsupported"); return }
+      } else ""
       val ret = JSObject()
       ret.put("uri", uri.toString())
-      ret.put("name", hostPath.trimEnd('/').substringAfterLast('/').ifEmpty { "project" })
+      ret.put("name", hostPath.trimEnd('/').substringAfterLast('/').ifEmpty {
+        (if (treeId != null && treeId.contains(":")) treeId.substringAfter(":").substringAfterLast("/").ifEmpty { null } else null) ?: "project"
+      })
       ret.put("hostPath", hostPath.trimEnd('/'))
       call.resolve(ret)
       return

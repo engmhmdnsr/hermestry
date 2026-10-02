@@ -1154,11 +1154,11 @@ export class GatewayService {
     }
   }
 
-  // Projects: host folders symlinked into the gateway (/root/.projects/<id>)
-  // so agent turns can work on device files with no gateway restart.
-  async bindProject(
+  // Projects: local imported copies live under /root/.projects/<id>
+  // (SAF-imported, app-private). Legacy host_path binds are kept for
+  // old desktop installs only.
+  async bindLocalProject(
     id: string,
-    hostPath: string,
     callerSignal?: AbortSignal
   ): Promise<{ ok: boolean; guestPath: string; error?: string }> {
     try {
@@ -1166,7 +1166,7 @@ export class GatewayService {
         method: 'POST',
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
-        body: JSON.stringify({ id, host_path: hostPath }),
+        body: JSON.stringify({ id, local: true }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) return { ok: false, guestPath: '', error: typeof data.error === 'string' ? data.error : `HTTP ${res.status}` };

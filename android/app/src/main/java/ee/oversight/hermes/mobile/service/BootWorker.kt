@@ -41,11 +41,8 @@ class BootWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
   // IllegalStateException before doWork() ever runs.
   override suspend fun getForegroundInfo(): ForegroundInfo =
     if (Build.VERSION.SDK_INT >= 29) {
-      // specialUse needs API 34+; older releases fall back to dataSync.
-      val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
-        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-      else ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-      ForegroundInfo(2, notif(), type)
+      // dataSync only (Play review: specialUse needs a strong justification).
+      ForegroundInfo(2, notif(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
     } else {
       @Suppress("DEPRECATION") ForegroundInfo(2, notif())
     }

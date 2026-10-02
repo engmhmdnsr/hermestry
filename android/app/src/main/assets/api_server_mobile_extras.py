@@ -386,21 +386,27 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
                 except ValueError:
                     continue
                 link = os.path.join(base, pid)
-                if not os.path.islink(link):
-                    continue
-                try:
-                    target = os.path.realpath(link)
-                except OSError:
-                    continue
-                items.append({"id": pid, "guest_path": link, "host_path": target,
-                              "alive": os.path.isdir(target)})
+                if os.path.islink(link):
+                    try:
+                        target = os.path.realpath(link)
+                    except OSError:
+                        continue
+                    items.append({"id": pid, "guest_path": link, "host_path": target,
+                                  "alive": os.path.isdir(target)})
+                elif os.path.isdir(link):
+                    # Local imported copy (Play vc87+): no host path.
+                    items.append({"id": pid, "guest_path": link, "host_path": "",
+                                  "alive": True})
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
         return web.json_response({"projects": items})
 
     async def _post_projects_bind(request):
-        # Symlink a host folder into the gateway. No restart: a symlink is a
-        # plain filesystem entry, unlike a proot -b mount.
+        # Two modes. Legacy: symlink a host folder into the gateway (needs
+        # raw /storage access on the device, kept for old desktop installs).
+        # Local (Play vc87+): {"id": ..., "local": true} creates a real dir
+        # under .projects/ holding the SAF-imported copy. No restart: both
+        # are plain filesystem entries, unlike a proot -b mount.
         from aiohttp import web
 
         try:
@@ -409,6 +415,21 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
             return web.json_response({"error": "Invalid JSON body"}, status=400)
         try:
             pid = _valid_project_id(body.get("id"))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        link = os.path.join(_projects_dir(), pid)
+        if body.get("local"):
+            try:
+                if os.path.islink(link):
+                    return web.json_response(
+                        {"error": "a legacy link owns that id; unbind it first"},
+                        status=409,
+                    )
+                os.makedirs(link, exist_ok=True)
+                return web.json_response({"ok": True, "guest_path": link})
+            except Exception as exc:
+                return web.json_response({"error": str(exc)}, status=500)
+        try:
             target = _resolve_host_path(body.get("host_path"))
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
@@ -431,7 +452,9 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
             return web.json_response({"error": str(exc)}, status=500)
 
     async def _delete_project(request):
-        # Drop the link only: device files are never touched.
+        # Links: drop the link only, device files are never touched.
+        # Local imported copies: delete the copy (it lives in app-private
+        # storage, so keeping it would leak space with no way back).
         from aiohttp import web
 
         try:
@@ -440,10 +463,15 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
             return web.json_response({"error": str(exc)}, status=400)
         link = os.path.join(_projects_dir(), pid)
         try:
-            if not os.path.islink(link):
-                return web.json_response({"error": "Unknown project"}, status=404)
-            os.unlink(link)
-            return web.json_response({"ok": True})
+            if os.path.islink(link):
+                os.unlink(link)
+                return web.json_response({"ok": True})
+            if os.path.isdir(link):
+                import shutil
+
+                shutil.rmtree(link)
+                return web.json_response({"ok": True})
+            return web.json_response({"error": "Unknown project"}, status=404)
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
 

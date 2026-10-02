@@ -55,7 +55,7 @@ import { plainGatewayFailure, plainResultLine } from '../../services/plainFailur
 import { assertNoPlaintextSecrets } from '../../services/debugSafety';
 import { runRedactionSelfTests } from '../../services/redaction';
 import { AutoApproveGate } from '../approvals/AutoApproveGate';
-import { getStoredUser, logout as authLogout, type AuthUser } from '../../services/auth';
+import { getStoredUser, logout as authLogout, deleteAccount as authDeleteAccount, type AuthUser } from '../../services/auth';
 import { useOverlayBehavior } from '../../hooks/useOverlayBehavior';
 import {
   APPROVAL_SCOPES,
@@ -2161,6 +2161,35 @@ export const SettingsTab: React.FC = () => {
     window.dispatchEvent(new CustomEvent('hermes:authChanged'));
     showToast(tx('authSignedOut', 'Signed out.'), 'info');
   };
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deletePw, setDeletePw] = useState('');
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const PRIVACY_URL = 'https://www.oversight.ee/hermes-privacy';
+  const handleDeleteAccount = async () => {
+    if (deleteBusy) return;
+    if (!deletePw) {
+      showToast(tx('authDeleteNeedPassword', 'Enter your password to confirm.'), 'error');
+      return;
+    }
+    setDeleteBusy(true);
+    try {
+      await authDeleteAccount(deletePw);
+      setAuthUser(null);
+      setDeleteOpen(false);
+      setDeletePw('');
+      window.dispatchEvent(new CustomEvent('hermes:authChanged'));
+      showToast(tx('authAccountDeleted', 'Account deleted.'), 'info');
+    } catch (e) {
+      showToast(
+        e instanceof Error && e.message
+          ? e.message
+          : tx('authDeleteFailed', 'Could not delete the account. Try again.'),
+        'error'
+      );
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
   const authPlan = typeof authUser?.plan === 'string' ? authUser.plan : 'free';
 
   const sectionChips: Array<{ id: SectionId; label: string }> = [
@@ -2376,6 +2405,7 @@ export const SettingsTab: React.FC = () => {
         badge={authUser ? <Badge tone="accent">{authPlan === 'pro' ? tx('authPlanPro', 'Pro') : tx('authPlanFree', 'Free')}</Badge> : undefined}
       >
         {authUser ? (
+          <>
           <Row>
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
@@ -2395,6 +2425,70 @@ export const SettingsTab: React.FC = () => {
               </button>
             </div>
           </Row>
+          <Row>
+            {deleteOpen ? (
+              <div className="w-full">
+                <p className="t-body text-[var(--app-text)]">{tx('authDeleteTitle', 'Delete account')}</p>
+                <p className="t-caption text-[var(--app-text-muted)] mt-1">
+                  {tx('authDeleteDesc', 'This removes your account and its sessions from the server. It cannot be undone.')}
+                </p>
+                <div className="flex items-center gap-2 mt-3">
+                  <input
+                    type="password"
+                    value={deletePw}
+                    onChange={(e) => setDeletePw(e.target.value)}
+                    placeholder={tx('authDeletePassword', 'Your password')}
+                    aria-label={tx('authDeletePassword', 'Your password')}
+                    className="flex-1 px-3 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => void handleDeleteAccount()}
+                    disabled={deleteBusy}
+                    className="hm-hit inline-flex items-center px-4 py-2 min-h-[36px] r-sm t-label bg-[var(--app-danger-solid)] text-[var(--app-on-danger)] disabled:opacity-50 cursor-pointer shrink-0"
+                  >
+                    {deleteBusy ? tx('authDeleteBusy', 'Deleting') : tx('authDeleteConfirm', 'Delete')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setDeleteOpen(false); setDeletePw(''); }}
+                    className="hm-hit inline-flex items-center px-4 py-2 min-h-[36px] r-sm edge t-label text-[var(--app-text)] hover:bg-[var(--app-card-hover)] cursor-pointer shrink-0"
+                  >
+                    {tx('authDeleteCancel', 'Cancel')}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="t-body text-[var(--app-text)]">{tx('authDeleteTitle', 'Delete account')}</p>
+                  <p className="t-caption text-[var(--app-text-muted)] mt-1">
+                    {tx('authDeleteHint', 'Removes the account and its sessions from the server.')}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDeleteOpen(true)}
+                  aria-label={tx('authDeleteTitle', 'Delete account')}
+                  className="hm-hit inline-flex items-center px-4 py-2 min-h-[36px] r-sm edge t-label text-[var(--app-danger)] hover:bg-[var(--app-card-hover)] transition cursor-pointer shrink-0"
+                >
+                  {tx('authDeleteTitle', 'Delete account')}
+                </button>
+              </div>
+            )}
+          </Row>
+          <Row>
+            <a
+              href={PRIVACY_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-between w-full min-h-[44px] t-body text-[var(--app-text)] hover:underline"
+            >
+              <span>{tx('authPrivacyPolicy', 'Privacy policy')}</span>
+              <span aria-hidden="true" className="text-[var(--app-text-muted)]">↗</span>
+            </a>
+          </Row>
+          </>
         ) : (
           <Row>
             <div className="flex items-start justify-between gap-3">

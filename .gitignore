@@ -5,6 +5,9 @@ dist/
 *.log
 *.apk
 *.aab
+*.jks
+*.keystore
+keystore-credentials.txt
 npm-debug.log*
 yarn-error.log*
 

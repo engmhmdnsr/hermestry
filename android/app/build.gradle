@@ -8,7 +8,7 @@ android {
         applicationId "ee.oversight.hermes.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 86
+        versionCode 88
         versionName "1.3.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         ndk {
@@ -26,6 +26,27 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        release {
+            // Upload key + credentials live OUTSIDE the repo (secure home
+            // dir); repo-root copies only help a fresh checkout on another
+            // machine. Nothing is committed.
+            def creds = new Properties()
+            def homeCreds = file("${System.getProperty("user.home")}/AppData/Local/hermes/android-keystore/keystore-credentials.txt")
+            def rootCreds = file("${rootDir}/keystore-credentials.txt")
+            def credsFile = homeCreds.exists() ? homeCreds : rootCreds
+            if (credsFile.exists()) {
+                credsFile.withInputStream { creds.load(it) }
+            }
+            def homeKeystore = file("${System.getProperty("user.home")}/AppData/Local/hermes/android-keystore/hermes-control-release.jks")
+            def envPath = System.getenv("KEYSTORE_PATH")
+            def envStore = envPath?.trim() ? file(envPath) : null
+            storeFile = (envStore?.exists() ? envStore : (homeKeystore.exists() ? homeKeystore : null))
+            storePassword = System.getenv("STORE_PASSWORD") ?: creds.getProperty("STORE_PASSWORD") ?: ""
+            keyAlias = System.getenv("KEY_ALIAS") ?: creds.getProperty("KEY_ALIAS") ?: "upload"
+            keyPassword = System.getenv("KEY_PASSWORD") ?: creds.getProperty("KEY_PASSWORD") ?: ""
+        }
+    }
     buildTypes {
         debug {
             debuggable true
@@ -34,6 +55,11 @@ android {
             debuggable false
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            // Play requires a signed AAB; the AAB is built from this same
+            // config (:app:bundleRelease). Play App Signing re-signs on top.
+            if (signingConfigs.release.storeFile?.exists()) {
+                signingConfig signingConfigs.release
+            }
         }
     }
     kotlinOptions {
@@ -60,6 +86,7 @@ dependencies {
     // On-device gateway runner (restored native code, Capacitor bridge only).
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0"
     implementation "androidx.work:work-runtime-ktx:2.10.0"
+    implementation "androidx.documentfile:documentfile:1.0.1"
     implementation "androidx.security:security-crypto:1.1.0-alpha06"
     implementation "org.apache.commons:commons-compress:1.26.1"
     implementation "org.tukaani:xz:1.10"

@@ -14,6 +14,7 @@ import {
   ChevronDown,
   Folder,
   FolderPlus,
+  Share2,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import { resolveListUiState } from '../../services/pagination';
@@ -55,6 +56,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     activeProjectId,
     sessionProjects,
     createProject,
+    exportProject,
     selectProject,
     removeProject,
     jobs,
@@ -189,22 +191,35 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
     };
   }, []);
 
-  // Projects: SAF picker then server bind. Silent on user cancel.
+  // Projects: pick the folder, import a copy, bind it. Silent on cancel.
   const handleNewProject = async () => {
     if (isCreatingProject) return;
     setIsCreatingProject(true);
     try {
       const r = await createProject();
       if (!r.ok && r.error && r.error !== 'cancelled') {
-        showDrawerToast(
-          r.error === 'storage_permission'
-            ? tx('grantStorageAccess', 'Allow file access in Settings, then tap New project again.')
-            : r.error,
-          'error'
-        );
+        const known: Record<string, string> = {
+          too_large: tx('projectTooLarge', 'That folder is over 100 MB. Pick a smaller one.'),
+          copy_failed: tx('projectCopyFailed', 'Could not copy that folder.'),
+          unsupported: tx('projectUnsupported', 'Update the app to add projects.'),
+          'bind failed': tx('projectBindFailed', 'The gateway could not attach that folder.'),
+        };
+        showDrawerToast(known[r.error] || r.error, 'error');
       }
     } finally {
       setIsCreatingProject(false);
+    }
+  };
+  const handleExportProject = async (id: string, name: string) => {
+    const r = await exportProject(id);
+    if (r.ok) showDrawerToast(tx('projectExported', `Exported '${name}'.`));
+    else if (r.error) {
+      const known: Record<string, string> = {
+        not_found: tx('projectMissing', 'That project has no files to export.'),
+        copy_failed: tx('projectCopyFailed', 'Could not copy that folder.'),
+        unsupported: tx('projectUnsupported', 'Update the app to add projects.'),
+      };
+      showDrawerToast(known[r.error] || r.error, 'error');
     }
   };
   const projectChatCount = (pid: string) => allSessions.filter((s) => sessionProjects[s.id] === pid).length;
@@ -636,6 +651,14 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
                       {p.name}
                     </span>
                     <span className="t-caption text-[var(--app-text-dim)] shrink-0">{projectChatCount(p.id)}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleExportProject(p.id, p.name)}
+                    aria-label={tx('exportProject', 'Export project')}
+                    className="w-8 h-8 flex items-center justify-center r-sm text-[var(--app-text-dim)] hover:text-[var(--app-text)] shrink-0"
+                  >
+                    <Share2 className="w-3.5 h-3.5" />
                   </button>
                   <button
                     type="button"

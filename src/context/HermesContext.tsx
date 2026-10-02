@@ -33,8 +33,8 @@ import {
   nativeSetAutostart,
   nativeSetProvider,
   nativePickProjectDir,
-  nativeStorageAccess,
-  nativeRequestStorageAccess,
+  nativeImportProjectTree,
+  nativeExportProjectTree,
   nativeStreamPost,
 } from '../services/nativeGateway';
 import {
@@ -353,11 +353,12 @@ interface HermesContextType {
   // directly (drawer pagination, export) must use this instead of building
   // their own keyless GatewayService, which the server rejects with 401.
   gatewayService: GatewayService;
-  // Projects: host folders bound into the gateway (no restart to switch).
+  // Projects: SAF-imported copies bound into the gateway (no restart to switch).
   projects: Project[];
   activeProjectId: string | null;
   sessionProjects: Record<string, string>;
   createProject: () => Promise<{ ok: boolean; error?: string }>;
+  exportProject: (id: string) => Promise<{ ok: boolean; error?: string }>;
   selectProject: (id: string | null) => void;
   removeProject: (id: string) => Promise<void>;
   modelsLiveInfo: {
@@ -2937,10 +2938,16 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     if (!pid) return null;
     return projectsRef.current.find((p) => p.id === pid) || null;
   };
-  const projectSystemPrompt = (proj: Project): string =>
-    `The user works in project '${proj.name}'. Project root: ${proj.guestPath} ` +
-    `(device folder: ${proj.hostPath}). Read and modify files under it with ` +
-    `absolute paths, and run commands with that directory.`;
+  const projectSystemPrompt = (proj: Project): string => {
+    const devicePart = proj.hostPath
+      ? ` (device folder: ${proj.hostPath})`
+      : ' (imported copy inside app storage)';
+    return (
+      `The user works in project '${proj.name}'. Project root: ${proj.guestPath}` +
+      devicePart +
+      '. Read and modify files under it with absolute paths, and run commands with that directory.'
+    );
+  };
   const tagSessionProject = (sessionId: string) => {
     const active = activeProjectIdRef.current;
     if (!active || !projectsRef.current.some((p) => p.id === active)) return;
@@ -2960,17 +2967,18 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     addLog(id ? `Project selected: ${id}` : 'Project filter cleared');
   };
   const createProject = async (): Promise<{ ok: boolean; error?: string }> => {
-    // Raw /storage paths need All-files access: open settings once, the
-    // user retries after granting (the settings page reports nothing back).
-    if (!(await nativeStorageAccess())) {
-      await nativeRequestStorageAccess();
-      return { ok: false, error: 'storage_permission' };
-    }
+    // No permission gate: the SAF picker grants access to the chosen folder,
+    // and the app imports a copy into its own storage (Play-safe, no
+    // all-files permission). Legacy device-folder binds are gone.
     const picked = await nativePickProjectDir();
     if (!picked) return { ok: false, error: 'cancelled' };
     const slug = picked.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'project';
     const id = `${slug}-${Date.now().toString(36)}`;
-    const bound = await gatewayService.bindProject(id, picked.hostPath);
+    const imported = await nativeImportProjectTree(picked.uri, id);
+    if (!imported.ok) {
+      return { ok: false, error: imported.error || 'copy_failed' };
+    }
+    const bound = await gatewayService.bindLocalProject(id);
     if (!bound.ok || !bound.guestPath) {
       addLog(`Project bind failed: ${bound.error || 'no guest path'}`);
       return { ok: false, error: bound.error || 'bind failed' };
@@ -2985,8 +2993,13 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       return next;
     });
     selectProject(id);
-    addLog(`Project created: ${proj.name} -> ${proj.guestPath}`);
+    addLog(`Project created: ${proj.name} -> ${proj.guestPath} (${imported.count} files)`);
     return { ok: true };
+  };
+  const exportProject = async (id: string): Promise<{ ok: boolean; error?: string }> => {
+    const r = await nativeExportProjectTree(id);
+    if (r.ok) addLog(`Project exported (${r.count} files)`);
+    return r;
   };
   const removeProject = async (id: string) => {
     try { await gatewayService.unbindProject(id); } catch {}
@@ -4403,6 +4416,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         activeProjectId,
         sessionProjects,
         createProject,
+        exportProject,
         selectProject,
         removeProject,
         modelsLiveInfo,

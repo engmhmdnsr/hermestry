@@ -50,22 +50,16 @@
         <service
             android:name=".service.MobileGatewayService"
             android:exported="false"
-            android:foregroundServiceType="dataSync|specialUse">
-            <!-- dataSync covers SDK 29-33 (specialUse needs API 34+); the
-                 service and BootWorker pick specialUse on 34+ and dataSync
-                 below, so the runtime type always matches this declaration. -->
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Local AI gateway process: keeps the on-device Hermes server reachable while you use the app" />
+            android:foregroundServiceType="dataSync">
+            <!-- dataSync only: the gateway syncs chats, memory and files.
+                 specialUse was dropped for Play review (it needs a strong
+                 justification); dataSync needs none. -->
         </service>
-        <!-- WorkManager internal FGS host: both types to match the BootWorker ForegroundInfo fallback. -->
+        <!-- WorkManager internal FGS host: dataSync to match the BootWorker ForegroundInfo. -->
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
-            android:foregroundServiceType="dataSync|specialUse"
+            android:foregroundServiceType="dataSync"
             tools:node="merge">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Local AI gateway process: keeps the on-device Hermes server reachable while you use the app" />
         </service>
         <receiver
             android:name=".service.BootReceiver"
@@ -82,14 +76,14 @@
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- Projects: the agent works on the user's own folders. Raw paths under
-         /storage are unreadable on Android 11+ without this (SAF URIs alone
-         are not filesystem paths the gateway can follow). Requested only when
-         the user creates their first project; Play flavor may drop it. -->
-    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <!-- Projects: the agent works on user files without any broad storage
+         permission. The user picks a folder with the system picker and the
+         app imports a copy into its own storage; export writes it back out.
+         MANAGE_EXTERNAL_STORAGE was dropped: raw /storage paths are
+         unreadable on Android 11+ anyway and Play rejects that permission
+         for apps that are not file managers. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- R1: alert channel (approvals, job results) needs this on Android 13+.
          Requested at runtime after the first successful install; the FGS
