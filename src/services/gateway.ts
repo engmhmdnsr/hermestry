@@ -1012,6 +1012,7 @@ export class GatewayService {
       // so a configured memory no longer reads as disabled.
       const m = (data.memory && typeof data.memory === 'object' ? data.memory : data) as Record<string, unknown>;
       const active = typeof m.active === 'string' ? m.active : '';
+      const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
       const now = Date.now();
       writeSyncedAt(GatewayService.SYNC_KEYS.memory, now);
       return this.flagValue(
@@ -1020,6 +1021,10 @@ export class GatewayService {
           provider: active || (typeof m.provider === 'string' ? m.provider : ''),
           summary: typeof m.summary === 'string' ? m.summary : '',
           entries: typeof m.entries === 'number' ? m.entries : 0,
+          memoryCharLimit: num(m.memory_char_limit),
+          userCharLimit: num(m.user_char_limit),
+          memorySize: num(m.memory_size),
+          userSize: num(m.user_size),
         },
         true
       );
@@ -1073,6 +1078,22 @@ export class GatewayService {
       }
     }
     return false;
+  }
+
+  // Memory size: POST /api/memory/limits {memory_char_limit}. True only on
+  // confirmation; a 404 means an older server without the route.
+  async memorySetLimit(memoryCharLimit: number, callerSignal?: AbortSignal): Promise<boolean> {
+    try {
+      const res = await gwFetch(`${this.baseUrl}/api/memory/limits`, {
+        method: 'POST',
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+        headers: this.getHeaders(),
+        body: JSON.stringify({ memory_char_limit: memoryCharLimit }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
   }
 
   // Blueprints with sync envelope (DATA-05).

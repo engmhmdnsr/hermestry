@@ -1,8 +1,12 @@
-"""On-device extras for Hermes Mobile (vc77).
+"""On-device extras for Hermes Mobile (vc77, limits in vc86).
 
 Routes the mobile app expects that the stock api_server does not serve:
   GET  /api/memory                      status {enabled, provider, active, summary, entries}
   POST /api/memory/toggle {enabled}     persisted switch (config.yaml memory.memory_enabled)
+  GET  /api/memory                      also reports memory_char_limit, user_char_limit,
+                                        memory_size, user_size (MEMORY.md / USER.md bytes)
+  POST /api/memory/limits {memory_char_limit?, user_char_limit?}
+                                        resize the builtin memory budgets (config.yaml memory.*)
   GET  /api/blueprints                  routine catalog mapped to the app Blueprint shape
   POST /api/blueprints/{id}/instantiate {slots}  fill slots + create a cron job
 
@@ -97,9 +101,19 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
             enabled = bool(mem.get("memory_enabled", True))
             provider = str(mem.get("provider", "") or "")
             active = provider or ("builtin" if enabled else "")
+            try:
+                memory_char_limit = int(mem.get("memory_char_limit", 2200))
+            except (TypeError, ValueError):
+                memory_char_limit = 2200
+            try:
+                user_char_limit = int(mem.get("user_char_limit", 1375))
+            except (TypeError, ValueError):
+                user_char_limit = 1375
             mem_dir = os.path.join(home, "memories")
             files: dict[str, int] = {}
             entries = 0
+            memory_size = 0
+            user_size = 0
             for fname, key in (("MEMORY.md", "memory"), ("USER.md", "user")):
                 path = os.path.join(mem_dir, fname)
                 try:
@@ -107,6 +121,10 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
                 except OSError:
                     size = 0
                 files[key] = size
+                if key == "memory":
+                    memory_size = size
+                else:
+                    user_size = size
                 if key == "memory" and size:
                     try:
                         with open(path, "r", encoding="utf-8", errors="replace") as fh:
@@ -121,6 +139,10 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
                     "summary": "",
                     "entries": entries,
                     "builtin_files": files,
+                    "memory_char_limit": memory_char_limit,
+                    "user_char_limit": user_char_limit,
+                    "memory_size": memory_size,
+                    "user_size": user_size,
                 }
             )
         except Exception as exc:  # honest 500, never an empty body
@@ -151,6 +173,49 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
             with open(cfg_path, "w", encoding="utf-8") as fh:
                 yaml.dump(cfg, fh)
             return web.json_response({"ok": True, "enabled": enabled})
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    async def _post_memory_limits(request):
+        from aiohttp import web
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        updates: dict[str, int] = {}
+        for key in ("memory_char_limit", "user_char_limit"):
+            if body.get(key) is None:
+                continue
+            try:
+                value = int(body.get(key))
+            except (TypeError, ValueError):
+                return web.json_response(
+                    {"error": key + " must be a whole number"}, status=400
+                )
+            if value < 1000 or value > 50000:
+                return web.json_response(
+                    {"error": key + " must be between 1000 and 50000"}, status=400
+                )
+            updates[key] = value
+        if not updates:
+            return web.json_response(
+                {"error": "nothing to change: send memory_char_limit and/or user_char_limit"},
+                status=400,
+            )
+        try:
+            from hermes_yaml import roundtrip_yaml
+
+            cfg_path = os.path.join(_home_dir(), "config.yaml")
+            yaml = roundtrip_yaml()
+            with open(cfg_path, "r", encoding="utf-8") as fh:
+                cfg = yaml.load(fh) or {}
+            if not isinstance(cfg.get("memory"), dict):
+                cfg["memory"] = {}
+            cfg["memory"].update(updates)
+            with open(cfg_path, "w", encoding="utf-8") as fh:
+                yaml.dump(cfg, fh)
+            return web.json_response({"ok": True, **updates})
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
 
@@ -385,6 +450,7 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
     return [
         ("GET", "/api/memory", _get_memory),
         ("POST", "/api/memory/toggle", _post_memory_toggle),
+        ("POST", "/api/memory/limits", _post_memory_limits),
         ("GET", "/api/blueprints", _get_blueprints),
         ("POST", "/api/blueprints/{id}/instantiate", _post_instantiate),
         ("POST", "/api/providers/validate", _post_providers_validate),

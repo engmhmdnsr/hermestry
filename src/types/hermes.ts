@@ -174,6 +174,10 @@ export interface MemoryInfo {
   provider: string;
   summary: string;
   entries: number;
+  memoryCharLimit?: number;
+  userCharLimit?: number;
+  memorySize?: number;
+  userSize?: number;
 }
 
 export type InstallState = 'NOT_INSTALLED' | 'INSTALLING' | 'INSTALLED' | 'RUNNING' | 'FAILED';

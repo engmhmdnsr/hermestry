@@ -707,6 +707,7 @@ export const SettingsTab: React.FC = () => {
   const [showSkillsModal, setShowSkillsModal] = useState(false);
   const [blueprintSlots, setBlueprintSlots] = useState<Record<string, string>>({});
   const [memoryToggling, setMemoryToggling] = useState(false);
+  const [memoryLimitSaving, setMemoryLimitSaving] = useState(false);
 
   useEffect(() => {
     if (ctxSkills && ctxSkills.length > 0) {
@@ -2058,6 +2059,29 @@ export const SettingsTab: React.FC = () => {
     }
   };
 
+  const handleMemoryLimit = async (delta: number) => {
+    const current = typeof memory?.memoryCharLimit === 'number' ? memory.memoryCharLimit : 2200;
+    const next = Math.min(50000, Math.max(1000, current + delta));
+    if (next === current || memoryLimitSaving) return;
+    setMemoryLimitSaving(true);
+    try {
+      const ok = await service.memorySetLimit(next);
+      if (ok) {
+        const m = await service.memoryGet();
+        setMemory(m);
+        ctxSetMemory?.(m);
+        setMemoryState(m.live ? 'ready' : connected ? 'error' : 'offline');
+        showToast(tx('memorySizeSaved', 'Size saved'));
+      } else {
+        showToast(tx('memorySizeError', 'Could not save size.'), 'error');
+      }
+    } catch {
+      showToast(tx('opsUnreachablePlain', 'Hermes is not reachable, so that did not finish.'), 'error');
+    } finally {
+      setMemoryLimitSaving(false);
+    }
+  };
+
   const handleInstantiateBlueprint = async (id: string) => {
     const ok = await service.instantiateBlueprint(id, blueprintSlots);
     setSelectedBlueprint(null);
@@ -3174,6 +3198,39 @@ export const SettingsTab: React.FC = () => {
             <p className="t-caption text-[var(--app-text-dim)] pt-1">
               {tx('toggleUnsupportedPlain', 'This server does not support that switch.')}
             </p>
+          )}
+          {memoryState === 'ready' && typeof memory?.memoryCharLimit === 'number' && (
+            <div className="flex items-center justify-between gap-3 pt-2">
+              <div>
+                <p className="t-caption text-[var(--app-text)]">
+                  {tx('memorySizeLabel', 'Size')}: {(memory?.memorySize || 0).toLocaleString()} /{' '}
+                  {(memory?.memoryCharLimit || 0).toLocaleString()}
+                </p>
+                <p className="t-caption text-[var(--app-text-dim)] mt-1">
+                  {tx('memorySizeHint', 'Takes effect on the next chat.')}
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="hm-hit inline-flex items-center justify-center px-4 min-h-[36px] min-w-[44px] r-sm t-body text-[var(--app-text)] hairline"
+                  disabled={memoryLimitSaving || (memory?.memoryCharLimit || 0) <= 1000}
+                  aria-label={`${tx('memorySizeLabel', 'Size')} -1000`}
+                  onClick={() => void handleMemoryLimit(-1000)}
+                >
+                  -
+                </button>
+                <button
+                  type="button"
+                  className="hm-hit inline-flex items-center justify-center px-4 min-h-[36px] min-w-[44px] r-sm t-body text-[var(--app-text)] hairline"
+                  disabled={memoryLimitSaving || (memory?.memoryCharLimit || 0) >= 50000}
+                  aria-label={`${tx('memorySizeLabel', 'Size')} +1000`}
+                  onClick={() => void handleMemoryLimit(1000)}
+                >
+                  +
+                </button>
+              </div>
+            </div>
           )}
           <div className="pt-2">
             <StateNote
