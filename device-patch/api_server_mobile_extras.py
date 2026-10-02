@@ -24,6 +24,32 @@ def _home_dir() -> str:
     return str(get_hermes_home())
 
 
+# Desktop parity (config_env._CREDENTIAL_PROBES): env var -> (probe URL, auth style).
+_CRED_PROBES: dict[str, tuple[str, str]] = {
+    "OPENROUTER_API_KEY": ("https://openrouter.ai/api/v1/key", "bearer"),
+    "OPENAI_API_KEY": ("https://api.openai.com/v1/models", "bearer"),
+    "XAI_API_KEY": ("https://api.x.ai/v1/models", "bearer"),
+    "GEMINI_API_KEY": ("https://generativelanguage.googleapis.com/v1beta/models", "query"),
+}
+
+
+def _model_ids(payload: Any) -> list[str]:
+    ids: list[str] = []
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if isinstance(data, list):
+        for entry in data:
+            if isinstance(entry, dict) and isinstance(entry.get("id"), str):
+                ids.append(entry["id"])
+    return ids
+
+
+def _safe_ids(resp: Any) -> list[str]:
+    try:
+        return _model_ids(resp.json())
+    except Exception:
+        return []
+
+
 def _http_routes(api) -> list[tuple[str, str, Any]]:
     async def _get_memory(request):
         from aiohttp import web
@@ -167,9 +193,96 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=400)
 
+    async def _post_providers_validate(request):
+        # Live-probe a provider credential before it is saved. App shape:
+        # {valid, models, error?}. Semantics mirror the desktop route: a
+        # rejected key is valid:false (block), an unreachable provider is
+        # valid:false with a connectivity message, an unknown provider is
+        # valid:true with no models (cannot validate, do not block).
+        from aiohttp import web
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        value = str(body.get("key") or "").strip()
+        env_var = str(body.get("env_var") or body.get("envVar") or "").strip()
+        base_url = str(body.get("base_url") or body.get("baseUrl") or "").strip()
+        if not value and not base_url:
+            return web.json_response(
+                {"valid": False, "models": [], "error": "Enter a value first."}
+            )
+        try:
+            import httpx
+
+            # Custom OpenAI-compatible endpoint: validate connectivity and
+            # enumerate its /models (tries the base then the /v1 alternate).
+            if base_url:
+                headers = {"Authorization": "Bearer " + value} if value else None
+                base = base_url.rstrip("/")
+                alt = base[:-3].rstrip("/") if base.lower().endswith("/v1") else base + "/v1"
+                resolved, resp = base, None
+                async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+                    for cand in (base, alt):
+                        try:
+                            cand_resp = await client.get(cand + "/models", headers=headers)
+                        except Exception:
+                            continue
+                        if resp is None or cand_resp.is_success or resp.status_code == 404:
+                            resolved, resp = cand, cand_resp
+                        if cand_resp.is_success:
+                            break
+                if resp is None:
+                    return web.json_response(
+                        {"valid": False, "models": [],
+                         "error": "Could not reach %s/models." % resolved}
+                    )
+                models = _safe_ids(resp) if resp.is_success else []
+                if not models and not resp.is_success:
+                    return web.json_response(
+                        {"valid": False, "models": [],
+                         "error": "%s answered HTTP %d." % (resolved + "/models", resp.status_code)}
+                    )
+                return web.json_response(
+                    {"valid": True, "models": models, "resolved_base_url": resolved}
+                )
+            probe = _CRED_PROBES.get(env_var)
+            if not probe:
+                return web.json_response({"valid": True, "models": []})
+            url, auth = probe
+            headers = {"Accept": "application/json"}
+            params: dict[str, str] = {}
+            if auth == "bearer":
+                headers["Authorization"] = "Bearer " + value
+            else:
+                params["key"] = value
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+                try:
+                    resp = await client.get(url, headers=headers, params=params)
+                except Exception:
+                    return web.json_response(
+                        {"valid": False, "models": [],
+                         "error": "Could not reach the provider to verify the key."}
+                    )
+            if resp.status_code in (401, 403):
+                return web.json_response(
+                    {"valid": False, "models": [], "error": "That API key was rejected."}
+                )
+            if resp.status_code == 429 or resp.is_success:
+                return web.json_response(
+                    {"valid": True, "models": _safe_ids(resp) if resp.is_success else []}
+                )
+            return web.json_response(
+                {"valid": False, "models": [],
+                 "error": "Provider returned HTTP %d for this key." % resp.status_code}
+            )
+        except Exception as exc:
+            return web.json_response({"valid": False, "models": [], "error": str(exc)})
+
     return [
         ("GET", "/api/memory", _get_memory),
         ("POST", "/api/memory/toggle", _post_memory_toggle),
         ("GET", "/api/blueprints", _get_blueprints),
         ("POST", "/api/blueprints/{id}/instantiate", _post_instantiate),
+        ("POST", "/api/providers/validate", _post_providers_validate),
     ]
