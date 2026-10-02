@@ -345,6 +345,10 @@ interface HermesContextType {
   models: AiModelInfo[];
   refreshModels: () => Promise<void>;
   ensureServerKey: () => Promise<string>;
+  // Authenticated gateway client (server key wired). Screens that fetch
+  // directly (drawer pagination, export) must use this instead of building
+  // their own keyless GatewayService, which the server rejects with 401.
+  gatewayService: GatewayService;
   modelsLiveInfo: {
     error: string | null;
     liveCount: number;
@@ -4270,6 +4274,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         models,
         refreshModels,
         ensureServerKey,
+        gatewayService,
         modelsLiveInfo,
         skills,
         setSkills,

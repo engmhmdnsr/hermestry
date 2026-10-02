@@ -1,4 +1,5 @@
 import { normProvider } from '../constants/providers';
+import { gwFetch } from './gwFetch';
 
 // PROVIDER-02: validation result shape. Every result carries a timestamp so
 // callers can expire it; invalidation is fingerprint-based (key/url/provider
@@ -110,7 +111,9 @@ export async function validateProvider(
 ): Promise<ProviderValidationResult | null> {
   const started = Date.now();
   const provider = normProvider(input.provider || '');
-  const fetchFn = deps.fetchFn || fetch;
+  // Native has no fetch origin: route provider probes through the
+  // CapacitorHttp bridge so direct provider calls survive on device.
+  const fetchFn = deps.fetchFn || gwFetch;
   const timeoutMs = deps.timeoutMs || 15000;
   const signal = callerSignal ? AbortSignal.any([callerSignal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };

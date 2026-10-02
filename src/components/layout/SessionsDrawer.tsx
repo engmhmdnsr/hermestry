@@ -14,7 +14,6 @@ import {
   ChevronDown,
 } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
-import { GatewayService } from '../../services/gateway';
 import { resolveListUiState } from '../../services/pagination';
 import { plainListStale, plainServiceFailure } from '../../services/plainFailure';
 import { useOverlayBehavior } from '../../hooks/useOverlayBehavior';
@@ -25,8 +24,6 @@ import { MobileSession } from '../../types/hermes';
 const JobsTab = lazy(() =>
   import('../tabs/JobsTab').then((m) => ({ default: m.JobsTab }))
 );
-
-const gatewayService = new GatewayService();
 
 interface SessionsDrawerProps {
   isOpen: boolean;
@@ -40,6 +37,7 @@ export const SessionsDrawer: React.FC<SessionsDrawerProps> = ({
   onSelectSession,
 }) => {
   const {
+    gatewayService,
     sessions,
     currentSessionId,
     connected,
