@@ -5,7 +5,7 @@
 //   node scripts/verify.mjs --only=i18n  run checks whose name matches
 //
 // Exit code 0 when every check passes, 1 otherwise (failure list printed).
-// Checks 1..7 can fail the run; the dead code scan only emits warnings.
+// Checks 1..8 can fail the run; the dead code scan only emits warnings.
 // Scope: this script and the tests/ check modules it loads are the only files
 // this harness writes (build output goes under tests/.build).
 import process from 'node:process';
@@ -13,6 +13,7 @@ import { checkTypes, checkViteBuild } from '../tests/check.build.mjs';
 import { checkI18n } from '../tests/check.i18n.mjs';
 import { checkEmDash, checkRawHex, checkEllipsis } from '../tests/check.static.mjs';
 import { checkUnits } from '../tests/check.unit.mjs';
+import { checkNativeAssets } from '../tests/check.native.mjs';
 import { checkDeadCode } from '../tests/check.deadcode.mjs';
 import { repoRoot } from '../tests/lib/util.mjs';
 
@@ -27,6 +28,7 @@ const CHECKS = [
   ['no raw hex colors outside themes.ts / index.css', () => checkRawHex()],
   ['no three dot ellipsis in user facing strings', () => checkEllipsis()],
   ['unit assertions (plainFailure + code fence splitter)', checkUnits],
+  ['native asset parity (extras py)', checkNativeAssets],
   ['dead code signals (exported symbols with zero callers)', () => checkDeadCode()],
 ];
 

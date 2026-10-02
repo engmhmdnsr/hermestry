@@ -17,6 +17,7 @@ import androidx.annotation.RequiresApi
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import ee.oversight.hermes.mobile.install.ApiServerCorsPatch
+import ee.oversight.hermes.mobile.install.ApiServerExtrasPatch
 import ee.oversight.hermes.mobile.install.Bootstrap
 import ee.oversight.hermes.mobile.install.shQuote
 import ee.oversight.hermes.mobile.install.stableFailure
@@ -409,6 +410,8 @@ class MobileGatewayService : Service() {
     try {
       val cors = ApiServerCorsPatch.apply(Bootstrap.rootfsDir(this)) { f -> guestCompile(f) }
       if (cors == ApiServerCorsPatch.Outcome.APPLIED) appendLog("sse cors patch applied")
+      val extras = applyMobileExtrasPatch()
+      if (extras == ApiServerExtrasPatch.Outcome.APPLIED) appendLog("mobile extras patch applied")
     } catch (_: Exception) { }
     var backoff = START_BACKOFF_MS
     var failures = 0
@@ -543,6 +546,26 @@ class MobileGatewayService : Service() {
     return false
   }
 
+  /**
+   * Mobile extras module text comes from APK assets (pinned copy of
+   * device-patch/api_server_mobile_extras.py), so a fresh install carries
+   * the memory/blueprint/validate/project routes with no extra download.
+   * Never throws: any miss reports ABORTED and the install stays as found.
+   */
+  private fun applyMobileExtrasPatch(): ApiServerExtrasPatch.Outcome {
+    val source = try {
+      assets.open(ApiServerExtrasPatch.ASSET_NAME).readBytes().toString(Charsets.UTF_8)
+    } catch (_: Exception) {
+      return ApiServerExtrasPatch.Outcome.ABORTED
+    }
+    if (source.isBlank()) return ApiServerExtrasPatch.Outcome.ABORTED
+    return try {
+      ApiServerExtrasPatch.apply(Bootstrap.rootfsDir(this), source) { f -> guestCompile(f) }
+    } catch (_: Exception) {
+      ApiServerExtrasPatch.Outcome.ABORTED
+    }
+  }
+
   /** One-shot image install. Runs under FGS so screen-off cannot kill it. */
   private suspend fun runInstall() {
     val root = Bootstrap.rootDir(this)
@@ -587,6 +610,11 @@ class MobileGatewayService : Service() {
         // Non fatal: a future image with a different shape is left untouched.
         val cors = ApiServerCorsPatch.apply(Bootstrap.rootfsDir(this)) { f -> guestCompile(f) }
         try { log.appendText("sse cors patch: ${cors.name.lowercase()}\n") } catch (_: Exception) { }
+        // The prebuilt image predates the memory/blueprint/validate/project
+        // routes the app calls; install them now so a fresh phone heals
+        // itself. Non fatal, same contract as the CORS patch above.
+        val extras = applyMobileExtrasPatch()
+        try { log.appendText("mobile extras patch: ${extras.name.lowercase()}\n") } catch (_: Exception) { }
         writeDone(done, "ok")
         setMachineState(GatewayMachineState.INSTALLED)
       } catch (t: Throwable) {
