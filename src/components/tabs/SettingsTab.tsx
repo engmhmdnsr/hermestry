@@ -2204,7 +2204,7 @@ export const SettingsTab: React.FC = () => {
   ];
 
   return (
-    <div className="space-y-4 max-w-2xl mx-auto px-4 pt-4 hm-tab-bottom">
+    <div className="space-y-4 max-w-2xl md:max-w-4xl mx-auto px-4 md:px-6 pt-4 hm-tab-bottom">
       {/* Toast popup. Raised above the modals (z-50) so status written while a
           sheet is open is never painted behind its backdrop. */}
       {toast && (

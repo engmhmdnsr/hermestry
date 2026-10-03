@@ -953,7 +953,7 @@ export const JobsTab: React.FC = () => {
   );
 
   return (
-    <div className="space-y-6 max-w-2xl mx-auto px-4 pt-4 hm-tab-bottom">
+    <div className="space-y-6 max-w-2xl md:max-w-4xl mx-auto px-4 md:px-6 pt-4 hm-tab-bottom">
       {/* Toast stack: overlays sit at elev-3, never a raw shadow. */}
       {toasts.length > 0 && (
         <div className="fixed top-[calc(4rem+env(safe-area-inset-top,0px))] start-1/2 -translate-x-1/2 rtl:translate-x-1/2 z-[70] space-y-2 w-max max-w-[calc(100vw-2rem)]">

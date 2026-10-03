@@ -1856,7 +1856,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       className={`flex flex-col flex-1 min-h-0 h-full overflow-x-clip ${
         // The 16px gutter every other tab uses, on every width; the old
         // px-3 below the sm breakpoint put chat 8px tighter than Settings.
-        isDesktop ? 'max-w-4xl mx-auto w-full px-6' : 'px-4'
+        isDesktop ? 'max-w-4xl mx-auto w-full px-6' : 'px-4 md:max-w-3xl md:mx-auto md:w-full'
       } pt-2`}
       style={keyboardInset > 0 ? { paddingBottom: `calc(${keyboardInset}px + 0.5rem)` } : undefined}
     >

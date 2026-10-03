@@ -94,7 +94,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentTab, onSelectTab })
       }}
     >
       <div
-        className="flex items-stretch justify-around max-w-lg mx-auto px-1"
+        className="flex items-stretch justify-around max-w-lg md:max-w-3xl mx-auto px-1 md:px-6"
         // Same token the tabs' scroll padding uses (.hm-tab-bottom), so the nav
         // height and the content inset can never drift apart.
         style={{ height: 'var(--bottom-nav-height, 4rem)' }}

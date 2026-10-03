@@ -531,7 +531,7 @@ export const App: React.FC = () => {
                     <div
                       role="status"
                       aria-label={tx('loadingHome', 'Loading home')}
-                      className="mx-auto flex max-w-2xl flex-col gap-6 px-4 pt-4 hm-tab-bottom"
+                      className="mx-auto flex max-w-2xl md:max-w-4xl flex-col gap-6 px-4 md:px-6 pt-4 hm-tab-bottom"
                     >
                       <TabHeroSkeleton heightRem={8} />
                       <CardSkeleton cards={3} lines={2} />
@@ -613,7 +613,7 @@ export const App: React.FC = () => {
                     <div
                       role="status"
                       aria-label={tx('loadingSettings', 'Loading settings')}
-                      className="space-y-4 max-w-2xl mx-auto px-4 pt-4 hm-tab-bottom"
+                      className="space-y-4 max-w-2xl md:max-w-4xl mx-auto px-4 md:px-6 pt-4 hm-tab-bottom"
                     >
                       <TabHeroSkeleton heightRem={6} />
                       <CardSkeleton cards={4} lines={2} />
@@ -661,7 +661,7 @@ export const App: React.FC = () => {
           />
           {/* Phone slide-over: narrower than the desktop 19.4rem panel so a
               sliver of the chat stays visible and the close scrim reachable. */}
-          <div className="relative h-full max-w-[16rem] w-full flex">
+          <div className="relative h-full max-w-[16rem] md:max-w-xs w-full flex">
             <div className="flex-1 flex min-w-0 [&>aside]:w-full [&>aside]:h-full">
               <DesktopInspector
                 isOpen={inspectorOpen}

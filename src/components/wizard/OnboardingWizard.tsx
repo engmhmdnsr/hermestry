@@ -401,7 +401,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
       className="min-h-[100dvh] w-full overflow-y-auto overflow-x-hidden bg-[var(--app-bg)] text-[var(--app-text)]"
     >
       <div
-        className="max-w-lg mx-auto p-3"
+        className="max-w-lg md:max-w-2xl mx-auto p-3 md:p-6"
         style={{
           paddingTop: 'calc(0.75rem + var(--safe-top))',
           paddingBottom: 'calc(0.75rem + var(--safe-bottom))',

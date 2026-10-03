@@ -489,7 +489,7 @@ export const HomeTab: React.FC<HomeTabProps> = ({
   };
 
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-6 px-4 pt-4 hm-tab-bottom">
+    <div className="mx-auto flex max-w-2xl md:max-w-4xl flex-col gap-6 px-4 md:px-6 pt-4 hm-tab-bottom">
       {/* 1. Status card: presence, model, and (when something is wrong) the one
           place the failure and its fix live. A single card, so the same
           connection error is never printed twice in two different styles. */}
