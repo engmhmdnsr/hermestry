@@ -38,3 +38,21 @@ carries no debuggable attribute). `scripts/release-check.sh` rejects any
 release APK whose merged manifest has debuggable=true. No
 MANAGE_EXTERNAL_STORAGE: file import uses SAF into the app sandbox with a
 100MB cap.
+
+## Key design (deliberate, documented for review)
+The EncryptedSharedPreferences master key (AES256-GCM, AndroidKeyStore) is
+NOT bound to biometric/lockscreen auth and has no rotation schedule: the
+gateway must start after reboot with no user present, so a key that
+invalidates on biometric enrollment or lockscreen removal would brick
+autostart. Rotation happens only on proven corruption (AEAD tag mismatch
+wipes prefs + keystore entry and rebuilds). Writes fail closed when the
+secure store is in fallback or direct-boot mode. Residual risk (physical
+access plus a newly enrolled biometric) is accepted and stated here.
+
+## Download disclosure (Deceptive Behavior rule)
+Before anything downloads, the setup wizard shows what the 305MB image is
+(source: official Hermes GitHub releases, SHA-256 verified fail-closed,
+runs on-device only without root) behind an explicit checkbox; Start setup
+stays disabled until it is checked (`discloseTitle/discloseBody/discloseConsent`
+in `src/constants/languages.ts`, gating in `OnboardingWizard.tsx`). The Play
+Console executable-code question is answered Yes with this same text.

@@ -106,6 +106,9 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
   const [backConfirm, setBackConfirm] = useState(false);
   // Autostart policy text lives behind a disclosure, not in the 3-line box.
   const [showPolicy, setShowPolicy] = useState(false);
+  // Prominent disclosure (Play Deceptive Behavior rule): nothing downloads
+  // until the user reads what the 305MB image is and checks this box.
+  const [discloseOk, setDiscloseOk] = useState(false);
   // Raw installer lines carry absolute paths and mirror URLs. The default
   // view is the plain phase list; the technical log is one disclosure away
   // for the case where the actual text is needed.
@@ -496,11 +499,38 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ onDone }) =>
                   </div>
                 )}
 
+                {/* Prominent disclosure before any download: source, size,
+                    hash check, local-only execution. The Start button stays
+                    disabled until the box is checked. */}
+                <div className="p-4 r-md bg-[var(--app-warning-subtle)] border border-[var(--app-warning-border)] space-y-3">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck className="w-4 h-4 text-[var(--app-warning)] shrink-0" />
+                    <span className="t-label text-[var(--app-text)]">{tx('discloseTitle', 'What gets downloaded')}</span>
+                  </div>
+                  <p className="t-caption text-[var(--app-text-muted)]">
+                    {tx(
+                      'discloseBody',
+                      'Setup downloads a verified 305 MB Linux environment (Debian plus Python plus the Hermes server) from the official Hermes releases page on GitHub. Its SHA-256 checksum is checked before anything runs, and setup stops if it does not match. The environment runs on your phone only, without root. Nothing runs until you tap Start setup.'
+                    )}
+                  </p>
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={discloseOk}
+                      onChange={(e) => setDiscloseOk(e.target.checked)}
+                      className="mt-1 w-4 h-4 shrink-0 accent-[var(--app-accent)]"
+                    />
+                    <span className="t-caption font-semibold text-[var(--app-text)]">
+                      {tx('discloseConsent', 'I understand and agree to this download')}
+                    </span>
+                  </label>
+                </div>
+
                 <div className="pt-4">
                   <button
                     onClick={startInstall}
-                    disabled={isInstalling}
-                    aria-disabled={isInstalling}
+                    disabled={isInstalling || !discloseOk}
+                    aria-disabled={isInstalling || !discloseOk}
                     className={`${WIZARD_PRIMARY} w-full bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)]`}
                   >
                     <span>
