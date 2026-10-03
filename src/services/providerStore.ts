@@ -140,6 +140,16 @@ function keyDigest(value: string): string {
   return (h >>> 0).toString(16).padStart(8, '0');
 }
 
+/**
+ * Change-detection signature for a secret: length plus FNV digest, never the
+ * value itself. Safe to compare, persist, and log.
+ */
+export function credentialSig(value: string): string {
+  const v = (value || '').trim();
+  if (!v) return 'empty';
+  return `${v.length}:${keyDigest(v)}`;
+}
+
 function ensureSecretRef(profile: ProviderProfile): ProviderProfile {
   if (isProviderSecretRef(profile.secretRef)) return profile;
   return { ...profile, secretRef: secretRefForProfile(profile.id) };

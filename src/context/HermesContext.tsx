@@ -81,6 +81,7 @@ import {
 } from '../components/approvals/approvalScopes';
 import {
   createProvider,
+  credentialSig,
   updateProvider as storeUpdateProvider,
   removeProvider as storeRemoveProvider,
   activateProvider as storeActivateProvider,
@@ -898,6 +899,13 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // Synchronous mirror of connected: sendMessage decides queue-vs-post without
   // waiting for the next render.
   const connectedRef = useRef<boolean>(false);
+  // Auto-heal bookkeeping: the credential fingerprint the running gateway
+  // process booted with (null until a start records it), the fingerprint an
+  // automatic restart already handled (one attempt per fingerprint, manual
+  // retry stays the fallback), and a single-flight guard.
+  const bootCredSigRef = useRef<string | null>(null);
+  const autoHealForRef = useRef<string | null>(null);
+  const autoHealInFlightRef = useRef(false);
   // Queue draining is single-flight: a queued message is popped once and sent
   // 300ms later, so a second drain must not pop the next one meanwhile.
   const queueDrainPendingRef = useRef<boolean>(false);
@@ -1132,15 +1140,22 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // predate these fields. Every rejection is logged truthfully AND rethrown
   // (wrapped) so a save path can refuse to report 'saved' over a mirror that
   // never landed; callers outside a save path catch the rejection themselves.
-  const mirrorCredentialsToNative = (
-    next: HermesSettings,
-    reason: string
-  ): Promise<void> => {
-    if (!isNativeGateway()) return Promise.resolve();
-    // P0: the flat settings.apiKey is blank on native (keys live in the
-    // provider profiles and rehydrate fills only those), so mirroring it
-    // verbatim wipes KEY_PROVIDER on every boot and every provider change.
-    // Resolve the key from the ACTIVE profile first, flat field last.
+  // Single resolution of what the gateway boots with: the ACTIVE profile
+  // first, flat legacy field last. Both the credential mirror and the
+  // auto-heal fingerprint below read this, so they can never disagree about
+  // which key the running process holds.
+  const resolveNativeProviderPayload = (
+    next: HermesSettings
+  ): {
+    provider: string;
+    apiKey: string;
+    baseUrl: string;
+    model: string;
+    activeProfileId: string;
+    serverKey: string;
+    tgToken: string;
+    discordToken: string;
+  } => {
     const profiles = (next.providers || []) as ConfiguredProvider[];
     const active =
       profiles.find((p) => p && p.id === next.activeProviderId) ||
@@ -1154,7 +1169,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       ((active?.apiKey as string) || '').trim() ||
       ((secretsRef.current?.apiKey as string) || '').trim() ||
       ((next.apiKey as string) || '').trim();
-    return nativeSetProvider({
+    return {
       provider: active?.provider || next.provider || '',
       apiKey: resolvedKey,
       baseUrl: active?.baseUrl ?? next.baseUrl ?? '',
@@ -1163,6 +1178,43 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       serverKey: next.serverKey || '',
       tgToken: next.tgToken || '',
       discordToken: next.discordToken || '',
+    };
+  };
+
+  // Fingerprint of a boot payload. Secrets enter as length+digest only, so
+  // this string is safe to compare and log. A mismatch against the boot
+  // signature means the running process holds stale credentials.
+  const nativeBootSig = (payload: ReturnType<typeof resolveNativeProviderPayload>): string =>
+    JSON.stringify({
+      p: payload.provider,
+      k: credentialSig(payload.apiKey),
+      b: (payload.baseUrl || '').trim(),
+      m: (payload.model || '').trim(),
+      a: payload.activeProfileId,
+      s: credentialSig(payload.serverKey),
+      t: credentialSig(payload.tgToken),
+      d: credentialSig(payload.discordToken),
+    });
+
+  const mirrorCredentialsToNative = (
+    next: HermesSettings,
+    reason: string
+  ): Promise<void> => {
+    if (!isNativeGateway()) return Promise.resolve();
+    // P0: the flat settings.apiKey is blank on native (keys live in the
+    // provider profiles and rehydrate fills only those), so mirroring it
+    // verbatim wipes KEY_PROVIDER on every boot and every provider change.
+    // Resolve the key from the ACTIVE profile first, flat field last.
+    const payload = resolveNativeProviderPayload(next);
+    return nativeSetProvider({
+      provider: payload.provider,
+      apiKey: payload.apiKey,
+      baseUrl: payload.baseUrl,
+      model: payload.model,
+      activeProfileId: payload.activeProfileId,
+      serverKey: payload.serverKey,
+      tgToken: payload.tgToken,
+      discordToken: payload.discordToken,
     }).catch((e: unknown) => {
       addLog(
         `Native credential sync failed (${reason}): ${e instanceof Error ? e.message : String(e)}`
@@ -2511,6 +2563,13 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         setInstall('INSTALLED');
         setInstallProgress('');
         setStartFailure(null);
+        // Record what this process booted with: the auto-heal effect below
+        // compares it against live settings and restarts on drift.
+        try {
+          bootCredSigRef.current = nativeBootSig(resolveNativeProviderPayload(settingsRef.current));
+        } catch {
+          bootCredSigRef.current = null;
+        }
         addLog('Gateway running');
         refreshNowRef.current();
       } else {
@@ -2728,6 +2787,46 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Auto-heal: a key/provider change saved while the gateway runs leaves the
+  // process on stale credentials (empty model list) until someone restarts
+  // it by hand. When connected with a fingerprint the boot signature does
+  // not match, restart once automatically so the new key applies itself.
+  // No user-facing copy: this surfaces only as a log line.
+  useEffect(() => {
+    if (!connected || !isNativeGateway()) return;
+    if (autoHealInFlightRef.current) return;
+    let sig: string;
+    try {
+      sig = nativeBootSig(resolveNativeProviderPayload(settingsRef.current));
+    } catch {
+      return;
+    }
+    if (!bootCredSigRef.current) {
+      bootCredSigRef.current = sig;
+      return;
+    }
+    if (sig === bootCredSigRef.current) return;
+    if (autoHealForRef.current === sig) return;
+    autoHealForRef.current = sig;
+    autoHealInFlightRef.current = true;
+    addLog('Provider credentials changed while the gateway is running; restarting to apply them.');
+    (async () => {
+      try {
+        await stopGateway();
+      } catch {
+        // stopGateway reports its own failure; still try to start fresh.
+      }
+      try {
+        await startGateway();
+      } catch {
+        // startGateway publishes its own failure state; the manual retry
+        // stays the fallback for this fingerprint.
+      }
+      autoHealInFlightRef.current = false;
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, settings]);
 
   const installGateway = async () => {
     setInstall('INSTALLING');
