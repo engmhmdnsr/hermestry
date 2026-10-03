@@ -8,9 +8,8 @@ import {
   resendVerification as authResend,
   forgotPassword as authForgot,
   resetPassword as authReset,
+  AUTH_BASE_URL,
 } from '../../services/auth';
-
-export const AUTH_BASE_URL = 'https://she-islands-ribbon-robin.trycloudflare.com';
 
 type AuthView = 'login' | 'register' | 'verify' | 'forgot' | 'reset';
 

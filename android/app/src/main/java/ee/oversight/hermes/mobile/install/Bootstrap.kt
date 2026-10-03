@@ -1,6 +1,7 @@
 package ee.oversight.hermes.mobile.install
 
 import android.content.Context
+import android.net.ConnectivityManager
 import android.os.Build
 import android.os.StatFs
 import ee.oversight.hermes.mobile.normProvider
@@ -453,23 +454,35 @@ object Bootstrap {
 
     // 3. base packages + hermes-agent via pip inside proot
     // (Debian 12 pip needs --break-system-packages outside a venv.)
-    if (!File(root, ".pip_ok").exists()) {
-      onStep("installing hermes-agent (pip, one time)...")
+    if (runCatching { File(root, ".pip_ok").readText().trim() }.getOrNull() != "hermes-agent $GATEWAY_VERSION") {
+      onStep("installing hermes-agent $GATEWAY_VERSION (pip, one time)...")
       // AnLinux rootfs ships no working DNS: without this apt/pip fail with
       // "Temporary failure resolving ...". Host-side write, no proot needed.
       val resolv = File(fs, "etc/resolv.conf")
       try {
         resolv.parentFile?.mkdirs()
         if (!resolv.exists() || resolv.readText().contains("127.")) {
-          resolv.writeText("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
-          onStep("dns fixed (8.8.8.8)")
+          // Prefer the device's own DNS (Private DNS, VPN, MagicDNS keep
+          // working); fall back to public resolvers when none is visible.
+          val servers = linkedSetOf<String>()
+          try {
+            val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            cm.getLinkProperties(cm.activeNetwork)?.dnsServers?.forEach {
+              it.hostAddress?.takeIf { h -> h.isNotEmpty() }?.let(servers::add)
+            }
+          } catch (_: Exception) { }
+          servers.add("1.1.1.1")
+          servers.add("9.9.9.9")
+          servers.add("8.8.8.8")
+          resolv.writeText(servers.take(3).joinToString("\n", postfix = "\n") { "nameserver $it" })
+          onStep("dns fixed (${servers.first()})")
         }
       } catch (e: Exception) { onStep("dns write failed: ${stableFailure(e, "dns_write_failed")}") }
       val prep = runProot(
         app,
         "apt-get update && apt-get install -y python3 python3-pip && " +
           "python3 -m pip install --upgrade --break-system-packages pip && " +
-          "python3 -m pip install --break-system-packages hermes-agent"
+          "python3 -m pip install --break-system-packages hermes-agent==$GATEWAY_VERSION"
       )
       if (prep != 0) {
         // Surface the real cause on screen: last 12 lines of the proot log.
@@ -479,7 +492,7 @@ object Bootstrap {
         } catch (_: Exception) { }
         throw RuntimeException("pip install failed (exit $prep), check network then retry")
       }
-      File(root, ".pip_ok").writeText("hermes-agent")
+      File(root, ".pip_ok").writeText("hermes-agent $GATEWAY_VERSION")
     } else onStep("hermes-agent ready")
 
     // 4. config + start script

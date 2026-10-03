@@ -28,6 +28,18 @@ def _home_dir() -> str:
     return str(get_hermes_home())
 
 
+def _write_yaml_atomic(cfg_path: str, yaml: Any, cfg: dict) -> None:
+    # Crash-safe config write: a kill between open("w") and dump used to
+    # leave config.yaml truncated, and the gateway would not boot. Write
+    # to a sibling temp file, flush it to disk, then atomically replace.
+    tmp_path = cfg_path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as fh:
+        yaml.dump(cfg, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp_path, cfg_path)
+
+
 def _projects_dir() -> str:
     path = os.path.join(_home_dir(), ".projects")
     os.makedirs(path, exist_ok=True)
@@ -165,13 +177,15 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
 
             cfg_path = os.path.join(_home_dir(), "config.yaml")
             yaml = roundtrip_yaml()
-            with open(cfg_path, "r", encoding="utf-8") as fh:
-                cfg = yaml.load(fh) or {}
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as fh:
+                    cfg = yaml.load(fh) or {}
+            except FileNotFoundError:
+                cfg = {}
             if not isinstance(cfg.get("memory"), dict):
                 cfg["memory"] = {}
             cfg["memory"]["memory_enabled"] = enabled
-            with open(cfg_path, "w", encoding="utf-8") as fh:
-                yaml.dump(cfg, fh)
+            _write_yaml_atomic(cfg_path, yaml, cfg)
             return web.json_response({"ok": True, "enabled": enabled})
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
@@ -187,12 +201,12 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
         for key in ("memory_char_limit", "user_char_limit"):
             if body.get(key) is None:
                 continue
-            try:
-                value = int(body.get(key))
-            except (TypeError, ValueError):
+            raw = body.get(key)
+            if isinstance(raw, bool) or not isinstance(raw, int):
                 return web.json_response(
                     {"error": key + " must be a whole number"}, status=400
                 )
+            value = raw
             if value < 1000 or value > 50000:
                 return web.json_response(
                     {"error": key + " must be between 1000 and 50000"}, status=400
@@ -208,13 +222,15 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
 
             cfg_path = os.path.join(_home_dir(), "config.yaml")
             yaml = roundtrip_yaml()
-            with open(cfg_path, "r", encoding="utf-8") as fh:
-                cfg = yaml.load(fh) or {}
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as fh:
+                    cfg = yaml.load(fh) or {}
+            except FileNotFoundError:
+                cfg = {}
             if not isinstance(cfg.get("memory"), dict):
                 cfg["memory"] = {}
             cfg["memory"].update(updates)
-            with open(cfg_path, "w", encoding="utf-8") as fh:
-                yaml.dump(cfg, fh)
+            _write_yaml_atomic(cfg_path, yaml, cfg)
             return web.json_response({"ok": True, **updates})
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)

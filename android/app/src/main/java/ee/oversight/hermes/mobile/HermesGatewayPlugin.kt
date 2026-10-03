@@ -15,6 +15,7 @@ import android.speech.tts.TextToSpeech
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.PowerManager
+import android.os.SystemClock
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -313,6 +314,14 @@ class HermesGatewayPlugin : Plugin() {
   fun ttsStop(call: PluginCall) {
     try { tts?.stop() } catch (_: Exception) { }
     call.resolve()
+  }
+
+  @PluginMethod
+  fun monotonicNow(call: PluginCall) {
+    // Wall-clock-immune timestamp for the PIN lockout deadline: the user
+    // can move the device clock, but not elapsedRealtime (it resets only
+    // on reboot, where the persisted wall-clock deadline takes over).
+    call.resolve(JSObject().put("now", SystemClock.elapsedRealtime()))
   }
 
   @PluginMethod

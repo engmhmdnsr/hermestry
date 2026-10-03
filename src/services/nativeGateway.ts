@@ -56,6 +56,7 @@ interface HermesGatewayPlugin {
   serverKey(): Promise<{ serverKey: string }>;
   secretGet?(options: { key: string }): Promise<{ value: string }>;
   secretSet?(options: { key: string; value: string }): Promise<unknown>;
+  monotonicNow?(): Promise<{ now: number }>;
   notifState?(): Promise<{ granted: boolean }>;
   requestNotifAlerts?(): Promise<unknown>;
   notifyAlert?(options: { title: string; body: string }): Promise<unknown>;
@@ -389,6 +390,20 @@ export async function nativeSecretSet(key: string, value: string): Promise<boole
     return true;
   } catch {
     return false;
+  }
+}
+
+// Monotonic device clock (elapsedRealtime, ms since boot). Null on web or
+// when the bridge is unavailable; the PIN lockout uses it so moving the
+// device clock cannot shorten a running penalty.
+export async function nativeMonotonicNow(): Promise<number | null> {
+  const plugin = await waitForBridge();
+  if (!plugin || typeof plugin.monotonicNow !== 'function') return null;
+  try {
+    const res = await plugin.monotonicNow();
+    return typeof res?.now === 'number' ? res.now : null;
+  } catch {
+    return null;
   }
 }
 

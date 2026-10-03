@@ -1,13 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Cleartext allowlist: the on-device gateway binds 127.0.0.1:8080 over
-     plain http, and the account service binds the tailnet address
-     100.112.74.9:8082 (same private tailnet as the gateway). Everything
-     else stays denied, so no other host can receive cleartext traffic. -->
+     plain http. Everything else stays denied, so no other host can
+     receive cleartext traffic. -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false" />
+    <!-- On-device gateway only: it binds 127.0.0.1:8080 over plain http.
+         The account service is reached over https, so no remote cleartext
+         exception is needed (a tailnet IP was allowlisted here before and
+         has been removed). -->
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="false">127.0.0.1</domain>
         <domain includeSubdomains="false">localhost</domain>
-        <domain includeSubdomains="false">100.112.74.9</domain>
     </domain-config>
 </network-security-config>

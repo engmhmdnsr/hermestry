@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Lock, Delete, Shield, LogIn } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import { plainResultLine } from '../../services/plainFailure';
-import { isNativeGateway, nativeSecretGet, nativeSecretSet } from '../../services/nativeGateway';
+import { isNativeGateway, nativeMonotonicNow, nativeSecretGet, nativeSecretSet } from '../../services/nativeGateway';
 
 interface AppLockGateProps {
   onUnlocked: () => void;
@@ -48,20 +48,36 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
   // S2: the cycle counter also lives in the encrypted native store, so
   // wiping localStorage cannot reset the penalty. Native wins when higher;
   // localStorage stays as the web fallback.
-  // The running deadline is persisted too (lockout.until, epoch ms): without
-  // it a reload during lockout, or after 4 fails, resets the countdown and
-  // reopens brute force. Restored on mount below.
+  // The running deadline is persisted twice: wall-clock (lockout.until,
+  // epoch ms, survives reboot) and monotonic (lockout.until_mono,
+  // elapsedRealtime ms, immune to device-clock changes). Restore prefers
+  // the monotonic deadline when the bridge answers; without it a reload
+  // during lockout, or after 4 fails, resets the countdown and reopens
+  // brute force.
   useEffect(() => {
     let cancelled = false;
     const restore = async () => {
       try {
-        const local = Number(localStorage.getItem('hermes_lockout_until')) || 0;
-        let nativeUntil = 0;
-        if (isNativeGateway()) {
-          nativeUntil = Number(await nativeSecretGet('lockout.until')) || 0;
+        const monoNow = isNativeGateway() ? await nativeMonotonicNow() : null;
+        let left = 0;
+        if (monoNow !== null) {
+          const localMono = Number(localStorage.getItem('hermes_lockout_until_mono')) || 0;
+          let nativeMono = 0;
+          if (isNativeGateway()) {
+            nativeMono = Number(await nativeSecretGet('lockout.until_mono')) || 0;
+          }
+          const monoUntil = Math.max(localMono, nativeMono);
+          if (monoUntil > 0) left = Math.ceil((monoUntil - monoNow) / 1000);
         }
-        const until = Math.max(local, nativeUntil);
-        const left = Math.ceil((until - Date.now()) / 1000);
+        if (left <= 0) {
+          const local = Number(localStorage.getItem('hermes_lockout_until')) || 0;
+          let nativeUntil = 0;
+          if (isNativeGateway()) {
+            nativeUntil = Number(await nativeSecretGet('lockout.until')) || 0;
+          }
+          const until = Math.max(local, nativeUntil);
+          left = Math.ceil((until - Date.now()) / 1000);
+        }
         if (!cancelled && left > 0) {
           setLockoutLeft(left);
           setAttempts(MAX_ATTEMPTS);
@@ -184,6 +200,14 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
         if (isNativeGateway()) {
           void nativeSecretSet('lockout.cycles', String(cycles + 1));
           void nativeSecretSet('lockout.until', String(Date.now() + duration * 1000));
+          void nativeMonotonicNow().then((monoNow) => {
+            if (monoNow === null) return;
+            const monoUntil = String(monoNow + duration * 1000);
+            try {
+              localStorage.setItem('hermes_lockout_until_mono', monoUntil);
+            } catch {}
+            void nativeSecretSet('lockout.until_mono', monoUntil);
+          });
         }
       } catch {}
       setLockoutLeft(duration);
@@ -202,9 +226,11 @@ export const AppLockGate: React.FC<AppLockGateProps> = ({ onUnlocked }) => {
     try {
       localStorage.removeItem('hermes_lockouts');
       localStorage.removeItem('hermes_lockout_until');
+      localStorage.removeItem('hermes_lockout_until_mono');
       if (isNativeGateway()) {
         void nativeSecretSet('lockout.cycles', '');
         void nativeSecretSet('lockout.until', '');
+        void nativeSecretSet('lockout.until_mono', '');
       }
     } catch {}
   };
