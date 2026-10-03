@@ -455,6 +455,18 @@ object Bootstrap {
     // 3. base packages + hermes-agent via pip inside proot
     // (Debian 12 pip needs --break-system-packages outside a venv.)
     if (runCatching { File(root, ".pip_ok").readText().trim() }.getOrNull() != "hermes-agent $GATEWAY_VERSION") {
+      // Prefer the agent bundled in the hash-verified image over PyPI:
+      // public PyPI does not carry this version, so pip is only a last
+      // resort. Probe host-side (no proot needed).
+      val bundled = runCatching {
+        File(fs, "opt/hermes-agent/pyproject.toml").readText()
+      }.getOrNull()?.let { text ->
+        Regex("(?m)^\\s*version\\s*=\\s*\"([^\"]+)\"").find(text)?.groupValues?.get(1)?.trim()
+      }?.takeIf { it.isNotEmpty() }
+      if (bundled == GATEWAY_VERSION) {
+        onStep("hermes-agent $GATEWAY_VERSION bundled in image, pip skipped")
+        File(root, ".pip_ok").writeText("hermes-agent $GATEWAY_VERSION")
+      } else {
       onStep("installing hermes-agent $GATEWAY_VERSION (pip, one time)...")
       // AnLinux rootfs ships no working DNS: without this apt/pip fail with
       // "Temporary failure resolving ...". Host-side write, no proot needed.
@@ -490,9 +502,10 @@ object Bootstrap {
           File(rootDir(app), "bootstrap_last.log").readLines()
             .takeLast(12).forEach { onStep(it.take(160)) }
         } catch (_: Exception) { }
-        throw RuntimeException("pip install failed (exit $prep), check network then retry")
+        throw RuntimeException("agent install failed (exit $prep): image ships $bundled, need $GATEWAY_VERSION")
       }
       File(root, ".pip_ok").writeText("hermes-agent $GATEWAY_VERSION")
+      } // bundled-agent fast path
     } else onStep("hermes-agent ready")
 
     // 4. config + start script
