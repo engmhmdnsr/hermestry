@@ -223,6 +223,12 @@ object Bootstrap {
     marker == IMAGE_VERSION
   } catch (_: Exception) { false }
 
+  /** On-disk image marker for status messages ("unknown" when absent). */
+  fun staleImageMarker(app: Context): String = try {
+    File(rootfsDir(app), ".image_ok")
+      .takeIf { it.exists() }?.readText()?.trim().orEmpty().ifEmpty { "unknown" }
+  } catch (_: Exception) { "unknown" }
+
   // INSTALL-04: pre-install storage calculation. Archive (~305MB) + extracted
   // tree (~900MB) + config/logs margin: refuse early with numbers instead of
   // dying mid-extract with ENOSPC.
@@ -364,8 +370,17 @@ object Bootstrap {
 
     // SkipMarker: full success leaves .installed; partial installs redo only missing parts.
     if (isInstalled(app)) {
-      onStep("already installed")
-      return@withContext
+      if (isImageCompatible(app)) {
+        onStep("already installed")
+        return@withContext
+      }
+      // App update shipped a new image: drop the stale markers so the
+      // install below re-downloads instead of blocking on manual wipe.
+      onStep("image updated (have ${staleImageMarker(app)}, need $IMAGE_VERSION), re-downloading...")
+      File(rootDir(app), ".installed").delete()
+      File(rootfsDir(app), ".rootfs_ok").delete()
+      File(rootfsDir(app), ".image_ok").delete()
+      File(rootDir(app), ".pip_ok").delete()
     }
 
     // v2 one-shot (aarch64): single prebuilt image, no apt/pip on device.

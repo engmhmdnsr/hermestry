@@ -765,6 +765,7 @@ class MobileGatewayService : Service() {
     // was already running.
     val log = File(Bootstrap.rootDir(this), "gateway.log")
     log.parentFile?.mkdirs()
+    rotateLogIfLarge(log, MAX_LOG_BYTES, KEEP_LOG_BYTES)
     logOut?.let { try { it.close() } catch (_: Exception) { } }
     val out = log.outputStream()
     logOut = out
@@ -882,13 +883,35 @@ class MobileGatewayService : Service() {
   private fun appendLog(line: String) {
     try {
       val f = File(Bootstrap.rootDir(this), "service.log")
+      rotateLogIfLarge(f, MAX_LOG_BYTES, KEEP_LOG_BYTES)
       f.appendText("${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())} $line\n")
+    } catch (_: Exception) { }
+  }
+
+  /** Log rotation: an always-on gateway would otherwise fill storage.
+   *  Keeps the newest KEEP bytes once the file passes MAX bytes. */
+  private fun rotateLogIfLarge(f: File, max: Long, keep: Long) {
+    try {
+      if (!f.exists() || f.length() <= max) return
+      val raf = java.io.RandomAccessFile(f, "r")
+      try {
+        val start = (f.length() - keep).coerceAtLeast(0)
+        raf.seek(start)
+        val tail = ByteArray((f.length() - start).toInt())
+        raf.readFully(tail)
+        f.writeBytes(tail)
+      } finally {
+        try { raf.close() } catch (_: Exception) { }
+      }
     } catch (_: Exception) { }
   }
 
   companion object {
     /** Bounded WakeLock window: re-acquired by supervise() while still wanted. */
     private const val WAKE_TIMEOUT_MS = 10 * 60 * 1_000L
+    /** Log cap: rotate gateway.log/service.log past 1MB, keep newest 256KB. */
+    private const val MAX_LOG_BYTES = 1 * 1024 * 1024L
+    private const val KEEP_LOG_BYTES = 256 * 1024L
     /** Installer window: the image download+extract legitimately outlives the
      *  gateway window, so it gets its own lock instead of re-timing that one. */
     private const val INSTALL_WAKE_MS = 45 * 60 * 1_000L

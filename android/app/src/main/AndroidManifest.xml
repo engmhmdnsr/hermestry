@@ -7,8 +7,24 @@
          (debug debuggable=true, release debuggable=false). Do not add
          android:debuggable to this file. scripts/release-check.sh rejects any
          release APK whose merged manifest has debuggable=true. -->
+    <!-- Package visibility (API 30+): resolveActivity() returns null without
+         these, which the app would misread as feature-unavailable. -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.OPEN_DOCUMENT_TREE" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.CREATE_DOCUMENT" />
+            <data android:mimeType="*/*" />
+        </intent>
+    </queries>
     <application
         android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/device_backup_rules"
         android:extractNativeLibs="true"
         android:networkSecurityConfig="@xml/network_security_config"
         android:usesCleartextTraffic="false"
@@ -63,7 +79,7 @@
         </service>
         <receiver
             android:name=".service.BootReceiver"
-            android:exported="false">
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />

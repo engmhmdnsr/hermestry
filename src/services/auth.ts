@@ -248,6 +248,92 @@ export async function clearAuthStorage(): Promise<void> {
   }
 }
 
+// Full local wipe for account deletion (Play data-deletion rule): auth
+// tokens plus the encrypted vault, settings, sessions, jobs, projects and
+// every secret slot, so no account data survives on the device. The device
+// PIN lock (global.appLockPin) is deliberately kept: it protects the device,
+// it is not account data.
+const WIPE_LS_KEYS = [
+  'hermes.auth.accessToken',
+  'hermes.auth.refreshToken',
+  'hermes.auth.user',
+  'hermes_vault',
+  'hermes.vault.salt',
+  'hermes.vault.verifier',
+  'hermes_settings',
+  'hermes_sessions',
+  'hermes_jobs',
+  'hermes_projects',
+  'hermes_session_projects',
+  'hermes_usage',
+  'hermes_pinned_sessions',
+  'hermes_drafts',
+];
+
+const WIPE_NATIVE_SLOTS = [
+  'lockout.authAccessToken',
+  'lockout.authRefreshToken',
+  'lockout.authUser',
+  'global.serverKey',
+  'global.tgToken',
+  'global.discordToken',
+];
+
+const WIPE_LS_PREFIXES = ['hermes_messages_'];
+
+function collectProviderRefs(): string[] {
+  const refs: string[] = [];
+  try {
+    const raw = globalThis.localStorage?.getItem('hermes_settings');
+    if (!raw) return refs;
+    const seen = new Set<string>();
+    const walk = (node: unknown): void => {
+      if (Array.isArray(node)) {
+        node.forEach(walk);
+        return;
+      }
+      if (node && typeof node === 'object') {
+        for (const [k, v] of Object.entries(node)) {
+          if ((k === 'id' || k === 'profileId') && typeof v === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(v)) {
+            seen.add(`provider.${v}.apiKey`);
+          }
+          walk(v);
+        }
+      }
+    };
+    walk(JSON.parse(raw));
+    refs.push(...seen);
+  } catch {
+    // settings unreadable: still wipe everything else
+  }
+  return refs;
+}
+
+export async function wipeLocalAccountData(): Promise<void> {
+  memAccess = null;
+  memRefresh = null;
+  memUser = null;
+  loaded = true;
+  const refs = collectProviderRefs();
+  if (isNative()) {
+    await Promise.all([
+      ...WIPE_NATIVE_SLOTS.map((s) => nativeSet(s, '')),
+      ...refs.map((r) => nativeSet(r, '')),
+    ]);
+  }
+  try {
+    for (const k of WIPE_LS_KEYS) globalThis.localStorage?.removeItem(k);
+    const victims: string[] = [];
+    for (let i = 0; i < (globalThis.localStorage?.length ?? 0); i++) {
+      const k = globalThis.localStorage?.key(i) ?? '';
+      if (WIPE_LS_PREFIXES.some((p) => k.startsWith(p))) victims.push(k);
+    }
+    victims.forEach((k) => globalThis.localStorage?.removeItem(k));
+  } catch {
+    // quota or unavailable: in-memory state is already cleared
+  }
+}
+
 export async function getAccessToken(): Promise<string | null> {
   await ensureLoaded();
   return memAccess;
@@ -483,7 +569,7 @@ export async function deleteAccount(password: string): Promise<void> {
     const detail = typeof data.detail === 'string' ? data.detail : '';
     throw new Error(detail || `HTTP ${res.status}`);
   }
-  await clearAuthStorage();
+  await wipeLocalAccountData();
   await removeAccessToken();
   await removeRefreshToken();
   await removeUser();
