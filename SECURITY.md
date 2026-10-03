@@ -1,12 +1,15 @@
 # Hermes Mobile 1.3.0: security notes (Play review + audit trail)
 
-## Linux runtime (proot)
+## Linux runtime (proot, arm64-only)
 The on-device gateway runs a Debian rootfs under proot as the app UID.
 No root, no setuid, no system partition changes. The proot binary is
-version-pinned (5.1.107.95, Termux apt) and the rootfs image is fetched
-over HTTPS with a live sha256 check that fails closed with the expected
-hash in the error. Audit flag HM-01 (specialUse) was rejected: the
-foreground service is dataSync only.
+bundled inside the APK (version-pinned 5.1.107.95) and the single rootfs
+image is fetched over HTTPS with a dual sha256 check (compiled pin plus
+live .sha256 asset) that fails closed with the expected hash in the
+error. The old multi-step path (Termux .deb downloads, AnLinux rootfs,
+on-device apt/pip) is deleted: install refuses non-arm64 devices loudly
+instead of downloading and executing code at runtime. Audit flag HM-01
+(specialUse) was rejected: the foreground service is dataSync only.
 
 ## Tokens: native vs web
 On Android, auth access/refresh tokens live ONLY in EncryptedSharedPreferences

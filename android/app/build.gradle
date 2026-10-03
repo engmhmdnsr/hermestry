@@ -8,17 +8,15 @@ android {
         applicationId "ee.oversight.hermes.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 97
+        versionCode 98
         versionName "1.3.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             // ABI support note (GATEWAY-02): Hermes on-device runtime is
-            // aarch64-centered. arm64-v8a is the primary shipping ABI.
-            // x86_64 is kept for emulators and x86_64 test devices.
-            // armeabi-v7a (32-bit) is excluded: the gateway native deps
-            // assume a 64-bit runtime, so 32-bit .so files only grow the
-            // APK without a supported runtime path.
-            abiFilters 'arm64-v8a', 'x86_64'
+            // arm64-only. Only arm64-v8a ships.
+            // arm64-only: the verified Linux image ships for arm64, so other
+            // ABIs have no supported runtime path and only grow the APK.
+            abiFilters 'arm64-v8a'
         }
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

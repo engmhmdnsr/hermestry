@@ -1,14 +1,12 @@
 package ee.oversight.hermes.mobile.install
 
 import android.content.Context
-import android.net.ConnectivityManager
 import android.os.Build
 import android.os.StatFs
 import ee.oversight.hermes.mobile.normProvider
 import ee.oversight.hermes.mobile.security.SecurePrefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.apache.commons.compress.archivers.ar.ArArchiveInputStream
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
@@ -21,54 +19,15 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 
 /**
- * Real on-device installer, v1.
- * Downloads proot + Debian rootfs on first run (small APK), extracts,
- * installs hermes-agent via pip inside the rootfs, renders config.yaml.
+ * Real on-device installer, v2 (arm64-only).
+ * Downloads one hash-pinned prebuilt image (Debian + Python + hermes-agent),
+ * verifies SHA-256 fail-closed, extracts, renders config.yaml. No apt, no
+ * pip, no multi-arch downloads on the device.
  */
 object Bootstrap {
-  // Debian rootfs: AnLinux-Resources tarballs (verified 2026-09-26, bookworm,
-  // resolv.conf + apt sources included). proot: Termux apt .deb (their
-  // github repo ships no binaries) - binary + loader extracted from data.tar.xz.
-  private const val ROOTFS_AARCH64 =
-    "https://raw.githubusercontent.com/EXALAB/AnLinux-Resources/master/Rootfs/Debian/arm64/debian-rootfs-arm64.tar.xz"
-  private const val ROOTFS_ARM =
-    "https://raw.githubusercontent.com/EXALAB/AnLinux-Resources/master/Rootfs/Debian/armhf/debian-rootfs-armhf.tar.xz"
-  private const val ROOTFS_X86_64 =
-    "https://raw.githubusercontent.com/EXALAB/AnLinux-Resources/master/Rootfs/Debian/amd64/debian-rootfs-amd64.tar.xz"
-  private const val PROOT_AARCH64 =
-    "https://packages.termux.dev/apt/termux-main/pool/main/p/proot/proot_5.1.107.95_aarch64.deb"
-  private const val PROOT_ARM =
-    "https://packages.termux.dev/apt/termux-main/pool/main/p/proot/proot_5.1.107.95_arm.deb"
-  private const val PROOT_X86_64 =
-    "https://packages.termux.dev/apt/termux-main/pool/main/p/proot/proot_5.1.107.95_x86_64.deb"
-  // proot is dynamically linked: needs libtalloc + libandroid-shmem from the
-  // same repo (parsed from its ELF DT_NEEDED). Extracted next to it, wired
-  // via LD_LIBRARY_PATH in runProot.
-  private const val LIBTALLOC_AARCH64 =
-    "https://packages.termux.dev/apt/termux-main/pool/main/libt/libtalloc/libtalloc_2.4.3_aarch64.deb"
-  private const val LIBTALLOC_ARM =
-    "https://packages.termux.dev/apt/termux-main/pool/main/libt/libtalloc/libtalloc_2.4.3_arm.deb"
-  private const val LIBTALLOC_X86_64 =
-    "https://packages.termux.dev/apt/termux-main/pool/main/libt/libtalloc/libtalloc_2.4.3_x86_64.deb"
-  private const val SHMEM_AARCH64 =
-    "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-shmem/libandroid-shmem_0.7_aarch64.deb"
-  private const val SHMEM_ARM =
-    "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-shmem/libandroid-shmem_0.7_arm.deb"
-  private const val SHMEM_X86_64 =
-    "https://packages.termux.dev/apt/termux-main/pool/main/liba/libandroid-shmem/libandroid-shmem_0.7_x86_64.deb"
-
-  // SHA-256 pins of the exact files above (computed 2026-09-26 from the same URLs).
-  // aarch64 only. Every download requires a pin (fail closed): arches without
-  // a pin refuse to download instead of fetching unverified bytes. If upstream
-  // rotates a file, install fails closed with the expected hash in the message.
-  private const val ROOTFS_AARCH64_SHA =
-    "b9f1fbc28cad7984d3a9bac86bf86895c388a3ea398261cc3f761145d5c366dc"
-  private const val PROOT_AARCH64_SHA =
-    "0a1b3d0f6ef76436c5ed924cd8e8f5a6b7186e99e1650eb2d9bc734e218a74cb"
-  private const val LIBTALLOC_AARCH64_SHA =
-    "ac81ad623d74c209718b9f3acb2dd702cc8a88c431e820d212229910b4db29da"
-  private const val SHMEM_AARCH64_SHA =
-    "0da3a24d558b93c92bcf8d611e0826a99ff96e396b148e6cdf33b47c47c57ff6"
+  // Install sources, arm64-only (Play hardening): the single hash-pinned
+  // prebuilt image below is the ONLY thing the app downloads and runs.
+  // The old Termux .deb / AnLinux rootfs / on-device pip path is deleted.
 
   // One-shot prebuilt image (v2): Debian bookworm arm64 + Python 3.14 +
   // hermes-agent 0.21.5 baked once and published as a GitHub Release asset.
@@ -146,50 +105,8 @@ object Bootstrap {
     }
   }
 
-  fun rootfsUrl(): String = when (arch()) {
-    "x86_64" -> ROOTFS_X86_64
-    "arm" -> ROOTFS_ARM
-    else -> ROOTFS_AARCH64
-  }
-
-  /** Same AnLinux file via the github.com mirror host (used once if raw 404s). */
-  fun rootfsFallbackUrl(): String? =
-    rootfsUrl().replace(
-      "https://raw.githubusercontent.com/EXALAB/AnLinux-Resources/master/",
-      "https://github.com/EXALAB/AnLinux-Resources/raw/refs/heads/master/"
-    ).takeIf { it != rootfsUrl() }
-
-  fun prootUrl(): String = when (arch()) {
-    "x86_64" -> PROOT_X86_64
-    "arm" -> PROOT_ARM
-    else -> PROOT_AARCH64
-  }
-
-  /** proot .deb + its two library .debs: (url, label, aptPackage, sha256 pin).
-   *  Non-aarch64 entries carry no pin (null): install() refuses to download
-   *  them (fail closed) until pins are recorded here. Never null a pin at the
-   *  call site to "allow" an unverified download. */
-  fun debUrls(): List<DebSpec> = when (arch()) {
-    "x86_64" -> listOf(
-      DebSpec(PROOT_X86_64, "proot", "proot", null),
-      DebSpec(LIBTALLOC_X86_64, "libtalloc", "libtalloc", null),
-      DebSpec(SHMEM_X86_64, "libandroid-shmem", "libandroid-shmem", null)
-    )
-    "arm" -> listOf(
-      DebSpec(PROOT_ARM, "proot", "proot", null),
-      DebSpec(LIBTALLOC_ARM, "libtalloc", "libtalloc", null),
-      DebSpec(SHMEM_ARM, "libandroid-shmem", "libandroid-shmem", null)
-    )
-    else -> listOf(
-      DebSpec(PROOT_AARCH64, "proot", "proot", PROOT_AARCH64_SHA),
-      DebSpec(LIBTALLOC_AARCH64, "libtalloc", "libtalloc", LIBTALLOC_AARCH64_SHA),
-      DebSpec(SHMEM_AARCH64, "libandroid-shmem", "libandroid-shmem", SHMEM_AARCH64_SHA)
-    )
-  }
-
-  data class DebSpec(val url: String, val label: String, val aptPackage: String, val sha256: String?)
-
-  fun rootfsSha(): String? = if (arch() == "aarch64") ROOTFS_AARCH64_SHA else null
+  // (legacy multi-arch download helpers deleted with the apt/pip path;
+  // arch() above is still used for the arm64 gate and status messages).
 
   // INSTALL-01: app/gateway/protocol compatibility metadata. The plugin
   // exposes this via preflight()/status() and the web UI gates Start on it.
@@ -388,147 +305,18 @@ object Bootstrap {
       installImage(app, onStep)
       return@withContext
     }
-    onStep("note: prebuilt image is arm64-only, using legacy install (experimental support for ${arch()})")
+    // Play hardening: arm64 only. The legacy apt/pip path (Termux .debs +
+    // AnLinux rootfs + on-device pip) is deleted, so a non-arm64 device
+    // refuses loudly instead of downloading and executing code at runtime.
+    // Only the hash-pinned prebuilt image (installImage) ever installs.
+    throw RuntimeException(
+      "this device (${arch()}) is not supported: Hermes needs arm64 " +
+        "(the verified Linux image is arm64-only)"
+    )
 
-    // 1. proot binary + libs. Preferred: bundled in the APK (exec-safe dir).
-    // Fallback: Termux .debs into proot-pkg (fails with error=13 on devices
-    // whose SELinux blocks exec from files/).
-    val proot = prootFile(app)
-    val pkg = prootPkgDir(app)
-    onStep("proot: ${proot.absolutePath}")
-    if (stageBundledLibs(app)) onStep("proot bundled in app, libs staged")
-    // lib check covers upgrades from builds that installed proot without libs
-    if (!proot.canExecute() || !File(pkg, "lib/libtalloc.so.2").exists()) {
-      for (spec in debUrls()) {
-        val deb = File(root, "${spec.label}.deb")
-        try {
-          onStep("downloading ${spec.label} (${arch()})...")
-          val pin = spec.sha256
-            ?: throw RuntimeException(
-              "no SHA-256 pin for ${spec.label} on ${arch()} " +
-                "(only aarch64 artifacts are pinned), refusing unverified download"
-            )
-          downloadTo(spec.url, deb, pin,
-            { pct -> onStep("downloading ${spec.label}... $pct%") },
-            { msg -> onStep("${spec.label}: $msg") },
-            fallback = { resolveDebFromIndex(spec.aptPackage) })
-          onStep("extracting ${spec.label}...")
-          extractDeb(deb, pkg)
-        } finally {
-          deb.delete()
-        }
-      }
-      if (!proot.setExecutable(true)) {
-        throw RuntimeException(
-          "chmod +x proot failed at ${proot.absolutePath} " +
-            "(SELinux exec denial? reinstall the app)"
-        )
-      }
-    } else onStep("proot ready")
-
-    // 2. rootfs (sentinel .rootfs_ok: the tar ships sh but NOT python3,
-    // so file-existence checks alone can't prove a complete extraction)
-    val fs = rootfsDir(app)
-    if (!File(fs, ".rootfs_ok").exists()) {
-      val tmp = File(root, "rootfs.tar.xz")
-      try {
-        onStep("downloading debian rootfs (~80MB)...")
-        val sha = rootfsSha()
-          ?: throw RuntimeException(
-            "no SHA-256 pin for the debian rootfs on ${arch()} " +
-              "(only aarch64 is pinned), refusing unverified download"
-          )
-        downloadTo(rootfsUrl(), tmp, sha,
-          { pct -> onStep("downloading debian... $pct%") },
-          { msg -> onStep("debian: $msg") },
-          fallback = { rootfsFallbackUrl()?.let { FallbackTarget(it, sha) } })
-        onStep("extracting debian (one time, slow)...")
-        extractTarXz(tmp, fs, "",
-          { n -> if (n % 2000 == 0) onStep("extracting... $n files") },
-          { m -> onStep(m) })
-        File(fs, ".rootfs_ok").writeText("bookworm ${arch()}")
-        File(root, ".pip_ok").delete() // fresh rootfs needs its own pip install
-      } finally {
-        tmp.delete()
-      }
-    } else onStep("debian rootfs ready")
-    // Always verify (even on sentinel hit): a half-extracted rootfs from an
-    // older build fails later with proot's "interpreter not found".
-    val bad = verifyRootfs(fs)
-    if (bad.isEmpty()) {
-      onStep("rootfs check: loader + libc OK")
-    } else {
-      bad.take(8).forEach { onStep("rootfs MISSING: $it") }
-      // Force a clean re-extract + re-install next retry (stale sentinels off).
-      File(fs, ".rootfs_ok").delete()
-      File(root, ".pip_ok").delete()
-      throw RuntimeException(
-        "rootfs incomplete (${bad.size} gaps, see MISSING lines), retry re-downloads it"
-      )
-    }
-
-    // 3. base packages + hermes-agent via pip inside proot
-    // (Debian 12 pip needs --break-system-packages outside a venv.)
-    if (runCatching { File(root, ".pip_ok").readText().trim() }.getOrNull() != "hermes-agent $GATEWAY_VERSION") {
-      // Prefer the agent bundled in the hash-verified image over PyPI:
-      // public PyPI does not carry this version, so pip is only a last
-      // resort. Probe host-side (no proot needed).
-      val bundled = runCatching {
-        File(fs, "opt/hermes-agent/pyproject.toml").readText()
-      }.getOrNull()?.let { text ->
-        Regex("(?m)^\\s*version\\s*=\\s*\"([^\"]+)\"").find(text)?.groupValues?.get(1)?.trim()
-      }?.takeIf { it.isNotEmpty() }
-      if (bundled == GATEWAY_VERSION) {
-        onStep("hermes-agent $GATEWAY_VERSION bundled in image, pip skipped")
-        File(root, ".pip_ok").writeText("hermes-agent $GATEWAY_VERSION")
-      } else {
-      onStep("installing hermes-agent $GATEWAY_VERSION (pip, one time)...")
-      // AnLinux rootfs ships no working DNS: without this apt/pip fail with
-      // "Temporary failure resolving ...". Host-side write, no proot needed.
-      val resolv = File(fs, "etc/resolv.conf")
-      try {
-        resolv.parentFile?.mkdirs()
-        if (!resolv.exists() || resolv.readText().contains("127.")) {
-          // Prefer the device's own DNS (Private DNS, VPN, MagicDNS keep
-          // working); fall back to public resolvers when none is visible.
-          val servers = linkedSetOf<String>()
-          try {
-            val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            cm.getLinkProperties(cm.activeNetwork)?.dnsServers?.forEach {
-              it.hostAddress?.takeIf { h -> h.isNotEmpty() }?.let(servers::add)
-            }
-          } catch (_: Exception) { }
-          servers.add("1.1.1.1")
-          servers.add("9.9.9.9")
-          servers.add("8.8.8.8")
-          resolv.writeText(servers.take(3).joinToString("\n", postfix = "\n") { "nameserver $it" })
-          onStep("dns fixed (${servers.first()})")
-        }
-      } catch (e: Exception) { onStep("dns write failed: ${stableFailure(e, "dns_write_failed")}") }
-      val prep = runProot(
-        app,
-        "apt-get update && apt-get install -y python3 python3-pip && " +
-          "python3 -m pip install --upgrade --break-system-packages pip && " +
-          "python3 -m pip install --break-system-packages hermes-agent==$GATEWAY_VERSION"
-      )
-      if (prep != 0) {
-        // Surface the real cause on screen: last 12 lines of the proot log.
-        try {
-          File(rootDir(app), "bootstrap_last.log").readLines()
-            .takeLast(12).forEach { onStep(it.take(160)) }
-        } catch (_: Exception) { }
-        throw RuntimeException("agent install failed (exit $prep): image ships $bundled, need $GATEWAY_VERSION")
-      }
-      File(root, ".pip_ok").writeText("hermes-agent $GATEWAY_VERSION")
-      } // bundled-agent fast path
-    } else onStep("hermes-agent ready")
-
-    // 4. config + start script
-    onStep("writing gateway config...")
-    renderConfig(app)
-    File(root, "start_gateway.sh").writeText(startScript())
-    File(root, ".installed").writeText("v1 ${arch()}")
-    onStep("done")
+    // Legacy apt/pip path deleted (Play hardening): install() throws above
+    // for non-aarch64, so this dead body is gone. installImage() below is
+    // the only install path: one hash-pinned file, verified fail-closed.
   }
 
   /**
@@ -892,35 +680,8 @@ object Bootstrap {
     return md.digest().joinToString("") { "%02x".format(it) }
   }
 
-  /**
-   * Parses the live Termux Packages index to find the current .deb for a
-   * package. The resolved file is NOT covered by any recorded pin, so the
-   * target carries a null digest and downloadTo refuses it (fail closed);
-   * the URL survives only for the refusal message. Record a pin in debUrls()
-   * to actually enable a new file.
-   */
-  private fun resolveDebFromIndex(aptPackage: String): FallbackTarget? {
-    val index = "https://packages.termux.dev/apt/termux-main/dists/stable/main/binary-${arch()}/Packages"
-    val c = (URL(index).openConnection() as HttpURLConnection).apply {
-      connectTimeout = 15_000; readTimeout = 30_000; instanceFollowRedirects = true
-    }
-    c.connect()
-    if (c.responseCode !in 200..299) return null
-    val text = c.inputStream.bufferedReader().use { it.readText() }
-    var wantFile: String? = null
-    var inBlock = false
-    for (line in text.lineSequence()) {
-      if (line.isBlank()) { inBlock = false; continue }
-      if (line.startsWith("Package: ")) inBlock = (line.removePrefix("Package: ").trim() == aptPackage)
-      else if (inBlock && line.startsWith("Filename: ")) {
-        wantFile = line.removePrefix("Filename: ").trim()
-        break
-      }
-    }
-    return wantFile?.let {
-      FallbackTarget("https://packages.termux.dev/apt/termux-main/$it", null)
-    }
-  }
+  // (legacy apt-index resolver deleted with the apt/pip path: no code in
+  // the app resolves or downloads .deb packages anymore.)
 
   /**
    * One-line hint for the install log tail. Covers the two failure modes the
@@ -1034,29 +795,7 @@ object Bootstrap {
     return missing
   }
 
-  /** Pulls data.tar.xz out of a Termux .deb and unpacks it under dest. */
-  private fun extractDeb(deb: File, dest: File) {
-    dest.mkdirs()
-    deb.inputStream().buffered().use { fis ->
-      ArArchiveInputStream(fis).use { ar ->
-        var entry = ar.nextEntry
-        while (entry != null) {
-          if (entry.name == "data.tar.xz") {
-            val tmp = File.createTempFile("proot-data", ".tar.xz", dest)
-            try {
-              FileOutputStream(tmp).use { fos -> ar.copyTo(fos) }
-              extractTarXz(tmp, dest, "./data/data/com.termux/files/usr/", {}, {})
-            } finally {
-              tmp.delete()
-            }
-            return
-          }
-          entry = ar.nextEntry
-        }
-        throw RuntimeException("data.tar.xz not found in .deb")
-      }
-    }
-  }
+  // (legacy .deb extractor deleted with the apt/pip path.)
 
   private fun extractTarXz(
     archive: File, dest: File, stripPrefix: String,
