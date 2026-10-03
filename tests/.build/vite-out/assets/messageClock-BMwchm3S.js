@@ -1,1 +1,0 @@
-const o=e=>{if(typeof e!="number"||!Number.isFinite(e)||e<=0)return"";const t=new Date(e),n=r=>String(r).padStart(2,"0");return`${n(t.getHours())}:${n(t.getMinutes())}:${n(t.getSeconds())}`};export{o as f};
