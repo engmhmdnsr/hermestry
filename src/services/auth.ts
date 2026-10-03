@@ -270,7 +270,9 @@ const WIPE_LS_KEYS = [
   'hermes_session_projects',
   'hermes_usage',
   'hermes_pinned_sessions',
-  'hermes_drafts',
+  'hermes_active_project',
+  'hermes_vault.tmp',
+  'hermes_vault.bak',
 ];
 
 const WIPE_NATIVE_SLOTS = [
@@ -282,7 +284,7 @@ const WIPE_NATIVE_SLOTS = [
   'global.discordToken',
 ];
 
-const WIPE_LS_PREFIXES = ['hermes_messages_'];
+const WIPE_LS_PREFIXES = ['hermes_messages_', 'hermes_draft_', 'hermes_turnmeta_', 'hermes_attachments_'];
 
 function collectProviderRefs(): string[] {
   const refs: string[] = [];

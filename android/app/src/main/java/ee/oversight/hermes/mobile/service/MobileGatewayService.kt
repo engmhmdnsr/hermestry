@@ -890,21 +890,8 @@ class MobileGatewayService : Service() {
 
   /** Log rotation: an always-on gateway would otherwise fill storage.
    *  Keeps the newest KEEP bytes once the file passes MAX bytes. */
-  private fun rotateLogIfLarge(f: File, max: Long, keep: Long) {
-    try {
-      if (!f.exists() || f.length() <= max) return
-      val raf = java.io.RandomAccessFile(f, "r")
-      try {
-        val start = (f.length() - keep).coerceAtLeast(0)
-        raf.seek(start)
-        val tail = ByteArray((f.length() - start).toInt())
-        raf.readFully(tail)
-        f.writeBytes(tail)
-      } finally {
-        try { raf.close() } catch (_: Exception) { }
-      }
-    } catch (_: Exception) { }
-  }
+  private fun rotateLogIfLarge(f: File, max: Long, keep: Long) =
+    Companion.rotateLogFile(f, max, keep)
 
   companion object {
     /** Bounded WakeLock window: re-acquired by supervise() while still wanted. */
@@ -1072,9 +1059,27 @@ class MobileGatewayService : Service() {
     fun logRaw(ctx: Context, line: String) {
       try {
         val f = File(Bootstrap.rootDir(ctx), "service.log")
+        rotateLogFile(f, MAX_LOG_BYTES, KEEP_LOG_BYTES)
         val ts = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
           .format(java.util.Date())
         f.appendText("$ts $line\n")
+      } catch (_: Exception) { }
+    }
+
+    /** File-level rotation shared by instance appendLog and static logRaw. */
+    fun rotateLogFile(f: File, max: Long, keep: Long) {
+      try {
+        if (!f.exists() || f.length() <= max) return
+        val raf = java.io.RandomAccessFile(f, "r")
+        try {
+          val start = (f.length() - keep).coerceAtLeast(0)
+          raf.seek(start)
+          val tail = ByteArray((f.length() - start).toInt())
+          raf.readFully(tail)
+          f.writeBytes(tail)
+        } finally {
+          try { raf.close() } catch (_: Exception) { }
+        }
       } catch (_: Exception) { }
     }
 
