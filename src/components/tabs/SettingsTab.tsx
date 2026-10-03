@@ -74,11 +74,11 @@ import {
   ConfiguredProvider,
 } from '../../types/hermes';
 
-type SectionId = 'account' | 'connection' | 'security' | 'gateway' | 'automation' | 'appearance' | 'advanced';
+type SectionId = 'account' | 'connection' | 'security' | 'gateway' | 'automation' | 'appearance' | 'advanced' | 'about';
 
 // Fixed order of the section rail and the DOM ids its chips control. Module
 // scope so the scroll tracker and the chips share one source of truth.
-const SECTION_IDS: SectionId[] = ['account', 'connection', 'security', 'gateway', 'automation', 'appearance', 'advanced'];
+const SECTION_IDS: SectionId[] = ['account', 'connection', 'security', 'gateway', 'automation', 'appearance', 'advanced', 'about'];
 const sectionDomId = (id: SectionId) => `settings-section-${id}`;
 // The tab scrolls inside #main-content under a sticky header; the small offset
 // keeps an opened card clear of that header instead of half hidden beneath it.
@@ -981,6 +981,7 @@ export const SettingsTab: React.FC = () => {
     automation: false,
     appearance: false,
     advanced: false,
+    about: true,
   });
   // The section rail keeps exactly one chip marked current: scroll position
   // feeds it while the user scrolls, and a chip tap or an opening card moves
@@ -3740,6 +3741,47 @@ export const SettingsTab: React.FC = () => {
               )}
             </div>
           </div>
+        </Row>
+      </Section>
+
+      <Section
+        title={tx('sectionAbout', 'About us')}
+        subtitle={tx('aboutTagline', 'Your AI agent, on your server, controlled from your phone.')}
+        open={openSections.about}
+        onToggle={() => toggleSection('about')}
+        id={sectionDomId('about')}
+      >
+        <Row>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="t-body text-[var(--app-text)]">Hermes</p>
+              <p className="t-caption text-[var(--app-text-muted)] mt-1">
+                {tx('aboutVersion', 'Version')} 1.3.0 · Oversight OÜ, Tallinn
+              </p>
+            </div>
+          </div>
+        </Row>
+        <Row>
+          <a
+            href="https://www.oversight.ee"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center justify-between w-full min-h-[44px] t-body text-[var(--app-text)] hover:underline"
+          >
+            <span>{tx('aboutWebsite', 'Website')}</span>
+            <span aria-hidden="true" className="text-[var(--app-text-muted)]">↗</span>
+          </a>
+        </Row>
+        <Row>
+          <a
+            href={PRIVACY_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center justify-between w-full min-h-[44px] t-body text-[var(--app-text)] hover:underline"
+          >
+            <span>{tx('authPrivacyPolicy', 'Privacy policy')}</span>
+            <span aria-hidden="true" className="text-[var(--app-text-muted)]">↗</span>
+          </a>
         </Row>
       </Section>
 
