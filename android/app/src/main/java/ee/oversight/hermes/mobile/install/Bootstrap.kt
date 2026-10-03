@@ -46,19 +46,21 @@ object Bootstrap {
 
   fun rootDir(app: Context): File = File(app.filesDir, "debian")
   fun rootfsDir(app: Context): File = File(rootDir(app), "rootfs")
-  fun prootPkgDir(app: Context): File = File(rootDir(app), "proot-pkg")
+  fun prootLibDir(app: Context): File = File(rootDir(app), "proot-pkg")
   /**
    * proot lives INSIDE the APK (jniLibs -> nativeLibraryDir), not in files/.
    * Android 10+ SELinux on many devices denies execve from files/ (error=13)
-   * while the native lib dir is always executable. The .deb download path
-   * below stays as fallback for ABIs without a bundled binary.
+   * while the native lib dir is always executable. Arm64-only: the bundled
+   * binary is the only proot the app ever runs.
    */
   fun bundledProot(app: Context): File =
     File(app.applicationInfo.nativeLibraryDir, "lib_proot.so")
   fun prootFile(app: Context): File {
     val b = bundledProot(app)
-    if (b.exists()) return b
-    return File(prootPkgDir(app), "bin/proot")
+    require(b.exists()) {
+      "bundled proot missing at ${b.absolutePath} (reinstall the app)"
+    }
+    return b
   }
 
   /**
@@ -85,7 +87,7 @@ object Bootstrap {
     val talloc = File(dir, "lib_talloc.so")
     val shmem = File(dir, "lib_shmem.so")
     if (!talloc.exists() || !shmem.exists()) return false
-    val lib = File(prootPkgDir(app), "lib").apply { mkdirs() }
+    val lib = File(prootLibDir(app), "lib").apply { mkdirs() }
     talloc.copyTo(File(lib, "libtalloc.so.2"), overwrite = true)
     shmem.copyTo(File(lib, "libandroid-shmem.so"), overwrite = true)
     return true
@@ -93,7 +95,7 @@ object Bootstrap {
 
   fun isInstalled(app: Context): Boolean =
     File(rootDir(app), ".installed").exists() && prootFile(app).canExecute() &&
-      File(prootPkgDir(app), "lib/libtalloc.so.2").exists() &&
+      File(prootLibDir(app), "lib/libtalloc.so.2").exists() &&
       File(rootfsDir(app), ".rootfs_ok").exists()
 
   fun arch(): String {
@@ -521,7 +523,7 @@ object Bootstrap {
     pb.environment()["PYTHONIOENCODING"] = "utf-8"
     pb.environment()["DEBIAN_FRONTEND"] = "noninteractive"
     pb.environment()["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    pb.environment()["LD_LIBRARY_PATH"] = File(prootPkgDir(app), "lib").absolutePath
+    pb.environment()["LD_LIBRARY_PATH"] = File(prootLibDir(app), "lib").absolutePath
     for ((k, v) in prootEnv(app)) pb.environment()[k] = v
     // Skip proot's temp-file loader extraction (fails under app SELinux):
     // point it at the bundled static loaders in the APK lib dir instead.

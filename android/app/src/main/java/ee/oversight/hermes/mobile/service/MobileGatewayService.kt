@@ -691,7 +691,7 @@ class MobileGatewayService : Service() {
     // Baked hermes-agent tree (mirrors the .pth inside the baked python).
     pb.environment()["PYTHONPATH"] = "/opt/hermes-agent"
     pb.environment()["PATH"] = "/opt/python314/python/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    pb.environment()["LD_LIBRARY_PATH"] = File(Bootstrap.prootPkgDir(this), "lib").absolutePath
+    pb.environment()["LD_LIBRARY_PATH"] = File(Bootstrap.prootLibDir(this), "lib").absolutePath
     for ((k, v) in Bootstrap.prootEnv(this)) pb.environment()[k] = v
     Bootstrap.prootLoaderFile(this)?.let { pb.environment()["PROOT_LOADER"] = it.absolutePath }
     Bootstrap.prootLoader32File(this)?.let { pb.environment()["PROOT_LOADER_32"] = it.absolutePath }
