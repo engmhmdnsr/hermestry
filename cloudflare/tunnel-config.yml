@@ -1,0 +1,11 @@
+# cloudflared tunnel ingress for the Hermes account service.
+# The auth server stays on its tailnet bind (100.112.74.9:8082); nothing
+# listens on a public port. Named tunnel created in the dashboard
+# (Zero Trust > Networks > Tunnels), token goes to the systemd unit.
+tunnel: hermes-auth
+credentials-file: /etc/cloudflared/hermes-auth.json
+
+ingress:
+  - hostname: auth.oversight.ee
+    service: http://100.112.74.9:8082
+  - service: http_status:404
