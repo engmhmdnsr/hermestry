@@ -95,6 +95,56 @@ def _safe_ids(resp: Any) -> list[str]:
         return []
 
 
+def _custom_base_policy(base_url: str) -> str | None:
+    """Return an error message if a custom provider base URL is not allowed.
+
+    Policy (HERMES-01): https only, public hosts only. Loopback,
+    private, link-local, multicast, reserved, and unspecified addresses
+    are rejected, whether written as a literal IP or resolved via DNS.
+    The credential is only ever sent after this check passes, and the
+    probe below never follows redirects, so the key cannot leak to a
+    redirect target or an internal service.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(base_url)
+    except Exception:
+        return "That URL is not valid."
+    if parts.scheme.lower() != "https":
+        return "Custom endpoints must use https://."
+    host = (parts.hostname or "").strip().rstrip(".")
+    if not host:
+        return "That URL has no host."
+    try:
+        import ipaddress
+        import socket
+
+        try:
+            literal = ipaddress.ip_address(host)
+        except ValueError:
+            literal = None
+        addrs: list[str] = [str(literal)] if literal is not None else []
+        if literal is None:
+            try:
+                infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+            except Exception:
+                return "Could not resolve %s." % host
+            addrs = list({info[4][0] for info in infos})
+            if not addrs:
+                return "Could not resolve %s." % host
+        for addr in addrs:
+            try:
+                ip = ipaddress.ip_address(addr)
+            except ValueError:
+                return "Could not validate %s." % host
+            if not ip.is_global:
+                return "Private and local addresses are not allowed."
+    except Exception:
+        return "Could not validate %s." % host
+    return None
+
+
 def _http_routes(api) -> list[tuple[str, str, Any]]:
     async def _get_memory(request):
         from aiohttp import web
@@ -327,12 +377,19 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
 
             # Custom OpenAI-compatible endpoint: validate connectivity and
             # enumerate its /models (tries the base then the /v1 alternate).
+            # HERMES-01: the URL policy runs before any credential leaves
+            # the device, and the probe never follows redirects.
             if base_url:
+                policy_error = _custom_base_policy(base_url)
+                if policy_error:
+                    return web.json_response(
+                        {"valid": False, "models": [], "error": policy_error}
+                    )
                 headers = {"Authorization": "Bearer " + value} if value else None
                 base = base_url.rstrip("/")
                 alt = base[:-3].rstrip("/") if base.lower().endswith("/v1") else base + "/v1"
                 resolved, resp = base, None
-                async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(10.0), follow_redirects=False) as client:
                     for cand in (base, alt):
                         try:
                             cand_resp = await client.get(cand + "/models", headers=headers)

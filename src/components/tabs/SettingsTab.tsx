@@ -641,9 +641,7 @@ export const SettingsTab: React.FC = () => {
     return null;
   };
 
-  // Locale bundles may still carry a stale "4-Digit" title while the
-  // validator accepts 4-8 digits. languages.ts is owned elsewhere, so the
-  // title is used as-is and the range note below carries the truth.
+  // Locale bundles carry the 6-8 range note; the validator below enforces it.
   const appLockTitle = tx('appLock', 'App Lock PIN');
 
   // Machine install and gateway states rendered as words a person reads. The
@@ -2677,7 +2675,7 @@ export const SettingsTab: React.FC = () => {
             <div>
               <p className="t-body text-[var(--app-text)]">{appLockTitle}</p>
               <p className="t-caption text-[var(--app-text-muted)]">{t('appLockDesc')}</p>
-              <p className="t-caption text-[var(--app-text-dim)] mt-1">{tx('pinRangeNote', 'Use 4 to 8 digits. Avoid common or repeated-digit PINs.')}</p>
+              <p className="t-caption text-[var(--app-text-dim)] mt-1">{tx('pinRangeNote', 'Use 6 to 8 digits. Avoid common or repeated-digit PINs.')}</p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
               <button

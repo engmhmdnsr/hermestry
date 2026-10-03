@@ -5,6 +5,10 @@
     <link rel="icon" type="image/png" href="/ic_hermes_logo.png" />
     <link rel="icon" type="image/png" media="(prefers-color-scheme: dark)" href="/ic_hermes_logo_dark.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' capacitor: http://localhost:* https://localhost:*; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; media-src 'self' blob: data:; connect-src *; object-src 'none'; base-uri 'self'; form-action 'self'; worker-src 'self' blob:"
+    />
     <title>Hermes</title>
     <style>html{background-color:#F1F5F9}html[data-mode="dark"]{background-color:#090B14}</style>
     <script>
