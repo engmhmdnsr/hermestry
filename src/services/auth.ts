@@ -1,7 +1,10 @@
 import { isNativeGateway, nativeSecretGet, nativeSecretSet } from './nativeGateway';
 import { gwFetch } from './gwFetch';
 
-export const AUTH_BASE_URL = 'https://www.oversight.ee/api';
+// Origin root only: every call site already carries the /api prefix
+// (unauthedFetch + the two direct account calls), so the base must NOT
+// end with /api or all URLs double to /api/api/... -> 404.
+export const AUTH_BASE_URL = 'https://www.oversight.ee';
 
 // Storage keys: localStorage on web, lockout.* slots on native (SecurePrefs, allowlisted)
 const LS_ACCESS = 'hermes.auth.accessToken';
