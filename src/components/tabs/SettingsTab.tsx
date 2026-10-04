@@ -52,6 +52,7 @@ import {
 } from '../../services/nativeGateway';
 import { deriveUiFlags, type GatewayState } from '../../services/gatewayState';
 import { validationFingerprint } from '../../services/providerValidation';
+import type { ConnectionPathReport } from '../../services/gateway';
 import { plainGatewayFailure, plainResultLine } from '../../services/plainFailure';
 import { assertNoPlaintextSecrets } from '../../services/debugSafety';
 import { runRedactionSelfTests } from '../../services/redaction';
@@ -678,6 +679,8 @@ export const SettingsTab: React.FC = () => {
   // Ops state
   const [doctorReport, setDoctorReport] = useState<DoctorReport | null>(null);
   const [runningDoctor, setRunningDoctor] = useState(false);
+  const [pathReport, setPathReport] = useState<ConnectionPathReport | null>(null);
+  const [runningPathTest, setRunningPathTest] = useState(false);
   const [backupResult, setBackupResult] = useState<BackupResult | null>(null);
   const [runningBackup, setRunningBackup] = useState(false);
   const [debugResult, setDebugResult] = useState<DebugShare | null>(null);
@@ -1914,14 +1917,23 @@ export const SettingsTab: React.FC = () => {
     setTestedFingerprint(validationFingerprint({ provider: norm, [PROVIDER_CREDENTIAL_FIELD]: cleaned, baseUrl: newProvBaseUrl.trim() }));
     const valid = res === null ? null : res.valid;
     if (valid === true) {
-      setKeyOk(true);
-      setKeyResult(tx('keyValidPlain', 'This key works.'));
       const live = (res?.models || []).filter((m) => typeof m === 'string' && m.trim());
-      setTestedModels(live);
-      // Pre-fill the default model when empty so nothing must be typed.
-      if (live.length > 0 && !newProvModel.trim()) {
-        setNewProvModel(live[0]);
-        setCustomModelMode(false);
+      // A stub gateway validator answers valid:true with zero models even
+      // for a garbage key, so an empty model list verifies nothing. Stamp
+      // the key as working only when the gateway names at least one model.
+      if (live.length === 0) {
+        setKeyOk(null);
+        setKeyResult(tx('keyUnverifiedPlain', 'Hermes answered but did not confirm this key. It stays usable: sending a chat will prove it.'));
+        setTestedModels([]);
+      } else {
+        setKeyOk(true);
+        setKeyResult(tx('keyValidPlain', 'This key works.'));
+        setTestedModels(live);
+        // Pre-fill the default model when empty so nothing must be typed.
+        if (!newProvModel.trim()) {
+          setNewProvModel(live[0]);
+          setCustomModelMode(false);
+        }
       }
     } else if (valid === false) {
       setKeyOk(false);
@@ -1939,6 +1951,28 @@ export const SettingsTab: React.FC = () => {
     const report = await service.doctor();
     setDoctorReport(report);
     setRunningDoctor(false);
+  };
+
+  // Client-context path test: two requests from this same app process to
+  // Hermes, reported step by step so a dead gateway reads differently from
+  // a live gateway with a rejected key. Never carries key material.
+  const handleRunPathTest = async () => {
+    setRunningPathTest(true);
+    try {
+      setPathReport(await service.connectionPathTest());
+    } catch (e: unknown) {
+      const err = e as Error;
+      setPathReport({
+        url: '',
+        ok: false,
+        probes: [{
+          name: 'path test',
+          ok: false,
+          detail: `${err?.name || 'Error'}: ${err?.message || 'The path test did not run.'}`,
+        }],
+      });
+    }
+    setRunningPathTest(false);
   };
 
   const handleRunBackup = async () => {
@@ -3658,6 +3692,58 @@ export const SettingsTab: React.FC = () => {
                       )}
                       <span className="min-w-0 break-words text-[var(--app-text)]">{c.name}</span>
                       <span className="t-caption text-[var(--app-text-dim)] ms-auto min-w-0 max-w-full break-words">{c.detail}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </Row>
+
+        <Row>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="t-body text-[var(--app-text)]">{tx('pathTestTitle', 'Connection path test')}</p>
+              <p className="t-caption text-[var(--app-text-muted)] mt-1">{tx('pathTestDesc', 'Runs two requests from this app to Hermes and shows exactly where the chat path breaks.')}</p>
+            </div>
+            <button
+              onClick={handleRunPathTest}
+              disabled={runningPathTest}
+              className="hm-hit inline-flex items-center px-4 py-2 min-h-[36px] r-sm edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] t-label text-[var(--app-text)] transition cursor-pointer disabled:opacity-50 shrink-0"
+            >
+              {runningPathTest ? tx('pathTesting', 'Testing path…') : tx('runPathTest', 'Test connection path')}
+            </button>
+          </div>
+          <div className="pt-2">
+            {runningPathTest && (
+              <StateNote state="loading" message={tx('pathTesting', 'Testing path…')} />
+            )}
+            {!runningPathTest && !pathReport && (
+              <StateNote
+                state="empty"
+                message={tx('pathNone', 'No path test run yet.')}
+              />
+            )}
+            {pathReport && (
+              <div className="space-y-2 pt-1">
+                <p className={`t-label ${pathReport.ok ? 'text-[var(--app-success)]' : 'text-[var(--app-danger)]'}`} role="status">
+                  {pathReport.ok
+                    ? tx('pathOkPlain', 'Chat path is clear.')
+                    : tx('pathFailPlain', 'The chat path is broken at one of the steps below.')}
+                </p>
+                {pathReport.url && (
+                  <p className="t-micro text-[var(--app-text-dim)] font-mono break-all" dir="ltr">URL: {pathReport.url}</p>
+                )}
+                <div className="space-y-2">
+                  {pathReport.probes.map((p, i) => (
+                    <div key={i} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 border-b border-[var(--app-border-subtle)] last:border-0 t-label">
+                      {p.ok ? (
+                        <CheckCircle2 className="w-4 h-4 text-[var(--app-success)] shrink-0" />
+                      ) : (
+                        <XCircle className="w-4 h-4 text-[var(--app-danger)] shrink-0" />
+                      )}
+                      <span className="min-w-0 break-words text-[var(--app-text)] font-mono" dir="ltr">{p.name}</span>
+                      <span className="t-caption text-[var(--app-text-dim)] ms-auto min-w-0 max-w-full break-words font-mono" dir="ltr">{p.detail}</span>
                     </div>
                   ))}
                 </div>

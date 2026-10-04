@@ -62,6 +62,21 @@ export interface LiveFlag {
 export type LiveValue<T> = T & LiveFlag;
 export type LiveList<T> = T[] & LiveFlag;
 
+// One client-context probe of the chat path: resolved URL, reachability,
+// HTTP status, latency, and the exception class/message on failure. No key
+// material is ever placed in a detail string.
+export interface ConnectionPathProbe {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface ConnectionPathReport {
+  url: string;
+  ok: boolean;
+  probes: ConnectionPathProbe[];
+}
+
 const REQUEST_TIMEOUT_MS = 15000;
 const HEALTH_TIMEOUT_MS = 5000;
 const JOB_ACTIONS = new Set(['pause', 'resume', 'run', 'delete']);
@@ -211,6 +226,66 @@ export class GatewayService {
         detail: plainServiceFailure(e),
       };
     }
+  }
+
+  // Client-context connection path test: the same gwFetch path and the same
+  // auth headers the chat stream uses, split into two probes so a dead
+  // gateway (probe 1 fails) reads differently from a live gateway with a
+  // rejected key (probe 1 passes, probe 2 reports auth). Runs from the
+  // WebView on web and through the native bridge on device, exactly like
+  // chat traffic.
+  async connectionPathTest(callerSignal?: AbortSignal): Promise<ConnectionPathReport> {
+    const probes: ConnectionPathProbe[] = [];
+    try {
+      const t0 = Date.now();
+      const res = await gwFetch(`${this.baseUrl}/health`, {
+        signal: this.requestSignal(callerSignal, HEALTH_TIMEOUT_MS),
+        headers: this.getHeaders(),
+      });
+      const ms = Date.now() - t0;
+      probes.push({
+        name: 'GET /health',
+        ok: res.ok,
+        detail: `HTTP ${res.status} in ${ms}ms`,
+      });
+    } catch (e: unknown) {
+      const err = e as Error;
+      probes.push({
+        name: 'GET /health',
+        ok: false,
+        detail: `${err?.name || 'Error'}: ${err?.message || String(e)}`,
+      });
+    }
+    try {
+      const t0 = Date.now();
+      await this.modelOptions('', callerSignal);
+      const ms = Date.now() - t0;
+      if (this.lastModelsError) {
+        probes.push({
+          name: 'GET /api/model/options',
+          ok: false,
+          detail: `${this.lastModelsError} in ${ms}ms`,
+        });
+      } else {
+        probes.push({
+          name: 'GET /api/model/options',
+          ok: true,
+          detail: `${this.lastModelsLiveCount} models in ${ms}ms`,
+        });
+      }
+    } catch (e: unknown) {
+      const err = e as Error;
+      probes.push({
+        name: 'GET /api/model/options',
+        ok: false,
+        detail: `${err?.name || 'Error'}: ${err?.message || String(e)}`,
+      });
+    }
+    return {
+      url: this.baseUrl,
+      ok: probes.length > 0 && probes.every((p) => p.ok),
+      probes,
+    };
   }
 
   // Live model catalog (single source of truth). The provider hint is sent as

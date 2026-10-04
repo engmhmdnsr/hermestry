@@ -59,39 +59,6 @@ interface StreamFailureInfo {
 // real next step. The raw detail stays available behind a details toggle.
 const STREAM_ERROR_PREFIX = /^(?:stream\s*error|stream\s*failed|request\s*failed)\s*:?\s*/i;
 
-const classifyStreamFailure = (raw: string): StreamFailureInfo => {
-  let detail = (raw || '').trim();
-  let prev = '';
-  while (prev !== detail && STREAM_ERROR_PREFIX.test(detail)) {
-    prev = detail;
-    detail = detail.replace(STREAM_ERROR_PREFIX, '').trim();
-  }
-  const match = /(?:http\s*)?\b([1-5]\d{2})\b/i.exec(detail);
-  const status = match ? Number(match[1]) : null;
-  const low = detail.toLowerCase();
-  if (
-    status === 401 ||
-    status === 403 ||
-    /unauthor|forbidden|invalid api key|authentication|api key/.test(low)
-  ) {
-    return { kind: 'auth', status, detail };
-  }
-  if (status === 402 || /quota|billing|insufficient|credit/.test(low)) {
-    return { kind: 'quota', status, detail };
-  }
-  if (status === 404 || /not found|unknown model|no such model/.test(low)) {
-    return { kind: 'model', status, detail };
-  }
-  if (status === 408 || status === 429 || /rate limit|too many requests|timed? ?out/.test(low)) {
-    return { kind: 'rate', status, detail };
-  }
-  if (/failed to fetch|network|econnrefused|unreachable|socket|disconnected|connection/.test(low)) {
-    return { kind: 'offline', status, detail };
-  }
-  if (status !== null && status >= 500) return { kind: 'server', status, detail };
-  return { kind: 'unknown', status, detail };
-};
-
 // The details toggle is for humans, never for logs. Classification still sees
 // the raw text (that is how 'Failed to fetch' becomes the offline copy), but
 // what reaches the DOM goes through the plainFailure rules first, so a fetch
@@ -194,6 +161,62 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   const tx = (key: string, fallback: string): string => {
     const v = t(key);
     return !v || v === key ? fallback : v;
+  };
+
+  // Failure text arrives as free form gateway text ('Stream failed: HTTP 404',
+  // sometimes already prefixed with 'Stream error:'). Prefixes are collapsed
+  // so the banner shows exactly one, and the kind drives the friendly copy
+  // plus a real next step. The raw detail stays available behind a details
+  // toggle.
+  const classifyStreamFailure = (raw: string): StreamFailureInfo => {
+    let detail = (raw || '').trim();
+    let prev = '';
+    while (prev !== detail && STREAM_ERROR_PREFIX.test(detail)) {
+      prev = detail;
+      detail = detail.replace(STREAM_ERROR_PREFIX, '').trim();
+    }
+    if (!detail) return { kind: 'unknown', status: null, detail };
+    // Friendly copies already carry their verdict: never run the transport
+    // matcher over them, or a closed-stream note that mentions the word
+    // "connection" would wear the gateway-down costume.
+    const friendly: Array<[string, StreamFailureKind]> = [
+      [tx('errUnavailable', 'Hermes is unreachable. Make sure it is running, then try again.'), 'offline'],
+      [tx('errStreamClosed', 'Hermes closed the connection before the answer finished. Try again.'), 'unknown'],
+      [tx('errGatewayAuthHint', 'Hermes rejected the stored key. Check the provider key and Base URL in Settings, then try again.'), 'auth'],
+      [tx('errGatewayKeyRejected', 'Hermes rejected the stored key. Check the key and Base URL in Settings, then retry.'), 'auth'],
+      [tx('errSessionGone', 'This chat is no longer on the gateway. Start a new chat.'), 'model'],
+    ];
+    for (const [copy, kind] of friendly) {
+      if (detail === copy) return { kind, status: null, detail };
+    }
+    const match = /(?:http\s*)?\b([1-5]\d{2})\b/i.exec(detail);
+    const status = match ? Number(match[1]) : null;
+    const low = detail.toLowerCase();
+    if (
+      status === 401 ||
+      status === 403 ||
+      /unauthor|forbidden|invalid api key|authentication|api key/.test(low)
+    ) {
+      return { kind: 'auth', status, detail };
+    }
+    if (status === 402 || /quota|billing|insufficient|credit/.test(low)) {
+      return { kind: 'quota', status, detail };
+    }
+    if (status === 404 || /not found|unknown model|no such model/.test(low)) {
+      return { kind: 'model', status, detail };
+    }
+    if (status === 408 || status === 429 || /rate limit|too many requests|timed? ?out/.test(low)) {
+      return { kind: 'rate', status, detail };
+    }
+    // An explicit status always wins over transport words: a provider 500
+    // that mentions "connection" is a server refusal, not a dead gateway.
+    // Bare transport words with no status mean the request never arrived.
+    if (status !== null && status >= 500) return { kind: 'server', status, detail };
+    if (status === null && /failed to fetch|network|econnrefused|unreachable|socket|disconnected|connection/.test(low)) {
+      return { kind: 'offline', status, detail };
+    }
+    if (status !== null) return { kind: 'server', status, detail };
+    return { kind: 'unknown', status, detail };
   };
 
   // Composer and input state
