@@ -736,6 +736,16 @@ class MobileGatewayService : Service() {
           ""
         }
       }
+      .ifBlank {
+        // Last resort: the legacy per-provider slug slot (setProvider
+        // dual-writes every non-blank key there). A gateway that sees no key
+        // boots live but answers nothing, so try the slug before giving up.
+        if (Regex("^[A-Za-z0-9_-]{1,64}$").matches(provider)) {
+          SecurePrefs.getString(this, "provider.${provider}.apiKey", "")
+        } else {
+          ""
+        }
+      }
     if (providerKey.isNotBlank()) {
       pb.environment()[providerKeyEnv(provider)] = providerKey
       appendLog("provider key exported for $provider (${providerKeyEnv(provider)})")

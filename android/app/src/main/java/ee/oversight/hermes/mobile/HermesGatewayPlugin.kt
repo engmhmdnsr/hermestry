@@ -751,12 +751,20 @@ class HermesGatewayPlugin : Plugin() {
         if (storedProfileKey.isNotBlank()) {
           SecurePrefs.putString(context, SecurePrefs.KEY_PROVIDER, storedProfileKey)
           prefs.edit().putString("provider_key_owner", activeProfileId).apply()
-        } else if (keyOwner.isNotBlank() && keyOwner != activeProfileId) {
+        } else if (keyOwner.isNotBlank() && keyOwner != activeProfileId
+          && keyOwner != provider) {
           // Owner mismatch with nothing stored for the new profile: the slot
           // still holds the previous profile's key. Clear it and the owner
           // rather than leaking one profile's key into another's session.
+          // keyOwner == provider (legacy slug stamp) counts as same-owner:
+          // purging here wiped this provider's own key whenever the stamp
+          // predated the profile id, booting the gateway credentialless.
           SecurePrefs.remove(context, SecurePrefs.KEY_PROVIDER)
           prefs.edit().putString("provider_key_owner", "").apply()
+        } else if (keyOwner == provider && provider.isNotBlank()) {
+          // Adopt the legacy slug-stamped key for this profile instead of
+          // orphaning it: the slot holds this provider's key already.
+          prefs.edit().putString("provider_key_owner", activeProfileId).apply()
         }
       } else if (provider.isBlank()) {
         // Same rule: a blank provider with a blank key carries no signal.
