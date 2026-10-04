@@ -145,7 +145,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     settingsSaveState,
     settingsSaveRevision,
     settingsSaveError,
-    retryLast,
+    retryAfterReady,
     turnImages,
     connected,
     streamError,
@@ -806,13 +806,23 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
             </button>
           ))}
           <button
-            onClick={() => {
+            onClick={async () => {
               if (streaming) {
                 showActionToast(tx('stillGenerating', 'Still generating, wait or stop first'), 'info');
                 return;
               }
               if (!requireModel()) return;
-              if (!retryLast()) showActionToast(tx('nothingToRetry', 'Nothing to retry yet'), 'info');
+              // Readiness-gated retry: on a dead gateway this starts the
+              // server and waits for READY first instead of reposting blindly.
+              const sent = await retryAfterReady();
+              if (!sent)
+                showActionToast(
+                  tx(
+                    'retryNeedsGateway',
+                    'The Hermes server is not ready. Start it, then retry.'
+                  ),
+                  'error'
+                );
             }}
             disabled={streaming}
             className="hm-hit r-xs min-h-[36px] px-4 bg-[var(--app-danger-solid)] hover:brightness-110 text-[var(--app-on-danger)] t-caption font-semibold cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
@@ -1829,7 +1839,13 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           showActionToast(tx('stillGenerating', 'Still generating, wait or stop first'), 'info');
           return;
         }
-        if (!retryLast()) showActionToast(tx('nothingToRetry', 'Nothing to retry yet'), 'info');
+        void retryAfterReady().then((sent) => {
+          if (!sent)
+            showActionToast(
+              tx('retryNeedsGateway', 'The Hermes server is not ready. Start it, then retry.'),
+              'error'
+            );
+        });
       },
     },
     {

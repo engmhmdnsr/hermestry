@@ -417,6 +417,9 @@ class MobileGatewayService : Service() {
         setMachineState(GatewayMachineState.STARTING)
         setPhase(StartupPhase.RENDER_CONFIG)
         Bootstrap.renderConfig(this@MobileGatewayService)
+        // Structured boot trace (presence only, never the secret itself):
+        // with these lines the log alone tells SERVER_KEY vs START vs HEALTH.
+        appendLog("[GATEWAY] stage=SERVER_KEY present=${SecurePrefs.getString(this@MobileGatewayService, SecurePrefs.KEY_SERVER).isNotBlank()}")
         setPhase(StartupPhase.PROOT_CHECK)
         val proc = startGateway()
         activeProc = proc
@@ -432,7 +435,7 @@ class MobileGatewayService : Service() {
           failures++
           if (gatewayState.value != GatewayMachineState.FAILED)
             setMachineState(GatewayMachineState.DEGRADED)
-          appendLog("gateway start timeout (attempt $failures/$MAX_RESTARTS)")
+          appendLog("[GATEWAY][ERROR] stage=WAIT_LISTEN code=LISTEN_TIMEOUT (attempt $failures/$MAX_RESTARTS)")
           if (failures >= MAX_RESTARTS) {
             // Reason, not log advice: plainFailure.ts masks any reason that
             // names a file ("... see gateway.log") to a generic sentence, so
@@ -452,6 +455,7 @@ class MobileGatewayService : Service() {
           healthySince = SystemClock.elapsedRealtime()
           backoff = START_BACKOFF_MS
           setPhase(StartupPhase.READY)
+          appendLog("[GATEWAY] stage=READY code=HEALTH_OK")
           setMachineState(GatewayMachineState.RUNNING)
           while (wantRun && gatewayProc?.isAlive == true) {
             ensureWake()

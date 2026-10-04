@@ -398,6 +398,10 @@ interface HermesContextType {
   lockSecrets: () => void;
   lockNow: () => void;
   retryLast: () => boolean;
+  // Gateway-aware retry: if the gateway is not healthy this starts it and
+  // waits for READY before resending. A retry that skips this just reposts
+  // into a dead server and blames the turn.
+  retryAfterReady: () => Promise<boolean>;
   turnImages: (msgId: string) => string[];
   // Separate stream failure surface. Transport/backend failures set this
   // and turnMeta.error; they are never appended into chat as bubbles.
@@ -4329,6 +4333,27 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return false;
   };
 
+  // Retry with a readiness gate: a failed turn on a dead gateway must heal
+  // the server first (start + wait for health) and only resend on READY.
+  // Returns false when there is nothing to retry or the server never became
+  // ready; the caller says that out loud instead of reposting blindly.
+  const retryAfterReady = async (): Promise<boolean> => {
+    if (!connectedRef.current) {
+      addLog('Retry: gateway not healthy, starting it before resending');
+      try {
+        await startGateway();
+      } catch {
+        /* startGateway publishes its own failure state */
+      }
+      for (let i = 0; i < 24; i++) {
+        if (connectedRef.current) break;
+        await new Promise((r) => setTimeout(r, 5000));
+      }
+    }
+    if (!connectedRef.current || streamingRef.current) return false;
+    return retryLast();
+  };
+
   const resolveApproval = async (
     approval: PendingApproval,
     allow: boolean,
@@ -4552,6 +4577,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         lockSecrets,
         lockNow,
         retryLast,
+        retryAfterReady,
         turnImages,
         streamError,
         settingsSaveError,

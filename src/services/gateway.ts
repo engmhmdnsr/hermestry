@@ -281,6 +281,34 @@ export class GatewayService {
         detail: `${err?.name || 'Error'}: ${err?.message || String(e)}`,
       });
     }
+    // Third matrix row: an authenticated API route with no side effects.
+    // Health can pass while the server key is wrong (it is unauthenticated),
+    // so this probe is what separates "server reachable" from "server usable":
+    // 401/403 here means the stored server key is refused, anything else
+    // means the client-to-gateway leg is proven and the fault lies deeper.
+    try {
+      const t0 = Date.now();
+      const res = await gwFetch(`${this.baseUrl}/api/sessions?limit=1`, {
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+        headers: this.getHeaders(),
+      });
+      const ms = Date.now() - t0;
+      probes.push({
+        name: 'GET /api/sessions (authed)',
+        ok: res.ok,
+        detail:
+          res.status === 401 || res.status === 403
+            ? `HTTP ${res.status} in ${ms}ms: server key refused`
+            : `HTTP ${res.status} in ${ms}ms`,
+      });
+    } catch (e: unknown) {
+      const err = e as Error;
+      probes.push({
+        name: 'GET /api/sessions (authed)',
+        ok: false,
+        detail: `${err?.name || 'Error'}: ${err?.message || String(e)}`,
+      });
+    }
     return {
       url: this.baseUrl,
       ok: probes.length > 0 && probes.every((p) => p.ok),
