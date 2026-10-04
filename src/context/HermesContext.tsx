@@ -3475,7 +3475,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         case 'error':
         case 'stream.error': {
           failedMessage =
-            asString(data.error || data.message || data.description) ||
+            asString(data.error || data.message || data.description || data.detail) ||
             tx(
               'errServerMessagePlain',
               'The Hermes server or the provider returned an error. Retry, and check the connection if it repeats.'

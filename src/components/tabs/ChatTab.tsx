@@ -185,6 +185,10 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       [tx('errGatewayAuthHint', 'Hermes rejected the stored key. Check the provider key and Base URL in Settings, then try again.'), 'auth'],
       [tx('errGatewayKeyRejected', 'Hermes rejected the stored key. Check the key and Base URL in Settings, then retry.'), 'auth'],
       [tx('errSessionGone', 'This chat is no longer on the gateway. Start a new chat.'), 'model'],
+      // The server-failure fallback mentions "the connection" in its advice
+      // sentence: without this guard it wore the gateway-down costume and the
+      // card blamed a live server instead of the failed turn.
+      [tx('errServerMessagePlain', 'The Hermes server or the provider returned an error. Retry, and check the connection if it repeats.'), 'server'],
     ];
     for (const [copy, kind] of friendly) {
       if (detail === copy) return { kind, status: null, detail };
