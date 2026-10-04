@@ -8,8 +8,8 @@ android {
         applicationId "ee.oversight.hermes.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 110
-        versionName "1.3.1"
+        versionCode 111
+        versionName "1.3.2"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             // arm64-only: the verified Linux image ships for arm64, so other
@@ -46,6 +46,13 @@ android {
     buildTypes {
         debug {
             debuggable true
+            // Signed with the SAME upload key as release so the debug build can
+            // be installed over the shipped app without wiping its data. A
+            // different signer would make Android refuse the upgrade and force
+            // an uninstall, losing the gateway install and provider settings.
+            if (signingConfigs.release.storeFile?.exists()) {
+                signingConfig signingConfigs.release
+            }
         }
         release {
             debuggable false

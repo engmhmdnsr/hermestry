@@ -9,6 +9,9 @@ Routes the mobile app expects that the stock api_server does not serve:
                                         resize the builtin memory budgets (config.yaml memory.*)
   GET  /api/blueprints                  routine catalog mapped to the app Blueprint shape
   POST /api/blueprints/{id}/instantiate {slots}  fill slots + create a cron job
+  GET  /api/doctor                     health rows for the Settings diagnostics card
+  POST /api/backup                     write a chat/job/config snapshot under <home>/snapshots
+  POST /api/debug/share                write a scrubbed gateway.log+service.log bundle
 
 Auth is enforced by the server's global middleware, same as the sibling
 /api/jobs routes: handlers here do not self-auth, mirroring api_server_runs.
@@ -19,6 +22,7 @@ degrades to an honest 5xx instead of breaking server boot.
 from __future__ import annotations
 
 import os
+import sys
 from typing import Any
 
 
@@ -148,7 +152,56 @@ async def _custom_base_policy(base_url: str) -> str | None:
     return None
 
 
+_SKILLS_COMPAT_APPLIED = False
+
+
+def _apply_skills_compat() -> bool:
+    """Repair GET /v1/skills when the agent is older than its own caller.
+
+    api_server._handle_skills calls _find_all_skills(include_editorial=True),
+    but that keyword only exists in a newer tools/skills_tool.py. Against the
+    agent shipped in the mobile image the call raises TypeError, the handler
+    converts it into a 500, and the app renders an empty Skills screen with no
+    usable message. Nothing in this agent version references "editorial", so
+    the kwarg has no behaviour behind it: the honest repair is to accept and
+    drop it, not to invent a filter. No-op once the agent ships the kwarg.
+    """
+    global _SKILLS_COMPAT_APPLIED
+    if _SKILLS_COMPAT_APPLIED:
+        return True
+    try:
+        import inspect
+
+        from tools import skills_tool
+    except Exception:
+        return False
+    original = getattr(skills_tool, "_find_all_skills", None)
+    if original is None:
+        return False
+    if getattr(original, "_hermes_mobile_compat", False):
+        _SKILLS_COMPAT_APPLIED = True
+        return True
+    try:
+        params = inspect.signature(original).parameters
+        if "include_editorial" in params or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        ):
+            _SKILLS_COMPAT_APPLIED = True
+            return True
+    except (TypeError, ValueError):
+        pass
+
+    def _find_all_skills(*args, include_editorial: bool = False, **kwargs):
+        return original(*args, **kwargs)
+
+    _find_all_skills._hermes_mobile_compat = True
+    skills_tool._find_all_skills = _find_all_skills
+    _SKILLS_COMPAT_APPLIED = True
+    return True
+
+
 def _http_routes(api) -> list[tuple[str, str, Any]]:
+    _apply_skills_compat()
     async def _get_memory(request):
         from aiohttp import web
 
@@ -561,7 +614,244 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
 
+
+    # ---- Diagnostics / backup / debug-share -------------------------------
+    # The Settings screen has always offered these three buttons, but the
+    # stock api_server serves none of them, so every tap ended in a 404 that
+    # the UI reported as "did not finish". They are read-only views over state
+    # the gateway already knows, so they are cheap and safe to serve here.
+
+    async def _get_doctor(request):
+        """Health of the pieces the app actually depends on, one row each."""
+        from aiohttp import web
+
+        checks: list[dict[str, Any]] = []
+
+        def add(name: str, ok: bool, detail: str) -> None:
+            checks.append({"name": name, "ok": ok, "detail": detail})
+
+        # The server answering at all is the root check.
+        add("api_server", True, "HTTP endpoint responding")
+
+        home = _home_dir()
+        cfg_path = os.path.join(home, "config.yaml")
+        cfg: dict = {}
+        try:
+            from hermes_yaml import safe_load
+
+            if os.path.exists(cfg_path):
+                with open(cfg_path, "r", encoding="utf-8") as fh:
+                    loaded = safe_load(fh) or {}
+                if isinstance(loaded, dict):
+                    cfg = loaded
+        except Exception as exc:
+            add("config.yaml", False, f"unreadable: {exc}")
+        else:
+            add("config.yaml", bool(cfg), "loaded" if cfg else "empty")
+
+        # Model/provider wiring: a gateway with no provider answers nothing,
+        # which is exactly the "boots but never replies" failure.
+        model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        provider = str(model_cfg.get("provider", "") or "")
+        model = str(model_cfg.get("default", "") or model_cfg.get("model", "") or "")
+        add("provider", bool(provider), provider or "not configured")
+        add("model", bool(model), model or "not configured")
+
+        # Credential presence only. The value never leaves this handler: the
+        # app redacts too, but a 401/403 diagnosis does not need the secret.
+        key_env = None
+        for name in ("OPENCODE_GO_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY"):
+            if os.environ.get(name):
+                key_env = name
+                break
+        add("credentials", key_env is not None, key_env or "no provider key in env")
+
+        # Skills are checked live, against the same call the Skills screen
+        # makes. An import check would pass while _find_all_skills still
+        # raises at call time, and reading gateway.log was worse than both: a
+        # traceback from hours earlier stayed in the file forever, so the
+        # Settings screen kept saying "skills broken" while GET /v1/skills
+        # was serving 53 skills. Report what works right now.
+        try:
+            from tools.skills_tool import _find_all_skills
+
+            _apply_skills_compat()
+            found = _find_all_skills(skip_disabled=False)
+        except Exception as exc:
+            add("skills", False, f"skill registry unavailable: {exc}")
+        else:
+            n = len(found or [])
+            if n:
+                add("skills", True, f"{n} skill(s) registered")
+            else:
+                add("skills", False, "no skills registered")
+
+        ok = all(c["ok"] for c in checks)
+        return web.json_response(
+            {
+                "ok": ok,
+                "summary": "All checks passed" if ok else "Some checks failed",
+                "version": _version(),
+                "checks": checks,
+            }
+        )
+
+    def _version() -> str:
+        # Same helper api_server.py uses, so the app and the gateway never
+        # disagree about which build is answering.
+        try:
+            from hermes_cli.version_info import get_version_info
+
+            return str(get_version_info().base_version)
+        except Exception:
+            return ""
+
+    async def _post_backup(request):
+        """Write a snapshot of chats, jobs and settings to a file.
+
+        Keys are never included: only the non-secret config keys and the
+        session/job JSON are copied, and the destination stays inside the
+        Hermes home so the user can reach it over the app's file tools.
+        """
+        from aiohttp import web
+
+        home = _home_dir()
+        try:
+            import json
+            import time
+
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            out_dir = os.path.join(home, "snapshots")
+            os.makedirs(out_dir, exist_ok=True)
+            out_path = os.path.join(out_dir, f"hermes-{stamp}.json")
+
+            payload: dict[str, Any] = {"created": stamp, "version": _version()}
+            cfg_path = os.path.join(home, "config.yaml")
+            if os.path.exists(cfg_path):
+                from hermes_yaml import safe_load
+
+                with open(cfg_path, "r", encoding="utf-8") as fh:
+                    cfg = safe_load(fh) or {}
+                if isinstance(cfg, dict):
+                    # Drop anything that looks like a credential.
+                    payload["config"] = {
+                        k: v
+                        for k, v in cfg.items()
+                        if not any(t in k.lower() for t in ("key", "token", "secret", "password"))
+                    }
+            sessions_dir = os.path.join(home, "sessions")
+            sessions: list[str] = []
+            if os.path.isdir(sessions_dir):
+                sessions = sorted(
+                    f for f in os.listdir(sessions_dir) if f.endswith(".json")
+                )[:500]
+            payload["sessions"] = sessions
+
+            tmp = out_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, indent=2, default=str)
+            os.replace(tmp, out_path)
+            return web.json_response(
+                {
+                    "ok": True,
+                    "path": out_path,
+                    "message": f"Saved {len(sessions)} session(s) to {out_path}",
+                }
+            )
+        except Exception as exc:
+            return web.json_response(
+                {"ok": False, "path": "", "message": f"Backup failed: {exc}"}, status=500
+            )
+
+    async def _post_debug_share(request):
+        """Produce the diagnostics bundle locally.
+
+        The app offers a share link, but this gateway has nowhere to upload
+        to. Returning the file:// path is the honest equivalent: the user can
+        pull the file off the device instead of the button failing outright.
+        Secrets are stripped on the way out.
+        """
+        from aiohttp import web
+
+        home = _home_dir()
+        try:
+            import json
+            import re
+            import time
+
+            # Log locations vary by host: Hermes keeps its own logs in a logs/
+            # subdir, while the mobile service writes service.log and a small
+            # gateway.log beside HERMES_HOME. Search both levels and any logs/
+            # subdir so a host layout change degrades to "found what exists"
+            # instead of a bundle with zero lines in it.
+            def _find_log(name: str) -> str | None:
+                roots = (home, os.path.dirname(home.rstrip("/")))
+                for d in roots:
+                    direct = os.path.join(d, name)
+                    if os.path.exists(direct):
+                        return direct
+                    nested = os.path.join(d, "logs", name)
+                    if os.path.exists(nested):
+                        return nested
+                return None
+
+            logs: list[str] = []
+            for name in ("gateway.log", "service.log", "errors.log", "agent.log"):
+                path = _find_log(name)
+                if not path:
+                    continue
+                try:
+                    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                        tail = fh.readlines()[-400:]
+                    logs.extend(f"[{name}] {line.rstrip()}" for line in tail)
+                except OSError:
+                    continue
+
+            # Belt and braces: the app redacts too, but the bundle is a file
+            # on disk that could outlive the session that made it.
+            scrub = re.compile(
+                # Bearer must be tried before the bare "authorization ="
+                # alternative: matching the header name first would consume
+                # only "authorization: " and leave the token after it intact.
+                r"(sk-[A-Za-z0-9_-]{6,}|[A-Za-z0-9_-]*(?:API_KEY|TOKEN|SECRET|PASSWORD)[A-Za-z0-9_]*\s*[=:]\s*|Bearer\s+|(?:authorization|auth[_-]?token)\s*[=:]\s*(?:Bearer\s+)?)\S+",
+                re.IGNORECASE,
+            )
+            logs = [scrub.sub(r"\1<redacted>", line) for line in logs]
+
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            out_dir = os.path.join(home, "snapshots")
+            os.makedirs(out_dir, exist_ok=True)
+            out_path = os.path.join(out_dir, f"hermes-debug-{stamp}.txt")
+
+            payload = {
+                "created": stamp,
+                "version": _version(),
+                "home": home,
+                "platform": sys.platform,
+                "python": sys.version.split()[0],
+                "log_lines": len(logs),
+            }
+            with open(out_path, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(payload, indent=2))
+                fh.write("\n\n")
+                fh.write("\n".join(logs))
+            return web.json_response(
+                {
+                    "ok": True,
+                    "urls": [f"file://{out_path}"],
+                    "summary": f"Wrote {len(logs)} log line(s) to {out_path}",
+                }
+            )
+        except Exception as exc:
+            return web.json_response(
+                {"ok": False, "urls": [], "summary": f"Debug share failed: {exc}"},
+                status=500,
+            )
+
     return [
+        ("GET", "/api/doctor", _get_doctor),
+        ("POST", "/api/backup", _post_backup),
+        ("POST", "/api/debug/share", _post_debug_share),
         ("GET", "/api/memory", _get_memory),
         ("POST", "/api/memory/toggle", _post_memory_toggle),
         ("POST", "/api/memory/limits", _post_memory_limits),

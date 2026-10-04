@@ -3884,7 +3884,7 @@ export const SettingsTab: React.FC = () => {
             <div className="min-w-0">
               <p className="t-body text-[var(--app-text)]">Hermes</p>
               <p className="t-caption text-[var(--app-text-muted)] mt-1">
-                {tx('aboutVersion', 'Version')} 1.3.0 · Oversight OÜ, Tallinn
+                {tx('aboutVersion', 'Version')} {__APP_VERSION__} · Oversight OÜ, Tallinn
               </p>
             </div>
           </div>
