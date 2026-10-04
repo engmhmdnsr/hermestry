@@ -1959,6 +1959,13 @@ export const SettingsTab: React.FC = () => {
   const handleRunPathTest = async () => {
     setRunningPathTest(true);
     try {
+      // Adopt the on-device key before probing: a test that runs keyless
+      // would report auth rejection for the wrong reason and prove nothing.
+      try {
+        await ensureServerKey();
+      } catch {
+        /* the probes below report their own outcome */
+      }
       setPathReport(await service.connectionPathTest());
     } catch (e: unknown) {
       const err = e as Error;

@@ -892,6 +892,13 @@ class HermesGatewayPlugin : Plugin() {
       if (seg.isNotBlank() && (seg == activeProfile || seg == activeProviderId())) {
         if (value.isNotBlank()) {
           SecurePrefs.putString(context, SecurePrefs.KEY_PROVIDER, value)
+          // Owner tracking: KEY_PROVIDER must remember which profile put it
+          // here, otherwise a later blank setProvider cannot tell this key
+          // from a stale one and the gateway boots credentialless.
+          try {
+            context.getSharedPreferences("hermes_mobile", Context.MODE_PRIVATE).edit()
+              .putString("provider_key_owner", seg).apply()
+          } catch (_: Exception) { }
         } else {
           SecurePrefs.remove(context, SecurePrefs.KEY_PROVIDER)
           // Explicit removal drops ownership too, so a later blank for

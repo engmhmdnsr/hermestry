@@ -1090,11 +1090,15 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       // Settings banner and its Retry could never correct. The settings write
       // above already landed and is never rolled back, so a mirror rejection
       // only marks this save as failed.
-      if (mirror) await applyNativeMirrors(next, mirror);
       // Secret slots ride every persist on native (no-op on web): the
       // sanitized copy above holds no secrets, so without this the native
       // store would keep the previous values and lie about the save.
+      // Secrets go FIRST: nativeSetProvider below converges KEY_PROVIDER
+      // from the per-profile slots, so they must already hold the fresh
+      // key when it inspects them. Mirrors-first left a blank wire to purge
+      // or strand the key and the gateway booted credentialless.
       await mirrorSecretsToNative(next);
+      if (mirror) await applyNativeMirrors(next, mirror);
       // Register live vault values for content scrubbing (LOG-01): gateway
       // log/doctor/debug-share responses pass through redactSecrets, which
       // now also scrubs these values wherever they leak into free text.
