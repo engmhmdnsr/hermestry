@@ -2018,7 +2018,9 @@ export const SettingsTab: React.FC = () => {
     // every secret this phone still holds. Either gate failing exports nothing,
     // so a plain-text key can never leave the device inside a bundle.
     if (!runRedactionSelfTests().passed) {
-      showToast(tx('debugFailedPlain', 'The diagnostics bundle was not exported. Try again.'), 'error');
+      const selfFail = `${tx('debugFailedPlain', 'The diagnostics bundle was not exported. Try again.')} (redaction self-test failed)`;
+      setDebugResult({ ok: false, urls: [], summary: selfFail });
+      showToast(selfFail, 'error');
       return;
     }
     setSharingDebug(true);
@@ -2037,7 +2039,10 @@ export const SettingsTab: React.FC = () => {
       // The reasons are fixed strings, never the values, so this log line
       // stays safe to read while explaining why the export was refused.
       console.warn('[debugSafety] bundle blocked:', leaked);
-      const blocked = tx('debugFailedPlain', 'The diagnostics bundle was not exported. Try again.');
+      // Surface WHICH gate tripped: the reasons are fixed field names, never
+      // values, so naming them is safe and turns a dead-end "try again" into
+      // a real lead (e.g. a secret value inside the logs blocks the export).
+      const blocked = `${tx('debugFailedPlain', 'The diagnostics bundle was not exported. Try again.')} (${leaked.join(', ')})`;
       setDebugResult({ ok: false, urls: [], summary: blocked });
       showToast(blocked, 'error');
       return;
