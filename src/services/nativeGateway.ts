@@ -534,6 +534,12 @@ export async function nativeStreamPost(opts: {
   signal?: AbortSignal;
   onStatus: (status: number) => void;
   onBytes: (bytes: Uint8Array) => void;
+  // Fired for every inbound chunk, including the gateway's SSE keepalive
+  // comments. Callers use it to reset their own stall timers.
+  onProgress?: () => void;
+  // Test seam: overrides how long the stream may stay silent before the
+  // idle watchdog fires. Production callers leave it unset and get 300s.
+  watchdogIdleMs?: number;
 }): Promise<'done' | 'cancelled' | 'error' | string> {
   const plugin = getPlugin();
   if (!plugin || typeof plugin.streamPost !== 'function') return 'error';
@@ -556,10 +562,19 @@ export async function nativeStreamPost(opts: {
   const forId = (info: Record<string, unknown>, fn: () => void) => {
     if (String(info.id ?? '') === id) fn();
   };
+  // Shared liveness hook: the chunk listener calls it on every chunk, and the
+  // idle watchdog below assigns it once its timer exists. Declared here rather
+  // than inside the watchdog so the listener can reach it, and kept off the
+  // caller's options object so arming the watchdog never mutates `opts`.
+  let noteActivity: () => void = () => {};
   try {
     subs.push(
       await plugin.addListener('gwStreamChunk', (info) =>
         forId(info, () => {
+          // Liveness before decode: a stream that keeps sending is alive even
+          // when this chunk carries only a keepalive comment.
+          noteActivity();
+          opts.onProgress?.();
           const b64 = String(info.chunk ?? '');
           if (!b64) return;
           const bin = atob(b64);
@@ -607,11 +622,30 @@ export async function nativeStreamPost(opts: {
       opts.signal.addEventListener('abort', onAbort, { once: true });
       abortAttached = true;
     }
-    const WATCHDOG_MS = 90000;
+    // Idle watchdog, not an absolute deadline. This used to race a fixed 90s
+    // timer that nothing ever reset, so any turn lasting more than 90s in total
+    // was killed mid-answer even while it was streaming normally, and the
+    // resulting reason matched the transport matcher and got reported as an
+    // unreachable gateway. Now every inbound chunk pushes the deadline out. The
+    // gateway emits an SSE keepalive every 10s, so only a genuinely silent
+    // connection trips this.
+    const WATCHDOG_IDLE_MS = opts.watchdogIdleMs ?? 300000;
     let watchdog: ReturnType<typeof setTimeout> | null = null;
+    let watchdogSettled = false;
+    let resolveWatchdog: (reason: string) => void = () => {};
     const watchdogPromise = new Promise<string>((resolve) => {
-      watchdog = setTimeout(() => resolve('error:watchdog timeout'), WATCHDOG_MS);
+      resolveWatchdog = resolve;
     });
+    const armWatchdog = () => {
+      if (watchdogSettled) return;
+      if (watchdog) clearTimeout(watchdog);
+      watchdog = setTimeout(() => {
+        watchdogSettled = true;
+        resolveWatchdog('error:watchdog idle timeout');
+      }, WATCHDOG_IDLE_MS);
+    };
+    noteActivity = armWatchdog;
+    armWatchdog();
     try {
       await plugin.streamPost({ id, url: opts.url, headers: opts.headers, body: opts.body });
       const result = await Promise.race([finished, watchdogPromise]);

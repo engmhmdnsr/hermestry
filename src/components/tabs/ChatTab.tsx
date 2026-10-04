@@ -45,7 +45,15 @@ interface ChatTabProps {
   isDesktop?: boolean;
 }
 
-type StreamFailureKind = 'auth' | 'quota' | 'model' | 'rate' | 'offline' | 'server' | 'unknown';
+type StreamFailureKind =
+  | 'auth'
+  | 'quota'
+  | 'model'
+  | 'rate'
+  | 'offline'
+  | 'server'
+  | 'timeout'
+  | 'unknown';
 
 interface StreamFailureInfo {
   kind: StreamFailureKind;
@@ -182,6 +190,10 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     const friendly: Array<[string, StreamFailureKind]> = [
       [tx('errUnavailable', 'Hermes is unreachable. Make sure it is running, then try again.'), 'offline'],
       [tx('errStreamClosed', 'Hermes closed the connection before the answer finished. Try again.'), 'unknown'],
+      // Checked before the transport matcher: this copy's own advice sentence
+      // contains no transport words, but the raw watchdog reason does, and that
+      // would otherwise blame a gateway that is running.
+      [tx('errStreamTimedOut', 'Hermes stopped sending before the answer finished. Retry, or start a new chat.'), 'timeout'],
       [tx('errGatewayAuthHint', 'Hermes rejected the stored key. Check the provider key and Base URL in Settings, then try again.'), 'auth'],
       [tx('errGatewayKeyRejected', 'Hermes rejected the stored key. Check the key and Base URL in Settings, then retry.'), 'auth'],
       [tx('errSessionGone', 'This chat is no longer on the gateway. Start a new chat.'), 'unknown'],
@@ -218,6 +230,12 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
     // that mentions "connection" is a server refusal, not a dead gateway.
     // Bare transport words with no status mean the request never arrived.
     if (status !== null && status >= 500) return { kind: 'server', status, detail };
+    // Our own idle watchdog means a silent-but-live turn, not a dead gateway.
+    // Checked before the transport arms below, whose timeout/connection words
+    // would otherwise blame a server that is up and answering.
+    if (/watchdog|idle timeout/.test(low)) {
+      return { kind: 'timeout', status, detail };
+    }
     if (status === null && /failed to fetch|network|econnrefused|unreachable|socket|disconnected|connection/.test(low)) {
       return { kind: 'offline', status, detail };
     }
@@ -742,6 +760,17 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
           title,
           message: tx('errOfflineMessagePlain', 'The app could not reach the Hermes server. Start or restart it, then retry.'),
           actions: [{ label: tx('openConnectionSettings', 'Open connection settings'), onClick: onGoSettings, primary: true }],
+        };
+      case 'timeout':
+        // The server answered and then went quiet, so the useful next step is
+        // retrying the turn, never opening connection settings.
+        return {
+          title,
+          message: tx(
+            'errStreamTimedOut',
+            'Hermes stopped sending before the answer finished. Retry, or start a new chat.'
+          ),
+          actions: [{ label: tx('startNewChat', 'Start a new chat'), onClick: startNewChat }],
         };
       case 'server':
         return {

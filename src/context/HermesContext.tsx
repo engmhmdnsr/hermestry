@@ -597,6 +597,15 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       'Hermes closed the connection before the answer finished. Try again.'
     );
 
+  // A turn that ran past the idle watchdog: the server was reachable the whole
+  // time, it simply went quiet for too long. This must not wear the
+  // gateway-down copy, which sends the user to restart a server that is running.
+  const streamTimeoutCopy = (): string =>
+    tx(
+      'errStreamTimedOut',
+      'Hermes stopped sending before the answer finished. Retry, or start a new chat.'
+    );
+
   const gatewayRejectedCopy = (): string =>
     tx('errUnknown', 'Something went wrong. Try again, and run diagnostics if it continues.');
 
@@ -3637,6 +3646,10 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           onStatus: (s) => {
             nativeStatus = s;
           },
+          // Any inbound traffic is proof of life, including a keepalive
+          // comment the parser will discard. Without this a live but quiet turn
+          // (one long tool call) tripped the stall timer after 60s.
+          onProgress: () => resetStallTimer(),
           onBytes: (bytes) => {
             const chunk = decoder.decode(bytes, { stream: true });
             for (const ev of parser.feed(chunk)) dispatch(ev);
@@ -3656,12 +3669,21 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         }
         if (outcome === 'error' || (typeof outcome === 'string' && outcome.startsWith('error:'))) {
           const detail = typeof outcome === 'string' && outcome.startsWith('error:') ? outcome.slice(6) : '';
-          if (/ConnectException|Failed to connect to/.test(detail)) {
+          // The idle watchdog means "went silent", not "unreachable": check it
+          // before the transport matcher, whose timeout arm would otherwise
+          // blame a gateway that is up and answering.
+          if (/watchdog idle timeout/i.test(detail)) {
+            callbacks.onError?.(streamTimeoutCopy());
+            addLog('Stream idle: no traffic from the gateway before the watchdog expired');
+          } else if (/ConnectException|Failed to connect to/.test(detail)) {
             callbacks.onError?.(unreachableCopy());
+            addLog('Stream failed: could not connect to the on-device gateway');
           } else if (detail && isNetworkFailure(new Error(detail))) {
             callbacks.onError?.(unreachableCopy());
+            addLog(`Stream transport failure: ${detail}`);
           } else {
             callbacks.onError?.(streamClosedCopy());
+            addLog(`Stream closed by the gateway: ${detail || 'no detail'}`);
           }
           clearStreamTimers();
           return;
