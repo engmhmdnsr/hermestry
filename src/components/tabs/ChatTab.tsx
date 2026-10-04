@@ -184,7 +184,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       [tx('errStreamClosed', 'Hermes closed the connection before the answer finished. Try again.'), 'unknown'],
       [tx('errGatewayAuthHint', 'Hermes rejected the stored key. Check the provider key and Base URL in Settings, then try again.'), 'auth'],
       [tx('errGatewayKeyRejected', 'Hermes rejected the stored key. Check the key and Base URL in Settings, then retry.'), 'auth'],
-      [tx('errSessionGone', 'This chat is no longer on the gateway. Start a new chat.'), 'model'],
+      [tx('errSessionGone', 'This chat is no longer on the gateway. Start a new chat.'), 'unknown'],
+      [tx('errSessionCreateFailed', 'Could not start a new chat. Check the connection and try again.'), 'server'],
+      [tx('approvalNotConfirmedPlain', 'Hermes did not confirm this decision, so it is still waiting. Retry it, and check the connection if it repeats.'), 'server'],
       // The server-failure fallback mentions "the connection" in its advice
       // sentence: without this guard it wore the gateway-down costume and the
       // card blamed a live server instead of the failed turn.
@@ -654,7 +656,8 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
       (m.toolOutputs?.length ?? 0) === 0;
     if (!bodyEmpty) return false;
     const meta = turnMeta[m.id];
-    return !!meta?.error || !!meta?.stopped;
+    if (meta?.stopped && !meta?.error) return false;
+    return !!meta?.error;
   };
 
   const pendingApprovals = approvals;

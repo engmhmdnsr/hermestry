@@ -9,12 +9,13 @@ import { Capacitor, CapacitorHttp } from '@capacitor/core';
 // The result is shaped as a real Response, so call sites stay unchanged.
 export async function gwFetch(input: string, init: RequestInit = {}): Promise<Response> {
   if (!Capacitor.isNativePlatform()) return fetch(input, init);
+  if (init.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   const method = (init.method || 'GET').toUpperCase();
   const headers: Record<string, string> = {};
   if (init.headers) new Headers(init.headers).forEach((v, k) => {
     headers[k] = v;
   });
-  const res = await CapacitorHttp.request({
+  const doRequest = CapacitorHttp.request({
     url: input,
     method: method as 'GET',
     headers,
@@ -22,11 +23,31 @@ export async function gwFetch(input: string, init: RequestInit = {}): Promise<Re
     connectTimeout: 15000,
     readTimeout: 60000,
   });
-  const text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data ?? '');
-  const outHeaders = new Headers();
-  for (const [k, v] of Object.entries(res.headers || {})) outHeaders.append(k, String(v));
-  if (!outHeaders.has('content-type') && typeof res.data !== 'string') {
-    outHeaders.set('content-type', 'application/json');
+  if (!init.signal) {
+    const res = await doRequest;
+    const text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data ?? '');
+    const outHeaders = new Headers();
+    for (const [k, v] of Object.entries(res.headers || {})) outHeaders.append(k, String(v));
+    if (!outHeaders.has('content-type') && typeof res.data !== 'string') {
+      outHeaders.set('content-type', 'application/json');
+    }
+    return new Response(text, { status: res.status, headers: outHeaders });
   }
-  return new Response(text, { status: res.status, headers: outHeaders });
+  let abortHandler: (() => void) | null = null;
+  const abortPromise = new Promise<never>((_, reject) => {
+    abortHandler = () => reject(new DOMException('Aborted', 'AbortError'));
+    init.signal!.addEventListener('abort', abortHandler as EventListener, { once: true });
+  });
+  try {
+    const res = await Promise.race([doRequest, abortPromise]);
+    const text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data ?? '');
+    const outHeaders = new Headers();
+    for (const [k, v] of Object.entries(res.headers || {})) outHeaders.append(k, String(v));
+    if (!outHeaders.has('content-type') && typeof res.data !== 'string') {
+      outHeaders.set('content-type', 'application/json');
+    }
+    return new Response(text, { status: res.status, headers: outHeaders });
+  } finally {
+    if (abortHandler && init.signal) init.signal.removeEventListener('abort', abortHandler as EventListener);
+  }
 }

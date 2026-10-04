@@ -67,9 +67,8 @@
             android:name=".service.MobileGatewayService"
             android:exported="false"
             android:foregroundServiceType="dataSync">
-            <!-- dataSync only: the gateway syncs chats, memory and files.
-                 specialUse was dropped for Play review (it needs a strong
-                 justification); dataSync needs none. -->
+            <!-- dataSync: the gateway syncs chats, memory and files.
+                 Requires a Play Console declaration for foregroundServiceType dataSync. -->
         </service>
         <!-- WorkManager internal FGS host: dataSync to match the BootWorker ForegroundInfo. -->
         <service

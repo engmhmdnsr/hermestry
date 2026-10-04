@@ -75,6 +75,8 @@ _CRED_PROBES: dict[str, tuple[str, str]] = {
     "OPENAI_API_KEY": ("https://api.openai.com/v1/models", "bearer"),
     "XAI_API_KEY": ("https://api.x.ai/v1/models", "bearer"),
     "GEMINI_API_KEY": ("https://generativelanguage.googleapis.com/v1beta/models", "query"),
+    "HERMES_API_KEY": ("https://api.openai.com/v1/models", "bearer"),
+    "ANTHROPIC_API_KEY": ("https://api.anthropic.com/v1/models", "bearer"),
 }
 
 
@@ -95,7 +97,7 @@ def _safe_ids(resp: Any) -> list[str]:
         return []
 
 
-def _custom_base_policy(base_url: str) -> str | None:
+async def _custom_base_policy(base_url: str) -> str | None:
     """Return an error message if a custom provider base URL is not allowed.
 
     Policy (HERMES-01): https only, public hosts only. Loopback,
@@ -117,6 +119,7 @@ def _custom_base_policy(base_url: str) -> str | None:
     if not host:
         return "That URL has no host."
     try:
+        import asyncio
         import ipaddress
         import socket
 
@@ -127,7 +130,7 @@ def _custom_base_policy(base_url: str) -> str | None:
         addrs: list[str] = [str(literal)] if literal is not None else []
         if literal is None:
             try:
-                infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+                infos = await asyncio.get_running_loop().getaddrinfo(host, 443, type=socket.SOCK_STREAM)
             except Exception:
                 return "Could not resolve %s." % host
             addrs = list({info[4][0] for info in infos})
@@ -219,6 +222,8 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "Invalid JSON body"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
         enabled = body.get("enabled")
         if not isinstance(enabled, bool):
             return web.json_response({"error": "enabled must be true or false"}, status=400)
@@ -246,6 +251,8 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
         try:
             body = await request.json()
         except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        if not isinstance(body, dict):
             return web.json_response({"error": "Invalid JSON body"}, status=400)
         updates: dict[str, int] = {}
         for key in ("memory_char_limit", "user_char_limit"):
@@ -322,6 +329,8 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "Invalid JSON body"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
         values = body.get("slots")
         if not isinstance(values, dict):
             return web.json_response({"error": "slots must be an object"}, status=400)
@@ -365,6 +374,8 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
             body = await request.json()
         except Exception:
             return web.json_response({"error": "Invalid JSON body"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
         value = str(body.get("key") or "").strip()
         env_var = str(body.get("env_var") or body.get("envVar") or "").strip()
         base_url = str(body.get("base_url") or body.get("baseUrl") or "").strip()
@@ -380,7 +391,7 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
             # HERMES-01: the URL policy runs before any credential leaves
             # the device, and the probe never follows redirects.
             if base_url:
-                policy_error = _custom_base_policy(base_url)
+                policy_error = await _custom_base_policy(base_url)
                 if policy_error:
                     return web.json_response(
                         {"valid": False, "models": [], "error": policy_error}
@@ -415,7 +426,7 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
                 )
             probe = _CRED_PROBES.get(env_var)
             if not probe:
-                return web.json_response({"valid": True, "models": []})
+                return web.json_response({"valid": False, "models": [], "reason": "unprobed", "error": "Provider cannot be verified: no probe configured."})
             url, auth = probe
             headers = {"Accept": "application/json"}
             params: dict[str, str] = {}
@@ -485,6 +496,8 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
         try:
             body = await request.json()
         except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+        if not isinstance(body, dict):
             return web.json_response({"error": "Invalid JSON body"}, status=400)
         try:
             pid = _valid_project_id(body.get("id"))

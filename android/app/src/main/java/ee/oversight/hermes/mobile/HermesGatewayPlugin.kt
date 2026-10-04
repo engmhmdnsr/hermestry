@@ -168,6 +168,7 @@ class HermesGatewayPlugin : Plugin() {
       dest.mkdirs()
       for (child in src.listFiles()) {
         val name = child.name ?: continue
+        if (name.contains("..") || name.contains("/") || name.contains("\\")) continue
         copyDocTree(child, java.io.File(dest, name), onBytes)
       }
       return
@@ -182,7 +183,13 @@ class HermesGatewayPlugin : Plugin() {
 
   private fun copyFileTreeToDoc(src: java.io.File, destDir: androidx.documentfile.provider.DocumentFile): Int {
     var count = 0
+    val srcCanon = try { src.canonicalPath } catch (_: Exception) { src.absolutePath }
     for (child in src.listFiles() ?: return 0) {
+      try {
+        if (java.nio.file.Files.isSymbolicLink(child.toPath())) continue
+        val childCanon = try { child.canonicalPath } catch (_: Exception) { continue }
+        if (childCanon != srcCanon && !childCanon.startsWith(srcCanon + java.io.File.separator)) continue
+      } catch (_: Exception) { continue }
       if (child.isDirectory) {
         val sub = destDir.createDirectory(child.name) ?: continue
         count += copyFileTreeToDoc(child, sub)
@@ -1058,7 +1065,7 @@ class HermesGatewayPlugin : Plugin() {
         conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
           requestMethod = "POST"
           connectTimeout = 15000
-          readTimeout = 0
+          readTimeout = 90000
           doOutput = true
           setRequestProperty("Content-Type", "application/json")
           call.getObject("headers")?.keys()?.forEach { k ->

@@ -201,6 +201,7 @@ class MobileGatewayService : Service() {
     if (wakeLock == null) {
       wakeLock = (getSystemService(Context.POWER_SERVICE) as PowerManager)
         .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "hermes:gateway")
+      try { wakeLock?.setReferenceCounted(false) } catch (_: Exception) { }
     }
     try { wakeLock?.acquire(WAKE_TIMEOUT_MS) } catch (_: Exception) { }
     val job = scope.launch { supervise() }
@@ -289,8 +290,23 @@ class MobileGatewayService : Service() {
       setMachineState(GatewayMachineState.FAILED)
     } catch (_: Exception) { }
     try {
-      val req = androidx.work.OneTimeWorkRequestBuilder<BootWorker>().build()
-      androidx.work.WorkManager.getInstance(this).enqueue(req)
+      val prefs = getSharedPreferences("hermes_mobile", Context.MODE_PRIVATE)
+      val now = System.currentTimeMillis()
+      val lastMs = prefs.getLong("fgs_timeout_last_ms", 0L)
+      val count = prefs.getInt("fgs_timeout_count", 0)
+      val nextCount = if (now - lastMs > 24 * 60 * 60 * 1000L) 1 else count + 1
+      prefs.edit().putLong("fgs_timeout_last_ms", now).putInt("fgs_timeout_count", nextCount).apply()
+      val delayMs = (15 * 60 * 1000L * (1L shl (nextCount - 1).coerceAtMost(4))).coerceAtMost(2 * 60 * 60 * 1000L)
+      val withinBudget = now - lastMs > 6 * 60 * 60 * 1000L || nextCount < 4
+      if (!withinBudget) {
+        appendLog("fgs timeout: 6h budget exhausted, not rescheduling BootWorker (attempt $nextCount)")
+      } else {
+        val req = androidx.work.OneTimeWorkRequestBuilder<BootWorker>()
+          .setInitialDelay(delayMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+          .build()
+        androidx.work.WorkManager.getInstance(this).enqueue(req)
+        appendLog("fgs timeout: BootWorker enqueued with ${delayMs / 60000} min backoff (attempt $nextCount)")
+      }
     } catch (_: Exception) { }
     // Unconditional: with a specific startId the stop is refused when newer
     // intents queued, and Android 15 then crashes us for missing the window.

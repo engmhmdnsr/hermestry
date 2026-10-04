@@ -534,13 +534,13 @@ export async function nativeStreamPost(opts: {
   signal?: AbortSignal;
   onStatus: (status: number) => void;
   onBytes: (bytes: Uint8Array) => void;
-}): Promise<'done' | 'cancelled' | 'error'> {
+}): Promise<'done' | 'cancelled' | 'error' | string> {
   const plugin = getPlugin();
   if (!plugin || typeof plugin.streamPost !== 'function') return 'error';
   const id = `s${Date.now().toString(36)}${Math.floor(Math.random() * 0xffff).toString(36)}`;
   const subs: Array<{ remove: () => void }> = [];
-  let settle: ((v: 'done' | 'cancelled' | 'error') => void) | null = null;
-  const finished = new Promise<'done' | 'cancelled' | 'error'>((resolve) => {
+  let settle: ((v: 'done' | 'cancelled' | string) => void) | null = null;
+  const finished = new Promise<'done' | 'cancelled' | string>((resolve) => {
     settle = resolve;
   });
   const cleanup = () => {
@@ -576,7 +576,11 @@ export async function nativeStreamPost(opts: {
     );
     subs.push(
       await plugin.addListener('gwStreamError', (info) =>
-        forId(info, () => settle?.(info.cancelled === true ? 'cancelled' : 'error'))
+        forId(info, () => {
+          const msg = String((info as Record<string, unknown>).message ?? '');
+          if (info.cancelled === true) settle?.('cancelled');
+          else settle?.(msg ? `error:${msg}` : 'error');
+        })
       )
     );
     subs.push(
@@ -594,21 +598,28 @@ export async function nativeStreamPost(opts: {
         /* ignore */
       }
     };
+    let abortAttached = false;
     if (opts.signal) {
       if (opts.signal.aborted) {
         onAbort();
         return 'cancelled';
       }
       opts.signal.addEventListener('abort', onAbort, { once: true });
-      try {
-        await plugin.streamPost({ id, url: opts.url, headers: opts.headers, body: opts.body });
-      } finally {
-        opts.signal.removeEventListener('abort', onAbort);
-      }
-    } else {
-      await plugin.streamPost({ id, url: opts.url, headers: opts.headers, body: opts.body });
+      abortAttached = true;
     }
-    return await finished;
+    const WATCHDOG_MS = 90000;
+    let watchdog: ReturnType<typeof setTimeout> | null = null;
+    const watchdogPromise = new Promise<string>((resolve) => {
+      watchdog = setTimeout(() => resolve('error:watchdog timeout'), WATCHDOG_MS);
+    });
+    try {
+      await plugin.streamPost({ id, url: opts.url, headers: opts.headers, body: opts.body });
+      const result = await Promise.race([finished, watchdogPromise]);
+      return result as 'done' | 'cancelled' | 'error' | string;
+    } finally {
+      if (watchdog) clearTimeout(watchdog);
+      if (abortAttached && opts.signal) opts.signal.removeEventListener('abort', onAbort);
+    }
   } catch {
     return 'error';
   } finally {

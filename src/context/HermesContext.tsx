@@ -606,6 +606,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const httpStatusCopy = (status: number): string => {
     if (isHttpAuthStatus(status)) return authFailureCopy();
     if (status === 404) return sessionGoneCopy();
+    if (status >= 500) return `${tx('errServerMessagePlain', 'The Hermes server or the provider returned an error. Retry, and check the connection if it repeats.')} (HTTP ${status})`;
     return gatewayRejectedCopy();
   };
 
@@ -3139,7 +3140,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       // Re-check the on-device key before an authenticated call: a bridge
       // that answered late must not create the session keyless.
       await ensureServerKey();
-      const id = await gatewayService.createSession(settings.modelId);
+      const id = await gatewayService.createSession(settingsRef.current.modelId);
       let updated: MobileSession[];
       try {
         updated = await gatewayService.fetchSessions();
@@ -3151,7 +3152,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           {
             id,
             title: 'New chat',
-            model: settings.modelId,
+            model: settingsRef.current.modelId,
             messageCount: 0,
             lastActiveAt: Date.now(),
             costUsd: 0,
@@ -3363,14 +3364,32 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     // takes the stream instead (see the reader try below).
     const nativeStream = isNativeGateway();
     let res: Response | null = null;
+    let webConnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let webConnectTimedOut = false;
+    if (!nativeStream) {
+      webConnectTimer = setTimeout(() => {
+        webConnectTimedOut = true;
+        try { (abortSignal as unknown as AbortController)?.abort?.(); } catch {}
+      }, 15000);
+    }
     if (!nativeStream) {
       try {
         const webRes = await fetch(
           `http://127.0.0.1:8080/api/sessions/${encodeURIComponent(sessionId)}/chat/stream`,
           { method: 'POST', headers, body: JSON.stringify(body), signal: abortSignal }
         );
+        if (webConnectTimer) { clearTimeout(webConnectTimer); webConnectTimer = null; }
+        if (webConnectTimedOut) {
+          callbacks.onError?.(unreachableCopy());
+          return;
+        }
         res = webRes;
       } catch (err) {
+        if (webConnectTimer) { clearTimeout(webConnectTimer); webConnectTimer = null; }
+        if (webConnectTimedOut) {
+          callbacks.onError?.(unreachableCopy());
+          return;
+        }
         if (err instanceof Error && err.name === 'AbortError') {
           callbacks.onStopped?.();
           return;
@@ -3404,6 +3423,31 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     let failedMessage: string | null = null;
     let stoppedByServer = false;
     let sawTerminal = false;
+    let hasFirstToken = false;
+    const FIRST_TOKEN_MS = 30000;
+    const STALL_MS = 60000;
+    let firstTokenTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      if (!hasFirstToken && !sawTerminal && !failedMessage && !stoppedByServer) {
+        callbacks.onError?.(streamClosedCopy());
+        addLog('Stream stalled waiting for first token');
+      }
+    }, FIRST_TOKEN_MS);
+    let stallTimer: ReturnType<typeof setTimeout> | null = null;
+    const resetStallTimer = () => {
+      if (stallTimer) clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        if (!sawTerminal && !failedMessage && !stoppedByServer) {
+          callbacks.onError?.(streamClosedCopy());
+          addLog('Stream stalled');
+        }
+      }, STALL_MS);
+    };
+    const clearStreamTimers = () => {
+      if (firstTokenTimer) clearTimeout(firstTokenTimer);
+      if (stallTimer) clearTimeout(stallTimer);
+      firstTokenTimer = null;
+      stallTimer = null;
+    };
     // Every event carrying this turn's run id refreshes it: the runTurn
     // finally block purges that run's cards, so a card never outlives a
     // stream that died while the decision was still pending.
@@ -3538,6 +3582,12 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const dispatch = (ev: { event: string; json: unknown; data?: string }) => {
       try {
         dispatchEvent(ev);
+        if (!hasFirstToken) {
+          hasFirstToken = true;
+          if (firstTokenTimer) { clearTimeout(firstTokenTimer); firstTokenTimer = null; }
+        }
+        resetStallTimer();
+        if (sawTerminal || failedMessage || stoppedByServer) clearStreamTimers();
       } catch {
         addLog(
           tx('streamUpdateSkipped', 'A live update could not be applied; the answer keeps streaming.')
@@ -3548,6 +3598,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     // native stream bridge): a dead turn reports honestly instead of
     // presenting a truncated reply as success.
     const finishStream = () => {
+      clearStreamTimers();
       if (failedMessage) {
         // Backend failure text is not user copy: the classifier keeps an
         // honest sentence and replaces raw transport or platform payloads.
@@ -3595,14 +3646,24 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           if (isHttpAuthStatus(nativeStatus)) markGatewayUnauthorized('chat stream', nativeStatus);
           callbacks.onError?.(httpStatusCopy(nativeStatus));
           addLog(`Chat stream rejected by the gateway (HTTP ${nativeStatus})`);
+          clearStreamTimers();
           return;
         }
         if (outcome === 'cancelled') {
+          clearStreamTimers();
           callbacks.onStopped?.();
           return;
         }
-        if (outcome === 'error') {
-          callbacks.onError?.(streamClosedCopy());
+        if (outcome === 'error' || (typeof outcome === 'string' && outcome.startsWith('error:'))) {
+          const detail = typeof outcome === 'string' && outcome.startsWith('error:') ? outcome.slice(6) : '';
+          if (/ConnectException|Failed to connect to/.test(detail)) {
+            callbacks.onError?.(unreachableCopy());
+          } else if (detail && isNetworkFailure(new Error(detail))) {
+            callbacks.onError?.(unreachableCopy());
+          } else {
+            callbacks.onError?.(streamClosedCopy());
+          }
+          clearStreamTimers();
           return;
         }
         const tail = decoder.decode();
@@ -3627,12 +3688,14 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       for (const ev of parser.flush()) dispatch(ev);
       finishStream();
     } catch (err) {
+      clearStreamTimers();
       if (err instanceof Error && err.name === 'AbortError') {
         callbacks.onStopped?.();
       } else {
         callbacks.onError?.(isNetworkFailure(err) ? unreachableCopy() : streamClosedCopy());
       }
     } finally {
+      clearStreamTimers();
       if (reader) {
         try {
           await reader.cancel();
@@ -3657,6 +3720,7 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     // turn state therefore runs in this synchronous section, where these ids
     // still belong to the turn being stopped.
     const stopToken = turnTokenRef.current;
+    turnTokenRef.current += 1;
     const stoppedAgentId = lastAgentMsgIdRef.current;
     const runId = activeRunId;
     if (abortControllerRef.current) {

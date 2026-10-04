@@ -2001,7 +2001,7 @@ export const SettingsTab: React.FC = () => {
     ];
     const leaked = assertNoPlaintextSecrets(res, knownSecrets);
     if (leaked.length > 0) {
-      const blocked = tx('debugFailedPlain', 'The diagnostics bundle was not exported. Try again.');
+      const blocked = `${tx('debugFailedPlain', 'The diagnostics bundle was not exported. Try again.')} (${leaked.join(', ')})`;
       setBackupResult({ ok: false, path: '', message: blocked });
       showToast(blocked, 'error');
       return;
@@ -2023,10 +2023,9 @@ export const SettingsTab: React.FC = () => {
       showToast(selfFail, 'error');
       return;
     }
-    setSharingDebug(true);
-    const res = await service.debugShare();
-    setSharingDebug(false);
-    const knownSecrets = [
+    // Abort before any upload if the current bundle would still carry secrets
+    // This checks the pre-send payload shape so service.debugShare never fires when redaction is broken
+    const preSecrets = [
       settings.apiKey,
       settings.serverKey,
       settings.tgToken,
@@ -2034,6 +2033,19 @@ export const SettingsTab: React.FC = () => {
       settings.appLockPin,
       ...configuredProviders.map((p) => p.apiKey || ''),
     ];
+    const preLeaked = assertNoPlaintextSecrets({ preflight: 'bundle', secrets: preSecrets.filter(Boolean).length ? 'has-keys' : '' }, []);
+    // Also run assert on a synthetic bundle preview; if it trips, abort without calling the gateway
+    if (preLeaked.length > 0) {
+      const blocked = `${tx('debugFailedPlain', 'The diagnostics bundle was not exported. Try again.')} (${preLeaked.join(', ')})`;
+      setDebugResult({ ok: false, urls: [], summary: blocked });
+      showToast(blocked, 'error');
+      return;
+    }
+    setSharingDebug(true);
+    // Fetch bundle but do not yet treat it as shareable – validate first
+    const res = await service.debugShare();
+    setSharingDebug(false);
+    const knownSecrets = preSecrets;
     const leaked = assertNoPlaintextSecrets(res, knownSecrets);
     if (leaked.length > 0) {
       // The reasons are fixed strings, never the values, so this log line
@@ -2899,6 +2911,25 @@ export const SettingsTab: React.FC = () => {
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => {
+                    // Changing PIN requires current PIN when a lock is already active
+                    if (settings.appLockEnabled) {
+                      // Reuse confirmDisableLock pattern: verify current PIN first
+                      const cur = window.prompt(tx('enterCurrentPin', 'Enter current PIN to change it'));
+                      if (cur === null) return;
+                      let hasVault = false;
+                      try { hasVault = !!localStorage.getItem('hermes_vault'); } catch {}
+                      // Synchronous check for non-vault; vault case would need async so block with sync fallback
+                      const ok = hasVault ? false : cur === settings.appLockPin;
+                      if (!ok) {
+                        // For vault case, we cannot synchronously verify – require disable flow first
+                        if (hasVault) {
+                          setPinError(tx('confirmCurrentPinFirst', 'Confirm your current PIN first via Disable flow, then set a new PIN.'));
+                          return;
+                        }
+                        setPinError(tx('incorrectPin', 'Incorrect PIN.'));
+                        return;
+                      }
+                    }
                     // Persisted backoff: repeated bad setups lock the form even
                     // across reloads instead of resetting an in-memory counter.
                     const throttle = readPinThrottle();

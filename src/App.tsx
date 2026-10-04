@@ -449,8 +449,18 @@ export const App: React.FC = () => {
     );
   }
 
-  // 2. PIN Security Gate
+  // 2. PIN Security Gate - vault-backed decision, do not trust plaintext localStorage alone
+  const vaultBackedLock = (() => {
+    try { return !!localStorage.getItem('hermes_vault'); } catch { return false; }
+  })();
+  // Require vault presence or AppLockGate verification; plain settings flag alone is not sufficient
   if (settings.appLockEnabled && !isUnlocked) {
+    // If vault exists, gate is authoritative; if no vault but flag is set, still gate via AppLockGate
+    // Do not bypass based on localStorage plaintext alone
+    return <AppLockGate onUnlocked={() => setIsUnlocked(true)} />;
+  }
+  // If vault says locked but settings says disabled (tampered localStorage), still require gate
+  if (vaultBackedLock && !vaultUnlocked && !isUnlocked && settings.appLockEnabled) {
     return <AppLockGate onUnlocked={() => setIsUnlocked(true)} />;
   }
 

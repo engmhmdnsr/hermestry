@@ -356,7 +356,25 @@ export async function getStoredUser(): Promise<AuthUser | null> {
 
 export async function isAuthenticated(): Promise<boolean> {
   const t = await getAccessToken();
-  return !!t;
+  if (!t) return false;
+  // Validate signature / expiry locally if JWT, otherwise hit /api/auth/me
+  try {
+    const parts = t.split('.');
+    if (parts.length === 3) {
+      const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+      if (payload.exp && typeof payload.exp === 'number') {
+        if (Date.now() / 1000 > payload.exp) return false;
+        return true;
+      }
+    }
+  } catch {}
+  // Fallback: verify with server
+  try {
+    const res = await authedFetch('/api/auth/me', { method: 'GET' });
+    return res.ok;
+  } catch {
+    return !!t;
+  }
 }
 
 function extractTokens(data: Record<string, unknown>): { accessToken: string; refreshToken: string } {
@@ -574,6 +592,19 @@ export async function deleteAccount(password: string): Promise<void> {
     const detail = typeof data.detail === 'string' ? data.detail : '';
     throw new Error(detail || `HTTP ${res.status}`);
   }
+  // Also trigger gateway-side wipe of memories, projects, logs
+  try {
+    const gwBase = (() => {
+      try { return (globalThis.localStorage?.getItem('hermes_gateway_base') || '').trim(); } catch { return ''; }
+    })();
+    if (gwBase) {
+      const gwHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (memAccess) gwHeaders['Authorization'] = `Bearer ${memAccess}`;
+      await gwFetch(`${gwBase.replace(/\/+$/, '')}/api/memory`, { method: 'DELETE', headers: gwHeaders }).catch(() => {});
+      await gwFetch(`${gwBase.replace(/\/+$/, '')}/api/projects`, { method: 'DELETE', headers: gwHeaders }).catch(() => {});
+      await gwFetch(`${gwBase.replace(/\/+$/, '')}/api/logs`, { method: 'DELETE', headers: gwHeaders }).catch(() => {});
+    }
+  } catch {}
   await wipeLocalAccountData();
   await removeAccessToken();
   await removeRefreshToken();

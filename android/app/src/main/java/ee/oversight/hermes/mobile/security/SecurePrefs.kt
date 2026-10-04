@@ -151,6 +151,9 @@ object SecurePrefs {
 
     // Direct Boot check: if user credential storage is not yet unlocked,
     // Android Keystore cannot be accessed. Do not poison cache or set permanent fallback.
+    // Plain prefs returned here are read only: never write secrets via prefs().edit()
+    // while directBoot is true. All secret writes must go through putString() which
+    // checks directBoot and refuses when credential storage is still locked.
     if (!UserManagerCompat.isUserUnlocked(app)) {
       Log.w(TAG, "Device locked (Direct Boot); returning plain prefs without caching fallback")
       directBoot = true
@@ -171,6 +174,9 @@ object SecurePrefs {
     fallback = true
     return app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
   }
+
+  /** Accessor guard: plain Direct Boot prefs must never be written via prefs().edit(). */
+  fun canWriteSecrets(): Boolean = !directBoot
 
   private fun migrateIfNeeded(app: Context, enc: SharedPreferences) {
     val plain = app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -217,7 +223,7 @@ object SecurePrefs {
       // plain file IS the store because encryption is unavailable, and the UI
       // warns via isFallback().
       if (!fallback) {
-        val msg = "encrypted secret read failed for $key, refusing cleartext fallback"
+        val msg = "encrypted secret read failed, refusing cleartext fallback"
         Log.w(TAG, msg, e)
         lastError = msg
         if (isCryptoCorruption(e)) {
@@ -227,7 +233,7 @@ object SecurePrefs {
         }
         return default
       }
-      Log.w(TAG, "secret read failed for $key in fallback mode", e)
+      Log.w(TAG, "secret read failed in fallback mode", e)
       try {
         ctx.applicationContext
           .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)

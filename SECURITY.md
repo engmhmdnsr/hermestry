@@ -59,3 +59,9 @@ runs on-device only without root) behind an explicit checkbox; Start setup
 stays disabled until it is checked (`discloseTitle/discloseBody/discloseConsent`
 in `src/constants/languages.ts`, gating in `OnboardingWizard.tsx`). The Play
 Console executable-code question is answered Yes with this same text.
+
+## Permissions
+ACCESS_NETWORK_STATE is used only to check connectivity before downloads and gateway calls. No network state is logged.
+
+## DataSync and privacy
+Foreground service type dataSync syncs chats, memory and files and requires a Play Console declaration. Privacy policy: https://www.oversight.ee/hermes-privacy (also linked in store listing).

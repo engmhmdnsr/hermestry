@@ -1,0 +1,22 @@
+SHORT DESCRIPTION (80 max):
+Your AI assistant for your own server. Private by design.
+
+FULL DESCRIPTION:
+Hermes Mobile connects to your own Hermes gateway and the AI provider you choose. An internet connection is required; chats are sent to the provider you configure. Your chats, projects, and files stay on your server, not in a shared cloud.
+
+WHAT YOU GET:
+- AI gateway with scheduled jobs and approvals
+- Phone and tablet layouts, English and Arabic
+- App lock PIN and encrypted credential storage
+- Project import and export with full control of your files
+- Works with your own AI provider keys (internet required)
+
+PRIVACY FIRST:
+Your account holds only your name and email. Chats go straight to the AI provider you choose. Delete your account anytime from inside the app. Read the full policy at https://www.oversight.ee/hermes-privacy
+
+Note: first setup downloads the on-device runtime (about 300 MB) once over Wi-Fi. Requires ACCESS_NETWORK_STATE to check connectivity before downloads.
+
+PERMISSIONS NOTE:
+ACCESS_NETWORK_STATE is used only to check connectivity. DataSync foreground service syncs chats, memory and files and requires a Play declaration.
+
+PRIVACY LINK: https://www.oversight.ee/hermes-privacy
