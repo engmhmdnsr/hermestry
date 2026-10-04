@@ -103,6 +103,7 @@ import {
   PROVIDER_OPTIONS,
   formatFallbackDisplayName,
   staticModelsFor,
+  defaultBaseUrlFor,
 } from '../constants/providers';
 import { ThemeMode, THEME_PALETTES, applyThemeToDom, watchSystemThemePreference } from '../constants/themes';
 import { LANGUAGES, getTranslation } from '../constants/languages';
@@ -1172,7 +1173,11 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     return {
       provider: active?.provider || next.provider || '',
       apiKey: resolvedKey,
-      baseUrl: active?.baseUrl ?? next.baseUrl ?? '',
+      // Empty base URL inherits the provider default so the gateway never
+      // runs a provider against an empty host.
+      baseUrl:
+        (active?.baseUrl ?? next.baseUrl ?? '').trim() ||
+        defaultBaseUrlFor(active?.provider || next.provider || ''),
       model: active?.defaultModel || next.modelId || '',
       activeProfileId: active?.id || next.activeProviderId || '',
       serverKey: next.serverKey || '',

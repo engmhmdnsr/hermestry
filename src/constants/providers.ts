@@ -218,14 +218,35 @@ export const DEFAULT_MODELS: Record<string, string[]> = {
 // gateway only; the static list stays as the offline fallback snapshot.
 export const PROVIDER_DEFAULT_BASE_URL: Record<string, string> = {
   // Known model-catalog roots for OpenAI-compatible providers: when the base
-  // URL field is empty, the direct key test falls back here instead of
-  // failing on an empty host. Only providers whose catalog path is certain
-  // are listed (deepseek and others stay on the gateway path until verified).
+  // URL field is empty, callers fall back here instead of failing on an
+  // empty host. Only providers whose endpoint is certain are listed. Left
+  // out on purpose: azure-foundry (every user has their own resource URL),
+  // opencode-zen and mixture-of-agents (no public endpoint), and minimax-cn,
+  // alibaba-coding-plan, kilocode, huggingface, ollama-cloud, copilot,
+  // stepfun, arcee, gmi, actual, xiaomi, tencent-tokenhub, tencent-tokenplan
+  // (endpoint not verified, a wrong default is worse than none).
   'openai-api': 'https://api.openai.com/v1',
   openrouter: 'https://openrouter.ai/api/v1',
   'opencode-go': 'https://opencode.ai/zen/go/v1',
   xai: 'https://api.x.ai/v1',
+  deepseek: 'https://api.deepseek.com/v1',
+  anthropic: 'https://api.anthropic.com/v1',
+  gemini: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+  'kimi-coding': 'https://api.moonshot.ai/v1',
+  'kimi-coding-cn': 'https://api.moonshot.cn/v1',
+  zai: 'https://open.bigmodel.cn/api/paas/v4/',
+  alibaba: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
+  nvidia: 'https://integrate.api.nvidia.com/v1',
+  'ai-gateway': 'https://ai-gateway.vercel.sh/v1',
+  lmstudio: 'http://127.0.0.1:1234/v1',
 };
+
+// Normalized lookup: empty provider reads empty, never another default.
+export function defaultBaseUrlFor(provider: string): string {
+  const norm = normProvider(provider || '');
+  if (!norm) return '';
+  return PROVIDER_DEFAULT_BASE_URL[norm] || '';
+}
 export const OPENCODE_GO_VERIFIED_MODELS: readonly string[] = ['deepseek-v4.1-flash'];
 
 // Static catalog entries tagged as offline fallback. UI lists must label

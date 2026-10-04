@@ -36,6 +36,7 @@ import {
   keysValid,
   KEYLESS_PROVIDERS,
   PROVIDER_DEFAULT_BASE_URL,
+  defaultBaseUrlFor,
 } from '../../constants/providers';
 import { THEME_PALETTES, ThemeMode } from '../../constants/themes';
 import { LANGUAGES } from '../../constants/languages';
@@ -1565,7 +1566,7 @@ export const SettingsTab: React.FC = () => {
     setNewProvType(prov.provider);
     setNewProvName(prov.name);
     setNewProvKey(prov.apiKey || '');
-    setNewProvBaseUrl(prov.baseUrl || '');
+    setNewProvBaseUrl(prov.baseUrl || defaultBaseUrlFor(prov.provider) || '');
     setNewProvModel(prov.defaultModel || '');
     setKeyResult(null);
     setKeyOk(null);
@@ -1802,10 +1803,10 @@ export const SettingsTab: React.FC = () => {
     setTestedModels([]);
 
     const cleaned = newProvKey.trim();
-    const directBase = (newProvBaseUrl.trim() || PROVIDER_DEFAULT_BASE_URL[norm] || '').replace(
-    /\/+$/,
-    ''
-  );
+    const directBase = (newProvBaseUrl.trim() || defaultBaseUrlFor(norm) || '').replace(
+      /\/+$/,
+      ''
+    );
     // The on-device gateway has no key-validation route (POST
     // /api/providers/validate 404s there), so testing through it always
     // reports 'Hermes did not answer'. For OpenAI-compatible providers the
@@ -4035,6 +4036,12 @@ export const SettingsTab: React.FC = () => {
                     if (!newProvModel.trim()) {
                       const def = DEFAULT_MODELS[val]?.[0] || '';
                       if (def) setNewProvModel(def);
+                    }
+                    // Same for the base URL: a known provider starts with
+                    // its endpoint already filled, the user can still edit.
+                    if (!newProvBaseUrl.trim()) {
+                      const base = defaultBaseUrlFor(val);
+                      if (base) setNewProvBaseUrl(base);
                     }
                   }}
                   className="w-full px-4 py-3 r-sm bg-[var(--app-input-bg)] edge t-label text-[var(--app-text)] focus:outline-none focus:border-[var(--app-accent)]"
