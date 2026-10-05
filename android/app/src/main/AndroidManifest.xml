@@ -76,9 +76,15 @@
             android:foregroundServiceType="dataSync"
             tools:node="merge">
         </service>
-        <receiver
-            android:name=".service.BootReceiver"
-            android:exported="true">
+        <!-- Not exported. Every action this receiver handles is a protected
+                    system broadcast (BOOT_COMPLETED, QUICKBOOT_POWERON,
+                    MY_PACKAGE_REPLACED, USER_UNLOCKED), and the system delivers those
+                    to a non-exported receiver. No other app has a reason to send
+                    them, so exporting it only added a way in to trigger gateway start
+                    work. -->
+                <receiver
+                    android:name=".service.BootReceiver"
+                    android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />

@@ -22,6 +22,7 @@ degrades to an honest 5xx instead of breaking server boot.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from typing import Any
 
@@ -150,6 +151,174 @@ async def _custom_base_policy(base_url: str) -> str | None:
     except Exception:
         return "Could not validate %s." % host
     return None
+
+
+# Key names whose VALUE is a credential. Matched case-insensitively against a
+# normalized form of the key so api_key, apiKey, API-KEY and apiKey all hit.
+_SECRET_KEY_PARTS = (
+    "key",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "authorization",
+    "cookie",
+    "credential",
+)
+
+# Keys that contain a secret-ish word but never hold a credential. Without this
+# the scrubber would eat harmless fields and quietly break the backup (a
+# stripped 'monkey' or 'keybindings' value is data loss, not redaction).
+_SECRET_KEY_ALLOWLIST = frozenset(
+    {
+        "keybindings",
+        "keyboard",
+        "keywords",
+        "keys",
+        "hotkey",
+        "hotkeys",
+        "turbo",
+        "monkey",
+        "donkey",
+        "hockey",
+        "keychain",
+        "keystore_alias",
+        "public_key",
+        "publickey",
+        "key_id",
+        "keyid",
+    }
+)
+
+_REDACTED = "[redacted]"
+
+
+def _normalize_key(key: object) -> str:
+    """Fold a config key to a comparable shape: lowercase, separators removed."""
+    return "".join(ch for ch in str(key).lower() if ch.isalnum())
+
+
+def _is_secret_key(key: object) -> bool:
+    """True when this mapping key names a credential, not ordinary config."""
+    norm = _normalize_key(key)
+    if not norm:
+        return False
+    if norm in _SECRET_KEY_ALLOWLIST:
+        return False
+    return any(part in norm for part in _SECRET_KEY_PARTS)
+
+
+def sanitize_secrets(value: Any, _depth: int = 0) -> Any:
+    """Return a copy of ``value`` with credential values replaced.
+
+    Recurses through dicts, lists, tuples and sets so a secret nested at any
+    depth is removed, not just one sitting at the top level. A scalar is
+    returned unchanged, so the walk is total and cannot raise on a config shape
+    it has not seen. The input is never mutated: callers hand this the live
+    config and keep using it afterwards.
+
+    Redacted keys are kept rather than dropped, with their value replaced, so a
+    reader can still see that the field existed and was withheld. A removed key
+    would look the same as a field the app never had.
+
+    Depth is bounded so a self-referential structure cannot spin forever. The
+    bound is far deeper than any real config nests, and anything past it is
+    replaced wholesale rather than walked.
+    """
+    if _depth > 64:
+        return _REDACTED
+    if isinstance(value, dict):
+        out: dict[Any, Any] = {}
+        for key, item in value.items():
+            if _is_secret_key(key):
+                out[key] = _REDACTED if item is not None else None
+            else:
+                out[key] = sanitize_secrets(item, _depth + 1)
+        return out
+    if isinstance(value, list):
+        return [sanitize_secrets(item, _depth + 1) for item in value]
+    if isinstance(value, tuple):
+        return tuple(sanitize_secrets(item, _depth + 1) for item in value)
+    if isinstance(value, set):
+        return {sanitize_secrets(item, _depth + 1) for item in value}
+    return value
+
+
+# Credential shapes, compiled as a list of independent patterns rather than one
+# big alternation. Two reasons, both learned the hard way:
+#
+#   1. Python numbers capture groups positionally across the WHOLE pattern, so
+#      a single "a|b" chain makes group 1 belong to whichever branch came first,
+#      not the branch that matched. Reading group(1) then returns None for a
+#      secret and crashes the redaction mid-file.
+#   2. Python also refuses to reuse a group NAME across alternation branches.
+#
+# Compiled one per pattern, each pattern's groups mean what they say: an
+# optional group 1 is the prefix to keep, group 2 is the value to drop. A
+# pattern with no groups is a secret that identifies itself and is replaced
+# whole.
+#
+# Prefix/value pairs -- group 1 kept, group 2 replaced with [redacted]:
+_SECRET_PAIR_PATTERNS = (
+    # Authorization header, with or without a scheme
+    r"((?:authorization|auth[_-]?token)\s*[=:]\s*(?:Bearer\s+|Basic\s+)?)([^\s\"\',}\]]+)",
+    # A bare Bearer credential anywhere
+    r"(Bearer\s+)([A-Za-z0-9._~+/=-]{8,})",
+    # key=value / key: value where the KEY names a credential. Either quote
+    # style is accepted on both sides so single-quoted JSON/Python dicts are
+    # caught too, not just {"api_key": "x"}. The opening quote is part of the
+    # prefix, so the closing quote is left in place and the line still reads
+    # as valid JSON with a redacted value.
+    r"([\"']?(?:[A-Za-z0-9_.-]*"
+    r"(?:api[_-]?key|apikey|server[_-]?key|access[_-]?token|refresh[_-]?token"
+    r"|token|secret|password|passwd|authorization|cookie|credential)"
+    r"[A-Za-z0-9_.-]*)[\"']?\s*[=:]\s*[\"']?)([\"']?[^\s\"',}\]]+)",
+)
+
+# Self-identifying secrets -- no group, replaced whole:
+_SECRET_BARE_PATTERNS = (
+    # OpenAI / Anthropic style keys
+    r"sk-[A-Za-z0-9_-]{6,}",
+    # GitHub tokens
+    r"gh[pousr]_[A-Za-z0-9]{16,}",
+    # Telegram bot tokens: numeric bot id, colon, then the secret
+    r"\b\d{8,10}:[A-Za-z0-9_-]{30,}",
+    # Slack
+    r"xox[abprs]-[A-Za-z0-9-]{10,}",
+    # JSON Web Tokens
+    r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}",
+    # PEM private key blocks, including the body
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
+)
+
+_SECRET_PAIR_RES = tuple(re.compile(p, re.IGNORECASE) for p in _SECRET_PAIR_PATTERNS)
+_SECRET_BARE_RES = tuple(re.compile(p, re.IGNORECASE) for p in _SECRET_BARE_PATTERNS)
+
+
+def redact_secrets(text: str) -> str:
+    """Remove credential-shaped substrings from a block of plain text.
+
+    Used for log lines and any text destined for a file the user may share. The
+    patterns are deliberately conservative: they only rewrite something that
+    either looks like a known secret on its own, or sits next to a key name
+    that names a credential. Ordinary prose survives untouched, because a
+    diagnostics bundle that eats real sentences is worse than no bundle.
+
+    Self-identifying secrets go first so their distinctive prefixes are not
+    half-eaten by a pair pattern first: "sk-abc..." would otherwise match the
+    generic pair rule and keep a fragment of the key.
+
+    Structure is preferred over pattern where it is available: a caller holding
+    parsed JSON should run sanitize_secrets instead. This is the last line of
+    defence for log lines, not the primary scrubber.
+    """
+    if not text:
+        return text
+    for rx in _SECRET_BARE_RES:
+        text = rx.sub(_REDACTED, text)
+    for rx in _SECRET_PAIR_RES:
+        text = rx.sub(lambda m: m.group(1) + _REDACTED, text)
+    return text
 
 
 _SKILLS_COMPAT_APPLIED = False
@@ -709,9 +878,15 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
     async def _post_backup(request):
         """Write a snapshot of chats, jobs and settings to a file.
 
-        Keys are never included: only the non-secret config keys and the
-        session/job JSON are copied, and the destination stays inside the
-        Hermes home so the user can reach it over the app's file tools.
+        Credential values are never copied: the config is walked recursively
+        and every key naming a credential is kept with its value replaced by a
+        redacted marker, so the reader can see the field existed and was
+        withheld. A top-level key filter was not enough, because a provider's
+        secrets sit under a nested block whose top-level key is just the
+        provider name.
+
+        The destination stays inside the Hermes home so the user can reach it
+        over the app's file tools.
         """
         from aiohttp import web
 
@@ -733,12 +908,10 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
                 with open(cfg_path, "r", encoding="utf-8") as fh:
                     cfg = safe_load(fh) or {}
                 if isinstance(cfg, dict):
-                    # Drop anything that looks like a credential.
-                    payload["config"] = {
-                        k: v
-                        for k, v in cfg.items()
-                        if not any(t in k.lower() for t in ("key", "token", "secret", "password"))
-                    }
+                    # Strip credentials at every depth. A top-level key filter
+                    # left nested provider blocks intact, because their
+                    # top-level key is just the provider name.
+                    payload["config"] = sanitize_secrets(cfg)
             sessions_dir = os.path.join(home, "sessions")
             sessions: list[str] = []
             if os.path.isdir(sessions_dir):
@@ -808,15 +981,10 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
                     continue
 
             # Belt and braces: the app redacts too, but the bundle is a file
-            # on disk that could outlive the session that made it.
-            scrub = re.compile(
-                # Bearer must be tried before the bare "authorization ="
-                # alternative: matching the header name first would consume
-                # only "authorization: " and leave the token after it intact.
-                r"(sk-[A-Za-z0-9_-]{6,}|[A-Za-z0-9_-]*(?:API_KEY|TOKEN|SECRET|PASSWORD)[A-Za-z0-9_]*\s*[=:]\s*|Bearer\s+|(?:authorization|auth[_-]?token)\s*[=:]\s*(?:Bearer\s+)?)\S+",
-                re.IGNORECASE,
-            )
-            logs = [scrub.sub(r"\1<redacted>", line) for line in logs]
+            # on disk that could outlive the session that made it. The older
+            # inline pattern missed quoted JSON such as {"api_key": "x"}, so
+            # the shared redact_secrets scanner is used instead.
+            logs = [redact_secrets(line) for line in logs]
 
             stamp = time.strftime("%Y%m%d-%H%M%S")
             out_dir = os.path.join(home, "snapshots")
