@@ -21,6 +21,7 @@
 // not a grep for the absence of a field: a commented-out or renamed field
 // would pass a grep but fail this.
 
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import { repoRoot, compileToEsm, importCompiled } from './lib/util.mjs';
@@ -138,6 +139,70 @@ ok(
   'gateway posts to /api/sessions/{id}/model',
   /api\/sessions\/\$\{encodeURIComponent\(id\)\}\/model/.test(gw)
 );
+
+// --- 2b. the request body must actually persist the lock -------------------
+// The string assertions above all passed while the feature was a silent no-op:
+// the endpoint returns 200 for a bare {model} and writes nothing. Assert the
+// BODY SHAPE, then prove against the shipped adapter methods that this shape
+// persists and the old one does not.
+const bodyMatch = gw.match(/JSON\.stringify\(\{([^}]*)\}\)/g) || [];
+const modelBody = bodyMatch.find((b) => /require_model_lock/.test(b)) || '';
+ok('the model POST body carries require_model_lock', /require_model_lock:\s*true/.test(modelBody));
+ok('the model POST body is not a bare { model }', !/JSON\.stringify\(\{\s*model\s*\}\)/.test(gw));
+
+const PY = process.env.HERMES_PYTHON
+  || 'C:/Users/engmh/AppData/Local/hermes/hermes-agent/venv/Scripts/python.exe';
+if (fs.existsSync(PY)) {
+  const ADAPTER = 'C:/Users/engmh/AppData/Local/hermes/hermes-agent/gateway/platforms/api_server.py';
+  const script = `
+import json, os, sys, importlib.util
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(${JSON.stringify(ADAPTER)}))))
+os.environ.setdefault("HERMES_HOME", "C:/Users/engmh/AppData/Local/hermes")
+from gateway.platforms.api_server import APIServerAdapter
+
+class FakeDB:
+    def __init__(self): self.writes = []
+    def update_session_runtime_lock(self, sid, **kw): self.writes.append(kw)
+
+def probe(body):
+    a = object.__new__(APIServerAdapter)
+    a._model_routes = {}
+    a._model_name = "hermes-agent"
+    db = FakeDB()
+    a._ensure_session_db = lambda: db
+    rr = a._session_runtime_request_from_body(body)
+    err = a._runtime_lock_error(rr)
+    a._persist_session_runtime_lock("probe", rr)
+    return {
+        "error": None if err is None else getattr(err, "status", 500),
+        "require_lock": bool(rr.get("require_model_lock")),
+        "route_source": rr.get("route_source"),
+        "writes": db.writes,
+    }
+
+out = {
+  "bare":     probe({"model": "minimax-m3"}),
+  "locked":   probe({"model": "minimax-m3", "require_model_lock": True}),
+  "virtual":  probe({"model": "hermes-agent", "require_model_lock": True}),
+}
+print(json.dumps(out, default=str))
+`;
+  const res = spawnSync(PY, ['-c', script], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  if (res.status !== 0) {
+    ok(`adapter probe ran (${String(res.stderr || '').split('\n').slice(-3).join(' ')})`, false);
+  } else {
+    const r = JSON.parse(res.stdout.trim().split('\n').pop());
+    ok('a bare {model} body persists nothing (the bug)', r.bare.writes.length === 0);
+    ok('a bare {model} body reports no error (so 200 lies)', r.bare.error === null);
+    ok('the locked body actually writes the model', r.locked.writes.length === 1);
+    ok('the locked write confirms the lock', r.locked.writes[0].confirmed === true);
+    ok('the locked write carries the model id', r.locked.writes[0].model === 'minimax-m3');
+    ok('a raw model needs no model_routes alias', r.locked.route_source === 'raw_request');
+    ok('the virtual alias is refused, restart fallback covers it', r.virtual.error !== null);
+  }
+} else {
+  ok('adapter probe skipped (no python at expected path)', true);
+}
 ok('hot apply reads modelId', ctx.includes('settingsRef.current.modelId'));
 ok('a refused switch falls back to a restart', /refused the live model switch[\s\S]{0,400}stopGateway/.test(ctx));
 ok('a thrown error also falls back', /Live model switch failed[\s\S]{0,400}stopGateway/.test(ctx));

@@ -640,7 +640,13 @@ export class GatewayService {
         method: 'POST',
         signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
         headers: this.getHeaders(),
-        body: JSON.stringify({ model }),
+        // require_model_lock is REQUIRED, not optional. Without it this endpoint
+        // is a silent no-op: _runtime_lock_error returns early and
+        // _persist_session_runtime_lock short-circuits before touching the DB, so
+        // a 200 means "no error", never "the switch landed", and the session
+        // keeps its old model. With it, a raw model id still resolves
+        // (route_source raw_request) so no model_routes alias is needed.
+        body: JSON.stringify({ model, require_model_lock: true }),
       });
       if (res.ok) return { ok: true, detail: '' };
       return { ok: false, detail: `HTTP ${res.status}` };
