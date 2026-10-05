@@ -616,6 +616,40 @@ export class GatewayService {
     }
   }
 
+  /**
+   * Push a model switch into the already-running gateway instead of
+   * restarting it.
+   *
+   * The gateway exposes POST /api/sessions/{id}/model, which persists the
+   * choice for the session rather than applying it for a single turn, so the
+   * switch survives a restart and is what the next turn reads first. A stale
+   * or foreign model id is rejected (409) on purpose: that is a real error we
+   * must surface, not something to paper over by silently keeping the old
+   * model.
+   *
+   * Returns ok=false with a reason when the gateway rejects it, so the caller
+   * can fall back to a restart rather than pretend the switch landed.
+   */
+  async setSessionModel(
+    id: string,
+    model: string,
+    callerSignal?: AbortSignal
+  ): Promise<{ ok: boolean; detail: string }> {
+    try {
+      const res = await gwFetch(`${this.baseUrl}/api/sessions/${encodeURIComponent(id)}/model`, {
+        method: 'POST',
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+        headers: this.getHeaders(),
+        body: JSON.stringify({ model }),
+      });
+      if (res.ok) return { ok: true, detail: '' };
+      return { ok: false, detail: `HTTP ${res.status}` };
+    } catch (e: unknown) {
+      const err = e as Error;
+      return { ok: false, detail: err.message || String(err) };
+    }
+  }
+
   async forkSession(id: string, callerSignal?: AbortSignal): Promise<string | null> {
     try {
       const res = await gwFetch(`${this.baseUrl}/api/sessions/${encodeURIComponent(id)}/fork`, {

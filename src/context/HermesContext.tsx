@@ -1208,12 +1208,22 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // Fingerprint of a boot payload. Secrets enter as length+digest only, so
   // this string is safe to compare and log. A mismatch against the boot
   // signature means the running process holds stale credentials.
+  //
+  // The model is deliberately NOT part of this fingerprint. On device the
+  // gateway is a proot process whose config.yaml is only rewritten by
+  // renderConfig at service start, so a model change used to look like a
+  // credential change and trigger stopGateway/startGateway: the indicator went
+  // red for several seconds on every model switch, for a change the gateway
+  // actually accepts live. Model is per-turn state instead (every turn sends
+  // `model` in its body, and applyModelToRunningGateway persists it), so it
+  // belongs outside the signature. Credentials, provider and base URL stay in,
+  // because those ARE process env read once at start and genuinely do need a
+  // restart.
   const nativeBootSig = (payload: ReturnType<typeof resolveNativeProviderPayload>): string =>
     JSON.stringify({
       p: payload.provider,
       k: credentialSig(payload.apiKey),
       b: (payload.baseUrl || '').trim(),
-      m: (payload.model || '').trim(),
       a: payload.activeProfileId,
       s: credentialSig(payload.serverKey),
       t: credentialSig(payload.tgToken),
@@ -2848,6 +2858,64 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         // stays the fallback for this fingerprint.
       }
       autoHealInFlightRef.current = false;
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected, settings]);
+
+  // Hot model switch: a model-only change must not bounce the gateway.
+  // The boot signature no longer carries the model, so this effect is the only
+  // thing that has to push the new choice into the running process. It writes
+  // through the gateway's own session-model endpoint, which persists the pick
+  // rather than applying it for one turn, so the switch survives a later
+  // restart and is what the next turn reads first. Every turn also sends
+  // `model` in its body, so a session that already stored a different model
+  // still gets the new one.
+  //
+  // If the gateway rejects the write (409 when the model is not in its
+  // routes, or the process is gone) we restart once. Falling back keeps the
+  // switch honest: a rejected write must never leave the user on a model they
+  // did not choose while the indicator claims green.
+  const lastModelHotRef = useRef<string | null>(null);
+  const modelHotInFlightRef = useRef(false);
+  useEffect(() => {
+    if (!connected || !isNativeGateway()) return;
+    if (modelHotInFlightRef.current) return;
+    const sessionId = currentSessionIdRef.current;
+    const model = (settingsRef.current.modelId || '').trim();
+    // No model to push, or nothing changed since the last push.
+    if (!sessionId || !model) return;
+    const stamp = `${sessionId}|${model}`;
+    if (lastModelHotRef.current === stamp) return;
+    lastModelHotRef.current = stamp;
+    modelHotInFlightRef.current = true;
+    addLog(`Model changed to ${model}; applying to the running gateway.`);
+    void (async () => {
+      try {
+        const res = await gatewayService.setSessionModel(sessionId, model);
+        if (res.ok) {
+          addLog(`Model ${model} applied without a restart.`);
+        } else {
+          addLog(`Gateway refused the live model switch (${res.detail}); restarting to apply it.`);
+          try {
+            await stopGateway();
+          } catch {
+            // stopGateway reports its own failure; still try to start fresh.
+          }
+          await startGateway();
+        }
+      } catch (e: unknown) {
+        addLog(
+          `Live model switch failed (${e instanceof Error ? e.message : String(e)}); restarting to apply it.`
+        );
+        try {
+          await stopGateway();
+        } catch {
+          // As above: report and continue to the start attempt.
+        }
+        await startGateway();
+      } finally {
+        modelHotInFlightRef.current = false;
+      }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected, settings]);
