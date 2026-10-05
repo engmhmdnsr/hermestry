@@ -95,6 +95,7 @@ import {
   plainServiceFailure,
 } from '../services/plainFailure';
 import { toAppError } from '../services/appErrors';
+import { plainProviderFailure } from '../services/providerBlock';
 import { secretRefForProfile } from '../services/secretRefs';
 import { clearSessionRefs } from '../services/attachmentRefs';
 import {
@@ -3529,18 +3530,25 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           break;
         }
         case 'run.failed':
-        case 'error':
-        case 'stream.error': {
-          failedMessage =
-            asString(data.error || data.message || data.description || data.detail) ||
-            tx(
-              'errServerMessagePlain',
-              'The Hermes server or the provider returned an error. Retry, and check the connection if it repeats.'
-            );
-          // The turn is dead: its cards decide nothing anymore.
-          if (runId) purgeApprovalsForRun(runId);
-          break;
-        }
+                case 'error':
+                case 'stream.error': {
+                  // A provider refusal (no subscription, wrong region, spent quota,
+                  // rejected key) is an account setting on the provider's website. The
+                  // upstream wording is written for a web dashboard and tells a phone
+                  // user nothing, so it is mapped to plain cause+action copy. Anything
+                  // unrecognised keeps the raw text, as before.
+                  const raw = asString(data.error || data.message || data.description || data.detail);
+                  failedMessage =
+                    plainProviderFailure(raw, tx) ||
+                    raw ||
+                    tx(
+                      'errServerMessagePlain',
+                      'The Hermes server or the provider returned an error. Retry, and check the connection if it repeats.'
+                    );
+                  // The turn is dead: its cards decide nothing anymore.
+                  if (runId) purgeApprovalsForRun(runId);
+                  break;
+                }
         case 'run.cancelled':
         case 'run.stopped':
         case 'cancelled':
@@ -3560,16 +3568,19 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               // A completion or failure shipped on a message envelope: the
               // turn is over even though the event name is not terminal.
               sawTerminal = true;
-              if (MESSAGE_FAILURE_TYPES.has(type)) {
-                failedMessage =
-                  asString(data.error || data.message || data.description) ||
-                  tx(
-                    'errServerMessagePlain',
-                    'The Hermes server or the provider returned an error. Retry, and check the connection if it repeats.'
-                  );
-              } else if (MESSAGE_STOP_TYPES.has(type)) {
-                stoppedByServer = true;
-              }
+                            if (MESSAGE_FAILURE_TYPES.has(type)) {
+                              // Same provider-refusal mapping as the run.failed branch above.
+                              const raw = asString(data.error || data.message || data.description);
+                              failedMessage =
+                                plainProviderFailure(raw, tx) ||
+                                raw ||
+                                tx(
+                                  'errServerMessagePlain',
+                                  'The Hermes server or the provider returned an error. Retry, and check the connection if it repeats.'
+                                );
+                            } else if (MESSAGE_STOP_TYPES.has(type)) {
+                              stoppedByServer = true;
+                            }
             } else if ((ev.data || '').trim() === '[DONE]') {
               // Bare terminator on a data-only line: it has no event name, so
               // it would otherwise read as a dropped connection.
