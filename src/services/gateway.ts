@@ -1363,6 +1363,40 @@ export class GatewayService {
   // Phone control (on-device only): authed proxy to the loopback bridge.
   // A 403 with needs_grant means the user must grant it in Settings first;
   // surface that, never claim the action landed.
+  // Snapshot download + restore (on-device only). snapshotFile returns
+  // the raw bytes so the app can hand them to the system share sheet;
+  // restoreSnapshot posts a user-picked file, never a silent overwrite.
+  async snapshotFile(name: string, callerSignal?: AbortSignal): Promise<Blob | null> {
+    try {
+      const res = await gwFetch(`${this.baseUrl}/api/snapshot/file?name=${encodeURIComponent(name)}`, {
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+        headers: this.getHeaders(),
+      });
+      if (!res.ok) return null;
+      return await res.blob();
+    } catch {
+      return null;
+    }
+  }
+
+  async restoreSnapshot(
+    snapshot: unknown,
+    callerSignal?: AbortSignal
+  ): Promise<{ ok: boolean; status: number; [k: string]: unknown }> {
+    try {
+      const res = await gwFetch(`${this.baseUrl}/api/restore`, {
+        method: 'POST',
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+        headers: this.getHeaders(),
+        body: JSON.stringify(snapshot),
+      });
+      const payload = (await res.json().catch(() => ({}))) as { [k: string]: unknown };
+      return { ...payload, ok: res.ok && payload.ok !== false, status: res.status };
+    } catch {
+      return { ok: false, status: 0, error: 'gateway unreachable' };
+    }
+  }
+
   async phoneStatus(callerSignal?: AbortSignal): Promise<{ ok: boolean; [k: string]: unknown }> {
     try {
       const res = await gwFetch(`${this.baseUrl}/api/phone/status`, {

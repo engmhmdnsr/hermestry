@@ -999,13 +999,47 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
                     # left nested provider blocks intact, because their
                     # top-level key is just the provider name.
                     payload["config"] = sanitize_secrets(cfg)
+            payload["format"] = "hermes-snapshot/v2"
             sessions_dir = os.path.join(home, "sessions")
-            sessions: list[str] = []
+            entries: list[dict[str, Any]] = []
+            total = 0
+            used = 0
+            truncated = False
             if os.path.isdir(sessions_dir):
-                sessions = sorted(
-                    f for f in os.listdir(sessions_dir) if f.endswith(".json")
-                )[:500]
-            payload["sessions"] = sessions
+                names = sorted(
+                    (f for f in os.listdir(sessions_dir) if f.endswith(".json")),
+                    key=lambda f: os.path.getmtime(os.path.join(sessions_dir, f)),
+                    reverse=True,
+                )
+                total = len(names)
+                for name in names:
+                    if len(entries) >= 100 or used >= 8 * 1024 * 1024:
+                        truncated = True
+                        break
+                    fp = os.path.join(sessions_dir, name)
+                    try:
+                        with open(fp, "r", encoding="utf-8") as sf:
+                            data = json.load(sf)
+                    except Exception:
+                        continue
+                    if not isinstance(data, dict):
+                        continue
+                    used += len(json.dumps(data, default=str))
+                    entries.append({"name": name, "data": data})
+                truncated = truncated or total > len(entries)
+            payload["sessions"] = entries
+            payload["sessions_total"] = total
+            payload["sessions_included"] = len(entries)
+            payload["sessions_truncated"] = truncated
+            jobs_path = os.path.join(home, "cron", "jobs.json")
+            if os.path.exists(jobs_path) and os.path.getsize(jobs_path) <= 1024 * 1024:
+                try:
+                    with open(jobs_path, "r", encoding="utf-8") as jf:
+                        payload["jobs"] = json.load(jf)
+                except Exception:
+                    payload["jobs"] = None
+            else:
+                payload["jobs"] = None
 
             tmp = out_path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as fh:
@@ -1015,13 +1049,116 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
                 {
                     "ok": True,
                     "path": out_path,
-                    "message": f"Saved {len(sessions)} session(s) to {out_path}",
+                    "message": f"Saved {len(entries)} of {total} session(s) to {out_path}",
                 }
             )
         except Exception as exc:
             return web.json_response(
                 {"ok": False, "path": "", "message": f"Backup failed: {exc}"}, status=500
             )
+
+    async def _get_snapshot_file(request):
+        """Serve one snapshot file by name so the app can share it.
+
+        The name is locked to the snapshots dir (basename, .json, must
+        exist): no path in, no path out.
+        """
+        from aiohttp import web
+
+        home = _home_dir()
+        try:
+            name = (request.query.get("name") or "")
+            if not name.endswith(".json") or name != os.path.basename(name):
+                return web.json_response({"ok": False, "message": "bad snapshot name"}, status=400)
+            fp = os.path.join(home, "snapshots", name)
+            if not os.path.isfile(fp):
+                return web.json_response({"ok": False, "message": "snapshot not found"}, status=404)
+            return web.FileResponse(fp, headers={"Content-Disposition": f'attachment; filename="{name}"'})
+        except Exception as exc:
+            return web.json_response({"ok": False, "message": f"snapshot read failed: {exc}"}, status=500)
+
+    async def _post_restore(request):
+        """Restore chats and jobs from a snapshot made by POST /api/backup.
+
+        Never deletes: a session file that already exists is skipped and
+        counted, never overwritten. Jobs merge by id. The snapshot config
+        section is informational only and is never written, so this device
+        keeps its own keys and settings.
+        """
+        from aiohttp import web
+
+        home = _home_dir()
+        try:
+            import json
+            import re
+
+            if (request.content_length or 0) > 10 * 1024 * 1024:
+                return web.json_response({"ok": False, "message": "snapshot too large (10 MB cap)"}, status=413)
+            try:
+                snap = await request.json()
+            except Exception:
+                return web.json_response({"ok": False, "message": "body is not JSON"}, status=400)
+            if not isinstance(snap, dict) or snap.get("format") != "hermes-snapshot/v2":
+                return web.json_response({"ok": False, "message": "not a hermes snapshot file"}, status=400)
+            entries = snap.get("sessions")
+            if not isinstance(entries, list):
+                return web.json_response({"ok": False, "message": "snapshot has no sessions list"}, status=400)
+            sessions_dir = os.path.join(home, "sessions")
+            os.makedirs(sessions_dir, exist_ok=True)
+            ok_name = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@-]*\.json$")
+            written = skipped = invalid = 0
+            for item in entries[:500]:
+                if not isinstance(item, dict) or not isinstance(item.get("data"), dict):
+                    invalid += 1
+                    continue
+                name = item.get("name") or ""
+                if not isinstance(name, str) or not ok_name.match(name):
+                    invalid += 1
+                    continue
+                fp = os.path.join(sessions_dir, name)
+                if os.path.exists(fp):
+                    skipped += 1
+                    continue
+                tmp = fp + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    json.dump(item["data"], fh, indent=2, default=str)
+                os.replace(tmp, fp)
+                written += 1
+            jobs_added = 0
+            jobs = snap.get("jobs")
+            if isinstance(jobs, dict) and isinstance(jobs.get("jobs"), list):
+                jobs_path = os.path.join(home, "cron", "jobs.json")
+                existing: dict[str, Any] = {"jobs": []}
+                if os.path.exists(jobs_path):
+                    try:
+                        with open(jobs_path, "r", encoding="utf-8") as jf:
+                            existing = json.load(jf) or {"jobs": []}
+                    except Exception:
+                        existing = {"jobs": []}
+                seen = {j.get("id") for j in existing.get("jobs", []) if isinstance(j, dict)}
+                for job in jobs["jobs"][:200]:
+                    if isinstance(job, dict) and job.get("id") not in seen:
+                        existing.setdefault("jobs", []).append(job)
+                        seen.add(job.get("id"))
+                        jobs_added += 1
+                tmp = jobs_path + ".tmp"
+                os.makedirs(os.path.dirname(jobs_path), exist_ok=True)
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    json.dump(existing, fh, indent=2, default=str)
+                os.replace(tmp, jobs_path)
+            return web.json_response(
+                {
+                    "ok": True,
+                    "sessions_restored": written,
+                    "sessions_skipped": skipped,
+                    "sessions_invalid": invalid,
+                    "jobs_added": jobs_added,
+                    "settings_kept": True,
+                    "message": f"Restored {written} chat(s), skipped {skipped} existing, added {jobs_added} job(s). This device keeps its own settings.",
+                }
+            )
+        except Exception as exc:
+            return web.json_response({"ok": False, "message": f"Restore failed: {exc}"}, status=500)
 
     async def _post_debug_share(request):
         """Produce the diagnostics bundle locally.
@@ -1125,4 +1262,6 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
         ("POST", "/api/phone/wifi_panel", _post_phone_wifi_panel),
         ("POST", "/api/phone/bluetooth_panel", _post_phone_bluetooth_panel),
         ("POST", "/api/phone/bluetooth_enable", _post_phone_bluetooth_enable),
+        ("GET", "/api/snapshot/file", _get_snapshot_file),
+        ("POST", "/api/restore", _post_restore),
     ]

@@ -2173,6 +2173,68 @@ export const SettingsTab: React.FC = () => {
     setBackupResult(res);
   };
 
+  const snapshotBaseName = (p: string): string => p.split(/[/\\]/).pop() || p;
+  const [sharingSnapshot, setSharingSnapshot] = useState(false);
+  const [snapshotShareMsg, setSnapshotShareMsg] = useState<string | null>(null);
+  const handleShareSnapshot = async () => {
+    if (!backupResult?.ok || !backupResult.path) return;
+    const name = snapshotBaseName(backupResult.path);
+    setSharingSnapshot(true);
+    setSnapshotShareMsg(null);
+    try {
+      const blob = await service.snapshotFile(name);
+      if (!blob) {
+        setSnapshotShareMsg(tx('snapshotShareFail', 'Could not read the snapshot file.'));
+        return;
+      }
+      const file = new File([blob], name, { type: 'application/json' });
+      const nav = navigator as Navigator & { canShare?: (d: { files: File[] }) => boolean };
+      if (typeof navigator.share === 'function' && (!nav.canShare || nav.canShare({ files: [file] }))) {
+        await navigator.share({ files: [file], title: name });
+        setSnapshotShareMsg(tx('snapshotShared', 'Shared. Pick where it goes.'));
+      } else {
+        setSnapshotShareMsg(tx('snapshotNoShare', 'This view cannot share files. The snapshot stays inside the app.'));
+      }
+    } catch {
+      setSnapshotShareMsg(tx('snapshotShareFail', 'Could not read the snapshot file.'));
+    } finally {
+      setSharingSnapshot(false);
+    }
+  };
+  const [restoring, setRestoring] = useState(false);
+  const [restoreResult, setRestoreResult] = useState<string | null>(null);
+  const restoreInputRef = useRef<HTMLInputElement | null>(null);
+  const handleRestoreFile = async (file: File | undefined) => {
+    if (!file) return;
+    setRestoreResult(null);
+    if (file.size > 10 * 1024 * 1024) {
+      setRestoreResult(tx('restoreTooLarge', 'That file is over the 10 MB limit.'));
+      return;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await file.text());
+    } catch {
+      setRestoreResult(tx('restoreNotJson', 'That file is not a snapshot.'));
+      return;
+    }
+    if (!window.confirm(tx('confirmRestore', 'Restore chats from this file? Missing chats come back. Nothing already here is deleted.'))) return;
+    setRestoring(true);
+    try {
+      const r = await service.restoreSnapshot(parsed);
+      setRestoreResult(
+        r.ok
+          ? `${tx('restoreChats', 'Chats back')}: ${Number(r.sessions_restored ?? 0)} · ${tx('restoreJobs', 'Jobs added')}: ${Number(r.jobs_added ?? 0)}`
+          : String(r.message || r.error || tx('restoreFailed', 'Restore failed.'))
+      );
+    } catch {
+      setRestoreResult(tx('restoreFailed', 'Restore failed.'));
+    } finally {
+      setRestoring(false);
+      if (restoreInputRef.current) restoreInputRef.current.value = '';
+    }
+  };
+
   const handleShareDebug = async () => {
     if (!window.confirm(tx('confirmDebugPlain', 'Share a diagnostics bundle? It includes the app version, service status, and recent logs, with secrets removed.'))) {
       return;
@@ -4002,6 +4064,48 @@ export const SettingsTab: React.FC = () => {
                       {backupResult.path}
                     </p>
                   )}
+                  {backupResult.ok && backupResult.path && (
+                    <button
+                      type="button"
+                      onClick={handleShareSnapshot}
+                      disabled={sharingSnapshot}
+                      className="hm-hit w-full inline-flex items-center justify-center px-4 py-2 min-h-[36px] r-sm edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] t-body text-[var(--app-accent-text)] cursor-pointer disabled:opacity-50"
+                    >
+                      {sharingSnapshot
+                        ? tx('snapshotSharing', 'Opening.')
+                        : tx('snapshotShare', 'Choose where to save')}
+                    </button>
+                  )}
+                  {snapshotShareMsg && (
+                    <p className="t-caption text-[var(--app-text-muted)]" role="status">{snapshotShareMsg}</p>
+                  )}
+                  <div className="pt-2">
+                    <p className="t-body text-[var(--app-text)]">{tx('restoreTitle', 'Restore')}</p>
+                    <p className="t-caption text-[var(--app-text-muted)] mt-1">
+                      {tx('restoreDesc', 'Brings back chats missing on this device. Nothing already here is deleted. Settings stay as they are.')}
+                    </p>
+                    <input
+                      ref={restoreInputRef}
+                      type="file"
+                      accept=".json,application/json"
+                      className="hidden"
+                      aria-hidden="true"
+                      tabIndex={-1}
+                      onChange={(e) => void handleRestoreFile(e.target.files?.[0])}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => restoreInputRef.current?.click()}
+                      disabled={restoring}
+                      className="hm-hit w-full inline-flex items-center justify-center px-4 py-2 min-h-[36px] r-sm edge bg-[var(--app-card-subtle)] hover:bg-[var(--app-card-hover)] t-body text-[var(--app-text)] cursor-pointer disabled:opacity-50"
+                    >
+                      {restoring ? tx('restoreRunning', 'Restoring.') : tx('restorePick', 'Pick a snapshot file')}
+                    </button>
+                    {restoring && <div className="pt-2"><StateNote state="loading" message={tx('restoreRunning', 'Restoring.')} /></div>}
+                    {restoreResult && (
+                      <p className="t-caption text-[var(--app-text-muted)] pt-1" role="status">{restoreResult}</p>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
