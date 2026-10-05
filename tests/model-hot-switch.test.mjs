@@ -225,6 +225,35 @@ ok('hot apply does not read a non-existent settings.model', !ctx.includes('setti
 const hotBlock = ctx.slice(ctx.indexOf('Hot model switch'), ctx.indexOf('Hot model switch') + 1800);
 ok('no em dash in the new comments', !hotBlock.includes('\u2014'));
 
+
+// --- 6. the streaming header must not read as one line with the model badge --
+// User-reported: the reply header showed "LONGCAT-2.5-PREVIEW... - Streaming".
+// The model badge and the Streaming pill are siblings in one flex row, so they
+// read as a single line even though one names the model and the other says the
+// reply is still arriving. The badge must be suppressed while the turn is live
+// and restored once it settles.
+const BUBBLE = path.join(repoRoot, 'src', 'components', 'chat', 'ChatMessageBubble.tsx');
+const bubble = fs.readFileSync(BUBBLE, 'utf8');
+
+ok('live is derived from isLiveTail and streamBusy', /const live = isLiveTail && streamBusy/.test(bubble));
+ok('the model badge is suppressed while live', /modelLabel && !live/.test(bubble));
+ok('the badge is not unconditionally rendered', !/\{modelLabel && \(/.test(bubble));
+
+// The badge and the Streaming pill must not both render unguarded on a live row.
+const badgeAt = bubble.indexOf('modelLabel && !live');
+const streamAt = bubble.indexOf("tx('streamingBadge'");
+ok('badge guard exists before the streaming pill', badgeAt > 0 && streamAt > 0 && badgeAt < streamAt);
+ok('the streaming pill is still shown while live', /\{live && \([\s\S]{0,200}streamingBadge/.test(bubble));
+
+// The badge keeps its full id in the tooltip, so suppressing the visible text
+// does not lose information.
+ok('badge keeps a tooltip carrying the full model', /title=\{estimated \? `\$\{modelAndDuration\}/.test(bubble));
+ok('a wider cap lets longer model ids show', /max-w-\[180px\]/.test(bubble));
+
+// No em dash in the new copy.
+const newCopy = bubble.slice(bubble.indexOf('The model badge is hidden'), badgeAt);
+ok('no em dash in the added comment', !newCopy.includes('\u2014'));
+
 console.log(`\n  ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);
 console.log('model hot-switch: PASS');

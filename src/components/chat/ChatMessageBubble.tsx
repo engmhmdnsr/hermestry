@@ -312,9 +312,17 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = memo(
               <span className="text-[0.6875rem] font-bold uppercase tracking-wider text-[var(--app-chat-violet-light)] truncate max-w-[110px]">
                 {tx('hermesAgent', 'Hermes Agent')}
               </span>
-              {modelLabel && (
+              {/* The model badge is hidden while the turn is live. It used to
+                  share a flex row with the Streaming pill, so they read as one
+                  line ("LONGCAT-2.5-PREVIEW... / Streaming") even though they
+                  mean different things: one names the model, the other says the
+                  reply is still arriving. The active model is already in the
+                  chat header and the composer, so nothing is lost while it is
+                  hidden, and once the turn settles the badge appears next to the
+                  finished reply, which is where it is actually useful. */}
+              {modelLabel && !live && (
                 <span
-                  className="text-[0.5625rem] font-mono uppercase px-1.5 py-0.5 rounded border border-[var(--app-chat-violet)]/40 bg-[var(--app-chat-violet)]/20 text-[var(--app-chat-violet-light)] whitespace-nowrap shrink-0 max-w-[120px] truncate"
+                  className="text-[0.5625rem] font-mono uppercase px-1.5 py-0.5 rounded border border-[var(--app-chat-violet)]/40 bg-[var(--app-chat-violet)]/20 text-[var(--app-chat-violet-light)] whitespace-nowrap shrink-0 max-w-[180px] truncate"
                   dir="ltr"
                   title={estimated ? `${modelAndDuration}. ${estimatedHint}` : modelAndDuration}
                 >
