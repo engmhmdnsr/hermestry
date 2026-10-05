@@ -5,7 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
+import android.app.admin.DevicePolicyManager
+import android.content.ComponentName
 import android.content.Intent
+import android.provider.Settings
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.DocumentsContract
@@ -28,6 +31,7 @@ import ee.oversight.hermes.mobile.install.Bootstrap
 import ee.oversight.hermes.mobile.install.stableFailure
 import ee.oversight.hermes.mobile.security.SecurePrefs
 import ee.oversight.hermes.mobile.service.MobileGatewayService
+import ee.oversight.hermes.mobile.service.PhoneAdminReceiver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -972,6 +976,85 @@ class HermesGatewayPlugin : Plugin() {
       call.resolve(JSObject().put("ok", true))
     } catch (e: Exception) {
       call.reject(stableFailure(e, "notif_request_failed"))
+    }
+  }
+
+  /**
+   * Phone-control grants for the Settings Phone section. Reports which
+   * user grants are in place (WRITE_SETTINGS, device admin, runtime
+   * BLUETOOTH_CONNECT/CAMERA). The agent's 403 needs_grant tokens resolve
+   * to buttons that call the two methods below.
+   */
+  @PluginMethod
+  fun phoneGrants(call: PluginCall) {
+    try {
+      val granted = mutableListOf<String>()
+      val missing = mutableListOf<String>()
+      val btOk = Build.VERSION.SDK_INT < 31 ||
+        ContextCompat.checkSelfPermission(context, android.Manifest.permission.BLUETOOTH_CONNECT) ==
+          PackageManager.PERMISSION_GRANTED
+      if (btOk) granted.add("bluetooth_connect") else missing.add("bluetooth_connect")
+      if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.CAMERA) ==
+          PackageManager.PERMISSION_GRANTED) granted.add("camera") else missing.add("camera")
+      val res = JSObject()
+        .put("writeSettings", Settings.System.canWrite(context))
+        .put("deviceAdmin", isPhoneAdminActive())
+      res.put("granted", com.getcapacitor.JSArray(granted))
+      res.put("missing", com.getcapacitor.JSArray(missing))
+      call.resolve(res)
+    } catch (e: Exception) {
+      call.reject(stableFailure(e, "phone_grants_failed"))
+    }
+  }
+
+  private fun isPhoneAdminActive(): Boolean = try {
+    val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+    dpm.isAdminActive(ComponentName(context, PhoneAdminReceiver::class.java))
+  } catch (_: Exception) { false }
+
+  @PluginMethod
+  fun requestPhonePerms(call: PluginCall) {
+    try {
+      val act = activity
+      if (act == null) {
+        call.reject("no activity to host the permission dialog")
+        return
+      }
+      val perms = mutableListOf(android.Manifest.permission.CAMERA)
+      if (Build.VERSION.SDK_INT >= 31) perms.add(android.Manifest.permission.BLUETOOTH_CONNECT)
+      ActivityCompat.requestPermissions(act, perms.toTypedArray(), 9003)
+      call.resolve(JSObject().put("ok", true))
+    } catch (e: Exception) {
+      call.reject(stableFailure(e, "phone_perms_failed"))
+    }
+  }
+
+  @PluginMethod
+  fun openPhoneGrantPage(call: PluginCall) {
+    try {
+      val page = call.getString("page").orEmpty()
+      val intent = when (page) {
+        "write_settings" -> Intent(
+          Settings.ACTION_MANAGE_WRITE_SETTINGS,
+          android.net.Uri.parse("package:${context.packageName}")
+        )
+        "device_admin" -> Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN)
+          .putExtra(
+            DevicePolicyManager.EXTRA_DEVICE_ADMIN,
+            ComponentName(context, PhoneAdminReceiver::class.java)
+          )
+          .putExtra(
+            DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+            "Lets the agent lock the screen when you ask it to."
+          )
+        else -> { call.reject("unknown grant page"); return }
+      }
+      val act = activity
+      if (act != null) act.startActivity(intent)
+      else context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+      call.resolve(JSObject().put("ok", true))
+    } catch (e: Exception) {
+      call.reject(stableFailure(e, "phone_grant_open_failed"))
     }
   }
 

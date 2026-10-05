@@ -670,6 +670,9 @@ class MobileGatewayService : Service() {
 
   private fun startGateway(): Process {
     stopGateway()
+    // Phone-control bridge for the on-device agent (loopback :8091). Started
+    // with the gateway and stopped with it; start() is idempotent.
+    try { PhoneControlBridge.start(this) } catch (_: Exception) { }
     // Validate the argv inputs before building: ProcessBuilder itself never
     // reports a missing binary until pb.start(), where the message is raw
     // platform text. Same checks Bootstrap.runProot() makes.
@@ -712,6 +715,19 @@ class MobileGatewayService : Service() {
     pb.environment()["PYTHONPATH"] = "/opt/hermes-agent"
     pb.environment()["PATH"] = "/opt/python314/python/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     pb.environment()["LD_LIBRARY_PATH"] = File(Bootstrap.prootLibDir(this), "lib").absolutePath
+    // Identity + phone-control capability for the on-device agent. The guest
+    // reports Linux/aarch64, so without this the model denies being on a phone.
+    // MUST sit above the prootEnv loop: anything after it is overwritten by it.
+    // Build values are hardware facts, not secrets, but they ride every prompt.
+    pb.environment()["HERMES_ENVIRONMENT_HINT"] =
+      "Running on an Android phone (${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}, " +
+      "Android ${android.os.Build.VERSION.RELEASE}). " +
+      "The user chats through the Hermes Mobile app on THIS device. " +
+      "Phone control is available at http://127.0.0.1:8091 " +
+      "(GET /phone/status; POST /phone/volume, /phone/brightness, /phone/vibrate, " +
+      "/phone/flashlight, /phone/lock, /phone/wifi_panel, /phone/bluetooth_panel; " +
+      "same shapes proxied authed at /api/phone/*). " +
+      "Actions needing a user grant answer 403 with needs_grant: surface it, never claim success."
     for ((k, v) in Bootstrap.prootEnv(this)) pb.environment()[k] = v
     Bootstrap.prootLoaderFile(this)?.let { pb.environment()["PROOT_LOADER"] = it.absolutePath }
     Bootstrap.prootLoader32File(this)?.let { pb.environment()["PROOT_LOADER_32"] = it.absolutePath }
@@ -872,6 +888,7 @@ class MobileGatewayService : Service() {
   }
 
   private fun stopGateway(onlyProc: Process? = null) {
+    try { PhoneControlBridge.stop() } catch (_: Exception) { }
     val proc = gatewayProc
     if (onlyProc != null && proc !== onlyProc) {
       // The current process is not the one this supervisor launched; do not kill it.

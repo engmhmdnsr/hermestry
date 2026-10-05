@@ -92,6 +92,19 @@
                 <action android:name="android.intent.action.USER_UNLOCKED" />
             </intent-filter>
         </receiver>
+        <!-- Device-admin holder for agent screen-lock. Inert until the user
+             activates it from the Phone section; only FORCE_LOCK is used. -->
+        <receiver
+            android:name=".service.PhoneAdminReceiver"
+            android:exported="false"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
     </application>
 
     <!-- Permissions -->
@@ -111,4 +124,15 @@
          notification itself stays exempt. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Phone control (agent-driven, user-granted): state reads are normal
+         permissions; BLUETOOTH_CONNECT/CAMERA are runtime; WRITE_SETTINGS and
+         device-admin lock are special access granted from the Phone section. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
 </manifest>

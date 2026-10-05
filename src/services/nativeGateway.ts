@@ -82,6 +82,9 @@ interface HermesGatewayPlugin {
     body: string;
   }): Promise<void>;
   streamAbort?(options: { id: string }): Promise<void>;
+  phoneGrants?(): Promise<Partial<NativePhoneGrants>>;
+  requestPhonePerms?(): Promise<unknown>;
+  openPhoneGrantPage?(options: { page: string }): Promise<unknown>;
   pickProjectDir?(): Promise<{ uri?: string; name?: string; hostPath?: string }>;
   importProjectTree?(options: { uri: string; id: string }): Promise<{ count?: number; guestPath?: string }>;
   exportProjectTree?(options: { id: string }): Promise<{ count?: number }>;
@@ -425,6 +428,53 @@ export async function nativeRequestNotifAlerts(): Promise<boolean> {
   if (!plugin || typeof plugin.requestNotifAlerts !== 'function') return false;
   try {
     await plugin.requestNotifAlerts();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface NativePhoneGrants {
+  writeSettings: boolean;
+  deviceAdmin: boolean;
+  granted: string[];
+  missing: string[];
+}
+
+// Phone grants (R-phone). Best-effort like notifications: null when the
+// bridge is absent (plain web), so callers hide the Phone section.
+export async function nativePhoneGrants(): Promise<NativePhoneGrants | null> {
+  const plugin = await waitForBridge();
+  if (!plugin || typeof plugin.phoneGrants !== 'function') return null;
+  try {
+    const res = await plugin.phoneGrants();
+    return {
+      writeSettings: res?.writeSettings === true,
+      deviceAdmin: res?.deviceAdmin === true,
+      granted: Array.isArray(res?.granted) ? res.granted : [],
+      missing: Array.isArray(res?.missing) ? res.missing : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function nativeRequestPhonePerms(): Promise<boolean> {
+  const plugin = await waitForBridge();
+  if (!plugin || typeof plugin.requestPhonePerms !== 'function') return false;
+  try {
+    await plugin.requestPhonePerms();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function nativeOpenPhoneGrantPage(page: 'write_settings' | 'device_admin'): Promise<boolean> {
+  const plugin = await waitForBridge();
+  if (!plugin || typeof plugin.openPhoneGrantPage !== 'function') return false;
+  try {
+    await plugin.openPhoneGrantPage({ page });
     return true;
   } catch {
     return false;

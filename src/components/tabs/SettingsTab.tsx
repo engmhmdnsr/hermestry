@@ -49,6 +49,10 @@ import {
   nativeSetProvider,
   nativeSetServerKey,
   nativeStatus,
+  nativePhoneGrants,
+  nativeRequestPhonePerms,
+  nativeOpenPhoneGrantPage,
+  type NativePhoneGrants,
 } from '../../services/nativeGateway';
 import { deriveUiFlags, type GatewayState } from '../../services/gatewayState';
 import { validationFingerprint } from '../../services/providerValidation';
@@ -76,11 +80,11 @@ import {
   ConfiguredProvider,
 } from '../../types/hermes';
 
-type SectionId = 'account' | 'connection' | 'security' | 'gateway' | 'automation' | 'appearance' | 'advanced' | 'about';
+type SectionId = 'account' | 'connection' | 'security' | 'gateway' | 'phone' | 'automation' | 'appearance' | 'advanced' | 'about';
 
 // Fixed order of the section rail and the DOM ids its chips control. Module
 // scope so the scroll tracker and the chips share one source of truth.
-const SECTION_IDS: SectionId[] = ['account', 'connection', 'security', 'gateway', 'automation', 'appearance', 'advanced', 'about'];
+const SECTION_IDS: SectionId[] = ['account', 'connection', 'security', 'gateway', 'phone', 'automation', 'appearance', 'advanced', 'about'];
 const sectionDomId = (id: SectionId) => `settings-section-${id}`;
 // The tab scrolls inside #main-content under a sticky header; the small offset
 // keeps an opened card clear of that header instead of half hidden beneath it.
@@ -342,6 +346,165 @@ const NotificationRow: React.FC = () => {
           {tx('notifAllowAction', 'Allow')}
         </button>
       )}
+    </div>
+  );
+};
+
+// Phone control (R-phone). Live device state from the gateway proxy plus
+// grant state from the native bridge; hidden on plain web. Grant buttons open
+// the exact system flows the agent's 403 needs_grant tokens name, so what the
+// user taps and what the agent reports stay the same words.
+const PhoneSection: React.FC = () => {
+  const { t, service } = useHermes();
+  const tx = (key: string, fallback: string): string => {
+    const v = t(key);
+    return !v || v === key ? fallback : v;
+  };
+  const [status, setStatus] = useState<Record<string, unknown> | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [grants, setGrants] = useState<NativePhoneGrants | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [vibeMsg, setVibeMsg] = useState<string | null>(null);
+  const refresh = () => {
+    setLoading(true);
+    setFailed(false);
+    void Promise.all([service.phoneStatus(), nativePhoneGrants()])
+      .then(([st, gr]) => {
+        setStatus(st as Record<string, unknown>);
+        setFailed(st.ok !== true);
+        setGrants(gr);
+      })
+      .catch(() => setFailed(true))
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => {
+    if (!isNativeGateway()) return;
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  if (!isNativeGateway()) return null;
+  const onOff = (v: unknown): string =>
+    v === true ? tx('phoneOn', 'On') : v === false ? tx('phoneOff', 'Off') : '?';
+  const battery = (status?.battery ?? {}) as { level_pct?: unknown; charging?: unknown };
+  const wifi = (status?.wifi ?? {}) as { enabled?: unknown };
+  const bt = (status?.bluetooth ?? {}) as { enabled?: unknown };
+  const bright = (status?.brightness ?? {}) as { level?: unknown };
+  const grantBtn =
+    'hm-hit min-h-[36px] px-4 shrink-0 r-sm t-caption font-medium bg-[var(--app-accent-subtle)] text-[var(--app-accent-text)] hover:bg-[var(--app-card-hover)] cursor-pointer disabled:opacity-50';
+  const askPerms = () => {
+    setBusy(true);
+    void nativeRequestPhonePerms()
+      .then(() => nativePhoneGrants())
+      .then((gr) => {
+        if (gr) setGrants(gr);
+      })
+      .finally(() => setBusy(false));
+  };
+  const openPage = (page: 'write_settings' | 'device_admin') => {
+    setBusy(true);
+    void nativeOpenPhoneGrantPage(page).finally(() => setBusy(false));
+  };
+  const testVibrate = () => {
+    setBusy(true);
+    setVibeMsg(null);
+    void service
+      .phoneAction('vibrate', { ms: 120 })
+      .then((r) => setVibeMsg(r.ok ? tx('phoneVibrateOk', 'Vibrated.') : tx('phoneVibrateFail', 'Vibrate failed.')))
+      .catch(() => setVibeMsg(tx('phoneVibrateFail', 'Vibrate failed.')))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="t-caption text-[var(--app-text-muted)]">
+          {loading
+            ? tx('phoneLoading', 'Reading phone state.')
+            : failed
+              ? tx('phoneUnreachable', 'Phone bridge unreachable. Start Hermes first.')
+              : tx('phoneLive', 'Live device state.')}
+        </p>
+        <button
+          type="button"
+          disabled={loading || busy}
+          onClick={refresh}
+          className="hm-hit min-h-[36px] px-4 shrink-0 r-sm t-caption font-medium bg-[var(--app-card-hover)] text-[var(--app-text)] cursor-pointer disabled:opacity-50"
+        >
+          {tx('phoneRefresh', 'Refresh')}
+        </button>
+      </div>
+      {!loading && !failed && (
+        <dl className="grid grid-cols-2 gap-2">
+          <div className="r-sm edge px-3 py-2">
+            <dt className="t-caption text-[var(--app-text-muted)]">{tx('phoneBattery', 'Battery')}</dt>
+            <dd className="t-body text-[var(--app-text)]" dir="ltr">
+              {typeof battery.level_pct === 'number' ? `${battery.level_pct}%` : '?'}
+              {battery.charging === true ? ` ${tx('phoneCharging', 'charging')}` : ''}
+            </dd>
+          </div>
+          <div className="r-sm edge px-3 py-2">
+            <dt className="t-caption text-[var(--app-text-muted)]">{tx('phoneWifi', 'Wi-Fi')}</dt>
+            <dd className="t-body text-[var(--app-text)]">{onOff(wifi.enabled)}</dd>
+          </div>
+          <div className="r-sm edge px-3 py-2">
+            <dt className="t-caption text-[var(--app-text-muted)]">{tx('phoneBluetooth', 'Bluetooth')}</dt>
+            <dd className="t-body text-[var(--app-text)]">{onOff(bt.enabled)}</dd>
+          </div>
+          <div className="r-sm edge px-3 py-2">
+            <dt className="t-caption text-[var(--app-text-muted)]">{tx('phoneBrightness', 'Brightness')}</dt>
+            <dd className="t-body text-[var(--app-text)]" dir="ltr">
+              {typeof bright.level === 'number' ? `${bright.level}/255` : '?'}
+            </dd>
+          </div>
+        </dl>
+      )}
+      {grants && (
+        <div className="space-y-2">
+          {(grants.missing?.length ?? 0) > 0 && (
+            <div className="flex items-center justify-between gap-3">
+              <p className="t-caption text-[var(--app-text-muted)]">
+                {tx('phonePermsNeeded', 'Nearby devices (Bluetooth state) and Camera (flashlight) need approval.')}
+              </p>
+              <button type="button" disabled={busy} onClick={askPerms} className={grantBtn}>
+                {tx('phoneAllow', 'Allow')}
+              </button>
+            </div>
+          )}
+          {!grants.writeSettings && (
+            <div className="flex items-center justify-between gap-3">
+              <p className="t-caption text-[var(--app-text-muted)]">
+                {tx('phoneWriteNeeded', 'Brightness control needs the Modify system settings grant.')}
+              </p>
+              <button type="button" disabled={busy} onClick={() => openPage('write_settings')} className={grantBtn}>
+                {tx('phoneOpenSettings', 'Open settings')}
+              </button>
+            </div>
+          )}
+          {!grants.deviceAdmin && (
+            <div className="flex items-center justify-between gap-3">
+              <p className="t-caption text-[var(--app-text-muted)]">
+                {tx('phoneAdminNeeded', 'Screen lock needs device-admin activation. No other policy is used.')}
+              </p>
+              <button type="button" disabled={busy} onClick={() => openPage('device_admin')} className={grantBtn}>
+                {tx('phoneOpenSettings', 'Open settings')}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-3">
+        <p className="t-caption text-[var(--app-text-muted)]">
+          {vibeMsg ?? tx('phoneVibrateHint', 'Proves the agent path reaches the phone.')}
+        </p>
+        <button
+          type="button"
+          disabled={busy || loading || failed}
+          onClick={testVibrate}
+          className="hm-hit min-h-[36px] px-4 shrink-0 r-sm t-caption font-medium bg-[var(--app-card-hover)] text-[var(--app-text)] cursor-pointer disabled:opacity-50"
+        >
+          {tx('phoneTestVibrate', 'Test vibrate')}
+        </button>
+      </div>
     </div>
   );
 };
@@ -980,6 +1143,7 @@ export const SettingsTab: React.FC = () => {
     connection: true,
     security: true,
     gateway: false,
+    phone: false,
     automation: false,
     appearance: false,
     advanced: false,
@@ -2255,6 +2419,7 @@ export const SettingsTab: React.FC = () => {
     { id: 'connection', label: tx('sectionConnection', 'Connection') },
     { id: 'security', label: tx('sectionSecurity', 'Security') },
     { id: 'gateway', label: tx('sectionServer', 'Hermes server') },
+    { id: 'phone', label: tx('sectionPhone', 'Phone') },
     { id: 'automation', label: tx('sectionAutomation', 'Automation') },
     { id: 'appearance', label: tx('sectionAppearance', 'Appearance') },
     { id: 'advanced', label: tx('sectionAdvanced', 'Advanced') },
@@ -3315,6 +3480,17 @@ export const SettingsTab: React.FC = () => {
       {/* ========================================================= */}
       {/* AUTOMATION: skills, memory, blueprints */}
       {/* ========================================================= */}
+      <Section
+        title={tx('sectionPhone', 'Phone')}
+        subtitle={tx('phoneSubtitle', 'Battery, sound, brightness, flashlight and screen lock, driven by the on-device agent.')}
+        open={openSections.phone}
+        onToggle={() => toggleSection('phone')}
+        id={sectionDomId('phone')}
+      >
+        <Row>
+          <PhoneSection />
+        </Row>
+      </Section>
       <Section
         title={tx('sectionAutomation', 'Automation')}
         subtitle={tx('automationSubtitle', 'Skills, memory, and routine templates')}

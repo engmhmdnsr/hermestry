@@ -1359,6 +1359,41 @@ export class GatewayService {
     }
   }
 
+
+  // Phone control (on-device only): authed proxy to the loopback bridge.
+  // A 403 with needs_grant means the user must grant it in Settings first;
+  // surface that, never claim the action landed.
+  async phoneStatus(callerSignal?: AbortSignal): Promise<{ ok: boolean; [k: string]: unknown }> {
+    try {
+      const res = await gwFetch(`${this.baseUrl}/api/phone/status`, {
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+        headers: this.getHeaders(),
+      });
+      return (await res.json()) as { ok: boolean; [k: string]: unknown };
+    } catch {
+      return { ok: false, error: 'gateway unreachable' };
+    }
+  }
+
+  async phoneAction(
+    path: string,
+    body: Record<string, unknown>,
+    callerSignal?: AbortSignal
+  ): Promise<{ ok: boolean; status: number; [k: string]: unknown }> {
+    try {
+      const res = await gwFetch(`${this.baseUrl}/api/phone/${path}`, {
+        method: 'POST',
+        signal: this.requestSignal(callerSignal, REQUEST_TIMEOUT_MS),
+        headers: this.getHeaders(),
+        body: JSON.stringify(body),
+      });
+      const payload = (await res.json().catch(() => ({}))) as { [k: string]: unknown };
+      return { ...payload, ok: res.ok && payload.ok !== false, status: res.status };
+    } catch {
+      return { ok: false, status: 0, error: 'gateway unreachable' };
+    }
+  }
+
   async backup(callerSignal?: AbortSignal): Promise<BackupResult> {
     try {
       const res = await gwFetch(`${this.baseUrl}/api/backup`, {

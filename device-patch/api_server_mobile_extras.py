@@ -369,6 +369,93 @@ def _apply_skills_compat() -> bool:
     return True
 
 
+_PHONE_BRIDGE_HOST = "127.0.0.1"
+_PHONE_BRIDGE_PORT = 8091
+_PHONE_BRIDGE_TIMEOUT_S = 5.0
+
+
+def _phone_bridge_call(method, path, payload=None):
+    # Blocking urllib inside asyncio.to_thread: never blocks the gateway loop.
+    import json as _json
+    import urllib.request as _urlreq
+
+    url = "http://%s:%d%s" % (_PHONE_BRIDGE_HOST, _PHONE_BRIDGE_PORT, path)
+    data = _json.dumps(payload or {}).encode("utf-8") if payload is not None else None
+    req = _urlreq.Request(url, data=data, method=method)
+    req.add_header("Content-Type", "application/json")
+    try:
+        with _urlreq.urlopen(req, timeout=_PHONE_BRIDGE_TIMEOUT_S) as resp:
+            return resp.status, _json.loads(resp.read().decode("utf-8") or "{}")
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        if isinstance(code, int):
+            try:
+                return code, _json.loads(exc.read().decode("utf-8") or "{}")
+            except Exception:
+                return code, {"ok": False, "error": "bridge error %d" % code}
+        return -1, {"ok": False, "error": "phone bridge unreachable"}
+
+
+async def _phone_proxy(request, bridge_path, method="POST"):
+    import asyncio as _asyncio
+
+    from aiohttp import web
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        return web.json_response({"ok": False, "error": "Invalid JSON body"}, status=400)
+    status, payload = await _asyncio.to_thread(_phone_bridge_call, method, bridge_path, body)
+    if status < 0:
+        return web.json_response(payload, status=502)
+    return web.json_response(payload, status=status)
+
+
+async def _get_phone_status(request):
+    import asyncio as _asyncio
+
+    from aiohttp import web
+
+    status, payload = await _asyncio.to_thread(_phone_bridge_call, "GET", "/phone/status", None)
+    if status < 0:
+        return web.json_response(payload, status=502)
+    return web.json_response(payload, status=status)
+
+
+async def _post_phone_volume(request):
+    return await _phone_proxy(request, "/phone/volume")
+
+
+async def _post_phone_brightness(request):
+    return await _phone_proxy(request, "/phone/brightness")
+
+
+async def _post_phone_vibrate(request):
+    return await _phone_proxy(request, "/phone/vibrate")
+
+
+async def _post_phone_flashlight(request):
+    return await _phone_proxy(request, "/phone/flashlight")
+
+
+async def _post_phone_lock(request):
+    return await _phone_proxy(request, "/phone/lock")
+
+
+async def _post_phone_wifi_panel(request):
+    return await _phone_proxy(request, "/phone/wifi_panel")
+
+
+async def _post_phone_bluetooth_panel(request):
+    return await _phone_proxy(request, "/phone/bluetooth_panel")
+
+
+async def _post_phone_bluetooth_enable(request):
+    return await _phone_proxy(request, "/phone/bluetooth_enable")
+
+
 def _http_routes(api) -> list[tuple[str, str, Any]]:
     _apply_skills_compat()
     async def _get_memory(request):
@@ -1029,4 +1116,13 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
         ("GET", "/api/projects", _get_projects),
         ("POST", "/api/projects/bind", _post_projects_bind),
         ("DELETE", "/api/projects/{id}", _delete_project),
+        ("GET", "/api/phone/status", _get_phone_status),
+        ("POST", "/api/phone/volume", _post_phone_volume),
+        ("POST", "/api/phone/brightness", _post_phone_brightness),
+        ("POST", "/api/phone/vibrate", _post_phone_vibrate),
+        ("POST", "/api/phone/flashlight", _post_phone_flashlight),
+        ("POST", "/api/phone/lock", _post_phone_lock),
+        ("POST", "/api/phone/wifi_panel", _post_phone_wifi_panel),
+        ("POST", "/api/phone/bluetooth_panel", _post_phone_bluetooth_panel),
+        ("POST", "/api/phone/bluetooth_enable", _post_phone_bluetooth_enable),
     ]
