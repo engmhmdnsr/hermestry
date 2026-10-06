@@ -27,6 +27,8 @@ import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
+import com.getcapacitor.annotation.ActivityCallback
+import androidx.activity.result.ActivityResult
 import ee.oversight.hermes.mobile.install.Bootstrap
 import ee.oversight.hermes.mobile.install.stableFailure
 import ee.oversight.hermes.mobile.security.SecurePrefs
@@ -74,7 +76,6 @@ class HermesGatewayPlugin : Plugin() {
   private val REQ_EXPORT_DIR = 0x49A2
   private var pendingExportId: String? = null
   private var pendingExportCall: PluginCall? = null
-  private val REQ_SAVE_SNAPSHOT = 0x49A3
   private var pendingSnapshotName: String? = null
   private var pendingSnapshotCall: PluginCall? = null
   private val SNAPSHOT_RE = Regex("[A-Za-z0-9_][A-Za-z0-9_.@-]{0,127}\\.json")
@@ -156,6 +157,10 @@ class HermesGatewayPlugin : Plugin() {
    * share target, so this opens ACTION_CREATE_DOCUMENT: the user picks the
    * place and the file name, Android writes it. Reads only from the gateway
    * snapshots dir, 10 MB cap, and one save at a time.
+   *
+   * Uses the @ActivityCallback API: the legacy int-requestCode path needs the
+   * codes registered on the @CapacitorPlugin annotation, which this plugin
+   * does not declare, so results would never arrive.
    */
   @PluginMethod
   fun saveSnapshot(call: PluginCall) {
@@ -172,7 +177,30 @@ class HermesGatewayPlugin : Plugin() {
     if (intent.resolveActivity(context.packageManager) == null) { call.reject("unavailable"); return }
     pendingSnapshotName = name
     pendingSnapshotCall = call
-    startActivityForResult(call, intent, REQ_SAVE_SNAPSHOT)
+    startActivityForResult(call, intent, "onSnapshotSaved")
+  }
+
+  @ActivityCallback
+  fun onSnapshotSaved(call: PluginCall?, result: ActivityResult) {
+    val name = pendingSnapshotName
+    pendingSnapshotName = null
+    pendingSnapshotCall = null
+    if (call == null || name == null) return
+    if (result.resultCode != Activity.RESULT_OK || result.data?.data == null) { call.reject("cancelled"); return }
+    if (!SNAPSHOT_RE.matches(name)) { call.reject("bad_name"); return }
+    val uri = result.data!!.data!!
+    scope.launch {
+      try {
+        val src = java.io.File(java.io.File(Bootstrap.hermesHome(context), "snapshots"), name)
+        if (!src.isFile || src.length() > 10 * 1024 * 1024) { call.reject("not_found"); return@launch }
+        context.contentResolver.openOutputStream(uri)?.use { outs ->
+          src.inputStream().use { ins -> ins.copyTo(outs) }
+        } ?: run { call.reject("write_failed"); return@launch }
+        val ret = JSObject()
+        ret.put("bytes", src.length())
+        call.resolve(ret)
+      } catch (_: Exception) { call.reject("write_failed") }
+    }
   }
 
   @PluginMethod
@@ -253,29 +281,6 @@ class HermesGatewayPlugin : Plugin() {
 
   override fun handleOnActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
     super.handleOnActivityResult(requestCode, resultCode, data)
-    if (requestCode == REQ_SAVE_SNAPSHOT) {
-      val call = pendingSnapshotCall
-      val name = pendingSnapshotName
-      pendingSnapshotCall = null
-      pendingSnapshotName = null
-      if (call == null || name == null) return
-      if (resultCode != Activity.RESULT_OK || data?.data == null) { call.reject("cancelled"); return }
-      if (!SNAPSHOT_RE.matches(name)) { call.reject("bad_name"); return }
-      val uri = data.data!!
-      scope.launch {
-        try {
-          val src = java.io.File(java.io.File(Bootstrap.hermesHome(context), "snapshots"), name)
-          if (!src.isFile || src.length() > 10 * 1024 * 1024) { call.reject("not_found"); return@launch }
-          context.contentResolver.openOutputStream(uri)?.use { outs ->
-            src.inputStream().use { ins -> ins.copyTo(outs) }
-          } ?: run { call.reject("write_failed"); return@launch }
-          val ret = JSObject()
-          ret.put("bytes", src.length())
-          call.resolve(ret)
-        } catch (_: Exception) { call.reject("write_failed") }
-      }
-      return
-    }
     if (requestCode == REQ_EXPORT_DIR) {
       val call = pendingExportCall
       val id = pendingExportId
