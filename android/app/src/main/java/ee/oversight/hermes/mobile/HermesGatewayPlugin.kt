@@ -65,15 +65,12 @@ class HermesGatewayPlugin : Plugin() {
   // layer probes for these. speechRecognize delegates to the system
   // recognizer via RecognizerIntent (no RECORD_AUDIO needed: the recognizer
   // app owns the mic); ttsSpeak/ttsStop drive android TextToSpeech.
-  private val REQ_SPEECH = 0x48E7
   private var pendingSpeechCall: PluginCall? = null
   private var pendingSpeechMax = 500
   // Project folders: SAF tree picker (persisted URI permission). Only the
   // (SAF tree IDs are opaque; primary volume also resolves to a host path
   // for display, everything else imports straight from the URI).
-  private val REQ_PROJECT_DIR = 0x49A1
   private var pendingProjectCall: PluginCall? = null
-  private val REQ_EXPORT_DIR = 0x49A2
   private var pendingExportId: String? = null
   private var pendingExportCall: PluginCall? = null
   private var pendingSnapshotName: String? = null
@@ -109,7 +106,24 @@ class HermesGatewayPlugin : Plugin() {
     if (intent.resolveActivity(context.packageManager) == null) { call.reject("unavailable"); return }
     pendingSpeechMax = call.getInt("maxChars") ?: 500
     pendingSpeechCall = call
-    startActivityForResult(call, intent, REQ_SPEECH)
+    startActivityForResult(call, intent, "onSpeechResult")
+  }
+
+  @ActivityCallback
+  fun onSpeechResult(savedCall: PluginCall?, result: ActivityResult) {
+    val call = savedCall ?: pendingSpeechCall
+    pendingSpeechCall = null
+    if (call == null) return
+    val data = result.data
+    if (result.resultCode == Activity.RESULT_OK && data != null) {
+      val text = (data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull() ?: "").take(pendingSpeechMax)
+      if (text.isBlank()) { call.reject("empty"); return }
+      val ret = JSObject()
+      ret.put("transcript", text)
+      call.resolve(ret)
+    } else {
+      call.reject("cancelled")
+    }
   }
 
   // Projects: the user's folder is IMPORTED into app-private storage
@@ -181,7 +195,8 @@ class HermesGatewayPlugin : Plugin() {
   }
 
   @ActivityCallback
-  fun onSnapshotSaved(call: PluginCall?, result: ActivityResult) {
+  fun onSnapshotSaved(savedCall: PluginCall?, result: ActivityResult) {
+    val call = savedCall ?: pendingSnapshotCall
     val name = pendingSnapshotName
     pendingSnapshotName = null
     pendingSnapshotCall = null
@@ -218,7 +233,36 @@ class HermesGatewayPlugin : Plugin() {
     if (intent.resolveActivity(context.packageManager) == null) { call.reject("unavailable"); return }
     pendingExportId = id
     pendingExportCall = call
-    startActivityForResult(call, intent, REQ_EXPORT_DIR)
+    startActivityForResult(call, intent, "onExportDirPicked")
+  }
+
+  @ActivityCallback
+  fun onExportDirPicked(savedCall: PluginCall?, result: ActivityResult) {
+    val call = savedCall ?: pendingExportCall
+    val id = pendingExportId
+    pendingExportCall = null
+    pendingExportId = null
+    if (call == null || id == null) return
+    val uri = result.data?.data
+    if (result.resultCode != Activity.RESULT_OK || uri == null) { call.reject("cancelled"); return }
+    if (!ID_RE.matches(id)) { call.reject("bad_id"); return }
+    scope.launch {
+      try {
+        try {
+          context.contentResolver.takePersistableUriPermission(
+            uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+          )
+        } catch (_: Exception) { }
+        val destRoot = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, uri)
+          ?: run { call.reject("bad_uri"); return@launch }
+        val src = java.io.File(Bootstrap.hermesHome(context), ".projects/$id")
+        if (!src.isDirectory) { call.reject("not_found"); return@launch }
+        val count = copyFileTreeToDoc(src, destRoot)
+        val ret = JSObject()
+        ret.put("count", count)
+        call.resolve(ret)
+      } catch (_: Exception) { call.reject("copy_failed") }
+    }
   }
 
   private class ImportTooLarge : Exception()
@@ -276,77 +320,34 @@ class HermesGatewayPlugin : Plugin() {
     }
     if (intent.resolveActivity(context.packageManager) == null) { call.reject("unavailable"); return }
     pendingProjectCall = call
-    startActivityForResult(call, intent, REQ_PROJECT_DIR)
+    startActivityForResult(call, intent, "onProjectDirPicked")
   }
 
-  override fun handleOnActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-    super.handleOnActivityResult(requestCode, resultCode, data)
-    if (requestCode == REQ_EXPORT_DIR) {
-      val call = pendingExportCall
-      val id = pendingExportId
-      pendingExportCall = null
-      pendingExportId = null
-      if (call == null || id == null) return
-      if (resultCode != Activity.RESULT_OK || data?.data == null) { call.reject("cancelled"); return }
-      val uri = data.data!!
-      scope.launch {
-        try {
-          try {
-            context.contentResolver.takePersistableUriPermission(
-              uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-            )
-          } catch (_: Exception) { }
-          val destRoot = androidx.documentfile.provider.DocumentFile.fromTreeUri(context, uri)
-            ?: run { call.reject("bad_uri"); return@launch }
-          val src = java.io.File(Bootstrap.hermesHome(context), ".projects/$id")
-          if (!src.isDirectory) { call.reject("not_found"); return@launch }
-          val count = copyFileTreeToDoc(src, destRoot)
-          val ret = JSObject()
-          ret.put("count", count)
-          call.resolve(ret)
-        } catch (_: Exception) { call.reject("copy_failed") }
-      }
-      return
-    }
-    if (requestCode == REQ_PROJECT_DIR) {
-      val call = pendingProjectCall
-      pendingProjectCall = null
-      if (call == null) return
-      if (resultCode != Activity.RESULT_OK || data?.data == null) { call.reject("cancelled"); return }
-      val uri = data.data!!
-      try {
-        context.contentResolver.takePersistableUriPermission(
-          uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-        )
-      } catch (_: Exception) { call.reject("permission"); return }
-      val treeId = try { DocumentsContract.getTreeDocumentId(uri) } catch (_: Exception) { null }
-      // Primary volume resolves to a host path (legacy symlink binds use
-      // it); anything else imports from the URI with hostPath left empty.
-      val hostPath = if (treeId != null && treeId.startsWith("primary:")) {
-        "/storage/emulated/0/" + treeId.removePrefix("primary:")
-      } else ""
-      val ret = JSObject()
-      ret.put("uri", uri.toString())
-      ret.put("name", hostPath.trimEnd('/').substringAfterLast('/').ifEmpty {
-        (if (treeId != null && treeId.contains(":")) treeId.substringAfter(":").substringAfterLast("/").ifEmpty { null } else null) ?: "project"
-      })
-      ret.put("hostPath", hostPath.trimEnd('/'))
-      call.resolve(ret)
-      return
-    }
-    if (requestCode != REQ_SPEECH) return
-    val call = pendingSpeechCall
-    pendingSpeechCall = null
+  @ActivityCallback
+  fun onProjectDirPicked(savedCall: PluginCall?, result: ActivityResult) {
+    val call = savedCall ?: pendingProjectCall
+    pendingProjectCall = null
     if (call == null) return
-    if (resultCode == Activity.RESULT_OK && data != null) {
-      val text = (data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull() ?: "").take(pendingSpeechMax)
-      if (text.isBlank()) { call.reject("empty"); return }
-      val ret = JSObject()
-      ret.put("transcript", text)
-      call.resolve(ret)
-    } else {
-      call.reject("cancelled")
-    }
+    val uri = result.data?.data
+    if (result.resultCode != Activity.RESULT_OK || uri == null) { call.reject("cancelled"); return }
+    try {
+      context.contentResolver.takePersistableUriPermission(
+        uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+      )
+    } catch (_: Exception) { call.reject("permission"); return }
+    val treeId = try { DocumentsContract.getTreeDocumentId(uri) } catch (_: Exception) { null }
+    // Primary volume resolves to a host path (legacy symlink binds use
+    // it); anything else imports from the URI with hostPath left empty.
+    val hostPath = if (treeId != null && treeId.startsWith("primary:")) {
+      "/storage/emulated/0/" + treeId.removePrefix("primary:")
+    } else ""
+    val ret = JSObject()
+    ret.put("uri", uri.toString())
+    ret.put("name", hostPath.trimEnd('/').substringAfterLast('/').ifEmpty {
+      (if (treeId != null && treeId.contains(":")) treeId.substringAfter(":").substringAfterLast("/").ifEmpty { null } else null) ?: "project"
+    })
+    ret.put("hostPath", hostPath.trimEnd('/'))
+    call.resolve(ret)
   }
 
   private fun getTts(): TextToSpeech? {
