@@ -234,6 +234,12 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ initialView = 'login',
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-[var(--app-scrim)] backdrop-blur-sm">
       <div className="w-full max-w-md r-md elev-3 bg-[var(--app-card)] edge p-5 space-y-4 max-h-[90vh] overflow-y-auto">
+        {view === 'register' && (
+          <div className="flex justify-center pt-1">
+            <img src="/ic_hermes_logo.png" alt="Hermes" className="brand-logo-light w-16 h-16 rounded-2xl object-cover" onError={(e) => { e.currentTarget.remove(); }} />
+            <img src="/ic_hermes_logo_dark.png" alt="Hermes" className="brand-logo-dark w-16 h-16 rounded-2xl object-cover" onError={(e) => { e.currentTarget.remove(); }} />
+          </div>
+        )}
         <div className="flex items-start justify-between gap-3 pb-3 border-b border-[var(--app-border-subtle)]">
           <div>
             <h2 className="t-heading text-[var(--app-text)] flex items-center gap-2">
