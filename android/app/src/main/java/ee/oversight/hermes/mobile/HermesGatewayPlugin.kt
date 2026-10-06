@@ -1141,6 +1141,21 @@ class HermesGatewayPlugin : Plugin() {
   fun streamPost(call: PluginCall) {
     val id = call.getString("id") ?: return call.reject("missing id")
     val urlStr = call.getString("url") ?: return call.reject("missing url")
+    // SSRF gate: the bridge exists to reach the on-device gateway only.
+    // Anything off loopback:8080 is rejected, no exceptions.
+    val host: String
+    val port: Int
+    val scheme: String
+    try {
+      val uri = android.net.Uri.parse(urlStr)
+      scheme = (uri.scheme ?: "").lowercase()
+      host = (uri.host ?: "")
+      port = uri.port
+    } catch (_: Exception) {
+      return call.reject("bad url")
+    }
+    val loopback = host == "127.0.0.1" || host == "localhost" || host == "[::1]" || host == "::1"
+    if (scheme != "http" || !loopback || port != 8080) return call.reject("url not allowed")
     call.setKeepAlive(true)
     scope.launch {
       var conn: HttpURLConnection? = null

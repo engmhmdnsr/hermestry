@@ -73,6 +73,7 @@
         <!-- WorkManager internal FGS host: dataSync to match the BootWorker ForegroundInfo. -->
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:exported="false"
             android:foregroundServiceType="dataSync"
             tools:node="merge">
         </service>

@@ -8,7 +8,7 @@ android {
         applicationId "ee.oversight.hermes.mobile"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 118
+        versionCode 120
         versionName "1.4.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         ndk {
@@ -46,13 +46,6 @@ android {
     buildTypes {
         debug {
             debuggable true
-            // Signed with the SAME upload key as release so the debug build can
-            // be installed over the shipped app without wiping its data. A
-            // different signer would make Android refuse the upgrade and force
-            // an uninstall, losing the gateway install and provider settings.
-            if (signingConfigs.release.storeFile?.exists()) {
-                signingConfig signingConfigs.release
-            }
         }
         release {
             debuggable false

@@ -671,8 +671,11 @@ class MobileGatewayService : Service() {
   private fun startGateway(): Process {
     stopGateway()
     // Phone-control bridge for the on-device agent (loopback :8091). Started
-    // with the gateway and stopped with it; start() is idempotent.
-    try { PhoneControlBridge.start(this) } catch (_: Exception) { }
+    // with the gateway and stopped with it; start() is idempotent. The token
+    // is random per boot and rides into the gateway env (HERMES_BRIDGE_TOKEN)
+    // so only the gateway and its agent can call the bridge.
+    val bridgeToken = java.util.UUID.randomUUID().toString()
+    try { PhoneControlBridge.start(this, bridgeToken) } catch (_: Exception) { }
     // Validate the argv inputs before building: ProcessBuilder itself never
     // reports a missing binary until pb.start(), where the message is raw
     // platform text. Same checks Bootstrap.runProot() makes.
@@ -727,7 +730,9 @@ class MobileGatewayService : Service() {
       "(GET /phone/status; POST /phone/volume, /phone/brightness, /phone/vibrate, " +
       "/phone/flashlight, /phone/lock, /phone/wifi_panel, /phone/bluetooth_panel; " +
       "same shapes proxied authed at /api/phone/*). " +
-      "Actions needing a user grant answer 403 with needs_grant: surface it, never claim success."
+      "Actions needing a user grant answer 403 with needs_grant: surface it, never claim success. " +
+      "Send header X-Bridge-Token with the value of env HERMES_BRIDGE_TOKEN on every bridge call."
+    pb.environment()["HERMES_BRIDGE_TOKEN"] = bridgeToken
     for ((k, v) in Bootstrap.prootEnv(this)) pb.environment()[k] = v
     Bootstrap.prootLoaderFile(this)?.let { pb.environment()["PROOT_LOADER"] = it.absolutePath }
     Bootstrap.prootLoader32File(this)?.let { pb.environment()["PROOT_LOADER_32"] = it.absolutePath }

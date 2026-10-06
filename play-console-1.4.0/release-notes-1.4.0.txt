@@ -1,0 +1,7 @@
+Phone control for the on-device agent (1.4.0)
+
+The assistant knows it runs on your phone and controls system functions on request: live phone state in Settings, Phone section, plus volume, vibration, flashlight and screen lock from chat.
+
+Also new: full backup and restore of chats and jobs with share-to-location, centered logo on the register screens, model switching without gateway restart, and hardened on-device endpoints.
+
+No account, no cloud: the gateway still runs fully on your device.

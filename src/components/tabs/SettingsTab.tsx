@@ -4060,8 +4060,8 @@ export const SettingsTab: React.FC = () => {
                         )}
                   </p>
                   {backupResult.ok && backupResult.path && (
-                    <p className="t-micro text-[var(--app-text-dim)] font-mono truncate" title={backupResult.path}>
-                      {backupResult.path}
+                    <p className="t-micro text-[var(--app-text-dim)] font-mono truncate" title={snapshotBaseName(backupResult.path)}>
+                      {snapshotBaseName(backupResult.path)}
                     </p>
                   )}
                   {backupResult.ok && backupResult.path && (
@@ -4091,7 +4091,7 @@ export const SettingsTab: React.FC = () => {
                       className="hidden"
                       aria-hidden="true"
                       tabIndex={-1}
-                      onChange={(e) => void handleRestoreFile(e.target.files?.[0])}
+                      onChange={(e) => { void handleRestoreFile(e.target.files?.[0]); e.target.value = ''; }}
                     />
                     <button
                       type="button"

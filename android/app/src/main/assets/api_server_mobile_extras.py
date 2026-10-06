@@ -37,12 +37,25 @@ def _write_yaml_atomic(cfg_path: str, yaml: Any, cfg: dict) -> None:
     # Crash-safe config write: a kill between open("w") and dump used to
     # leave config.yaml truncated, and the gateway would not boot. Write
     # to a sibling temp file, flush it to disk, then atomically replace.
-    tmp_path = cfg_path + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as fh:
-        yaml.dump(cfg, fh)
-        fh.flush()
-        os.fsync(fh.fileno())
-    os.replace(tmp_path, cfg_path)
+    # mkstemp (O_EXCL) instead of a predictable ".tmp" name so a planted
+    # symlink cannot redirect the write.
+    import tempfile
+
+    fd, tmp_path = tempfile.mkstemp(
+        dir=os.path.dirname(cfg_path) or ".", prefix=".cfg-", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            yaml.dump(cfg, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, cfg_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _projects_dir() -> str:
@@ -102,6 +115,82 @@ def _safe_ids(resp: Any) -> list[str]:
         return []
 
 
+async def _resolve_public_addrs(host: str) -> tuple[list[str], str | None]:
+    """Resolve ``host`` and reject non-public addresses.
+
+    Returns (addrs, error). Centralizes the SSRF check so the policy gate
+    and the pre-request re-check use the same rules: loopback, private,
+    link-local, multicast, reserved, and unspecified are all rejected.
+    The pre-request re-check narrows the DNS-rebinding window: an address
+    is only used if it validates at request time, not just at policy time.
+    """
+    import asyncio
+    import ipaddress
+    import socket
+
+    try:
+        try:
+            literal = ipaddress.ip_address(host)
+        except ValueError:
+            literal = None
+        addrs: list[str] = [str(literal)] if literal is not None else []
+        if literal is None:
+            try:
+                infos = await asyncio.get_running_loop().getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+            except Exception:
+                return [], "Could not resolve %s." % host
+            addrs = list({info[4][0] for info in infos})
+            if not addrs:
+                return [], "Could not resolve %s." % host
+        for addr in addrs:
+            try:
+                ip = ipaddress.ip_address(addr)
+            except ValueError:
+                return [], "Could not validate %s." % host
+            if ip.is_multicast or ip.is_reserved or not ip.is_global:
+                return [], "Private and local addresses are not allowed."
+    except Exception:
+        return [], "Could not validate %s." % host
+    return addrs, None
+
+
+async def _read_capped_body(request, limit: int) -> bytes:
+    """Read the full body with a hard size cap (chunked-safe).
+
+    A single ``read(n)`` returns only what is buffered so far, which
+    truncates any body bigger than the first TCP segment. Loop until EOF
+    and reject the moment the cap is exceeded.
+    """
+    raw = bytearray()
+    while True:
+        chunk = await request.content.read(65536)
+        if not chunk:
+            break
+        raw += chunk
+        if len(raw) > limit:
+            raise ValueError("body too large")
+    return bytes(raw)
+
+
+async def _capped_json(request, limit: int = 1024 * 1024):
+    """Parse a JSON body with a hard size cap (chunked-safe).
+
+    ``request.content_length`` is just a header and is absent with
+    chunked encoding, so read up to limit+1 bytes and reject anything
+    longer. Raises ValueError on oversize or invalid JSON.
+    """
+    import json as _json
+
+    try:
+        raw = await _read_capped_body(request, limit)
+    except ValueError:
+        raise ValueError("body too large")
+    try:
+        return _json.loads(raw.decode("utf-8"))
+    except Exception:
+        raise ValueError("body is not JSON")
+
+
 async def _custom_base_policy(base_url: str) -> str | None:
     """Return an error message if a custom provider base URL is not allowed.
 
@@ -123,34 +212,8 @@ async def _custom_base_policy(base_url: str) -> str | None:
     host = (parts.hostname or "").strip().rstrip(".")
     if not host:
         return "That URL has no host."
-    try:
-        import asyncio
-        import ipaddress
-        import socket
-
-        try:
-            literal = ipaddress.ip_address(host)
-        except ValueError:
-            literal = None
-        addrs: list[str] = [str(literal)] if literal is not None else []
-        if literal is None:
-            try:
-                infos = await asyncio.get_running_loop().getaddrinfo(host, 443, type=socket.SOCK_STREAM)
-            except Exception:
-                return "Could not resolve %s." % host
-            addrs = list({info[4][0] for info in infos})
-            if not addrs:
-                return "Could not resolve %s." % host
-        for addr in addrs:
-            try:
-                ip = ipaddress.ip_address(addr)
-            except ValueError:
-                return "Could not validate %s." % host
-            if not ip.is_global:
-                return "Private and local addresses are not allowed."
-    except Exception:
-        return "Could not validate %s." % host
-    return None
+    _, error = await _resolve_public_addrs(host)
+    return error
 
 
 # Key names whose VALUE is a credential. Matched case-insensitively against a
@@ -383,6 +446,10 @@ def _phone_bridge_call(method, path, payload=None):
     data = _json.dumps(payload or {}).encode("utf-8") if payload is not None else None
     req = _urlreq.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
+    import os as _os
+    _bridge_token = _os.environ.get("HERMES_BRIDGE_TOKEN", "")
+    if _bridge_token:
+        req.add_header("X-Bridge-Token", _bridge_token)
     try:
         with _urlreq.urlopen(req, timeout=_PHONE_BRIDGE_TIMEOUT_S) as resp:
             return resp.status, _json.loads(resp.read().decode("utf-8") or "{}")
@@ -402,7 +469,7 @@ async def _phone_proxy(request, bridge_path, method="POST"):
     from aiohttp import web
 
     try:
-        body = await request.json()
+        body = await _capped_json(request)
     except Exception:
         body = {}
     if not isinstance(body, dict):
@@ -528,7 +595,7 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
         from aiohttp import web
 
         try:
-            body = await request.json()
+            body = await _capped_json(request)
         except Exception:
             return web.json_response({"error": "Invalid JSON body"}, status=400)
         if not isinstance(body, dict):
@@ -558,7 +625,7 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
         from aiohttp import web
 
         try:
-            body = await request.json()
+            body = await _capped_json(request)
         except Exception:
             return web.json_response({"error": "Invalid JSON body"}, status=400)
         if not isinstance(body, dict):
@@ -635,7 +702,7 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
 
         blueprint_id = request.match_info.get("id", "")
         try:
-            body = await request.json()
+            body = await _capped_json(request)
         except Exception:
             return web.json_response({"error": "Invalid JSON body"}, status=400)
         if not isinstance(body, dict):
@@ -680,7 +747,7 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
         from aiohttp import web
 
         try:
-            body = await request.json()
+            body = await _capped_json(request)
         except Exception:
             return web.json_response({"error": "Invalid JSON body"}, status=400)
         if not isinstance(body, dict):
@@ -709,9 +776,16 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
                 base = base_url.rstrip("/")
                 alt = base[:-3].rstrip("/") if base.lower().endswith("/v1") else base + "/v1"
                 resolved, resp = base, None
+                from urllib.parse import urlsplit as _urlsplit
                 async with httpx.AsyncClient(timeout=httpx.Timeout(10.0), follow_redirects=False) as client:
                     for cand in (base, alt):
                         try:
+                            # Re-validate DNS at request time: the policy gate
+                            # above checked minutes ago, DNS may have changed.
+                            _cand_host = (_urlsplit(cand).hostname or "").strip().rstrip(".")
+                            _, _re_err = await _resolve_public_addrs(_cand_host)
+                            if _re_err:
+                                continue
                             cand_resp = await client.get(cand + "/models", headers=headers)
                         except Exception:
                             continue
@@ -803,7 +877,7 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
         from aiohttp import web
 
         try:
-            body = await request.json()
+            body = await _capped_json(request)
         except Exception:
             return web.json_response({"error": "Invalid JSON body"}, status=400)
         if not isinstance(body, dict):
@@ -982,7 +1056,7 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
             import json
             import time
 
-            stamp = time.strftime("%Y%m%d-%H%M%S")
+            stamp = time.strftime("%Y%m%d-%H%M%S") + "-%06d" % (time.time_ns() % 1000000)
             out_dir = os.path.join(home, "snapshots")
             os.makedirs(out_dir, exist_ok=True)
             out_path = os.path.join(out_dir, f"hermes-{stamp}.json")
@@ -1006,9 +1080,15 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
             used = 0
             truncated = False
             if os.path.isdir(sessions_dir):
+                def _mtime(f):
+                    try:
+                        return os.path.getmtime(os.path.join(sessions_dir, f))
+                    except OSError:
+                        return -1
+
                 names = sorted(
                     (f for f in os.listdir(sessions_dir) if f.endswith(".json")),
-                    key=lambda f: os.path.getmtime(os.path.join(sessions_dir, f)),
+                    key=_mtime,
                     reverse=True,
                 )
                 total = len(names)
@@ -1025,7 +1105,7 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
                     if not isinstance(data, dict):
                         continue
                     used += len(json.dumps(data, default=str))
-                    entries.append({"name": name, "data": data})
+                    entries.append({"name": name, "data": sanitize_secrets(data)})
                 truncated = truncated or total > len(entries)
             payload["sessions"] = entries
             payload["sessions_total"] = total
@@ -1035,26 +1115,38 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
             if os.path.exists(jobs_path) and os.path.getsize(jobs_path) <= 1024 * 1024:
                 try:
                     with open(jobs_path, "r", encoding="utf-8") as jf:
-                        payload["jobs"] = json.load(jf)
+                        payload["jobs"] = sanitize_secrets(json.load(jf))
                 except Exception:
                     payload["jobs"] = None
             else:
                 payload["jobs"] = None
 
-            tmp = out_path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh, indent=2, default=str)
-            os.replace(tmp, out_path)
+            import tempfile
+            fd, tmp = tempfile.mkstemp(dir=out_dir, prefix=".hermes-", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh, indent=2, default=str)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, out_path)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+            base = os.path.basename(out_path)
             return web.json_response(
                 {
                     "ok": True,
-                    "path": out_path,
-                    "message": f"Saved {len(entries)} of {total} session(s) to {out_path}",
+                    "name": base,
+                    "path": base,
+                    "message": f"Saved {len(entries)} of {total} session(s) to {base}",
                 }
             )
         except Exception as exc:
             return web.json_response(
-                {"ok": False, "path": "", "message": f"Backup failed: {exc}"}, status=500
+                {"ok": False, "path": "", "message": "Backup failed. Try again."}, status=500
             )
 
     async def _get_snapshot_file(request):
@@ -1071,11 +1163,14 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
             if not name.endswith(".json") or name != os.path.basename(name):
                 return web.json_response({"ok": False, "message": "bad snapshot name"}, status=400)
             fp = os.path.join(home, "snapshots", name)
+            if not os.path.realpath(fp).startswith(os.path.realpath(os.path.join(home, "snapshots")) + os.sep):
+                return web.json_response({"ok": False, "message": "bad snapshot name"}, status=400)
             if not os.path.isfile(fp):
                 return web.json_response({"ok": False, "message": "snapshot not found"}, status=404)
-            return web.FileResponse(fp, headers={"Content-Disposition": f'attachment; filename="{name}"'})
+            safe_name = name.replace('"', "_").replace("\r", "_").replace("\n", "_")
+            return web.FileResponse(fp, headers={"Content-Disposition": f'attachment; filename="{safe_name}"'})
         except Exception as exc:
-            return web.json_response({"ok": False, "message": f"snapshot read failed: {exc}"}, status=500)
+            return web.json_response({"ok": False, "message": "Could not read the snapshot file."}, status=500)
 
     async def _post_restore(request):
         """Restore chats and jobs from a snapshot made by POST /api/backup.
@@ -1095,7 +1190,11 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
             if (request.content_length or 0) > 10 * 1024 * 1024:
                 return web.json_response({"ok": False, "message": "snapshot too large (10 MB cap)"}, status=413)
             try:
-                snap = await request.json()
+                raw = await _read_capped_body(request, 10 * 1024 * 1024)
+            except ValueError:
+                return web.json_response({"ok": False, "message": "snapshot too large (10 MB cap)"}, status=413)
+            try:
+                snap = json.loads(raw.decode("utf-8"))
             except Exception:
                 return web.json_response({"ok": False, "message": "body is not JSON"}, status=400)
             if not isinstance(snap, dict) or snap.get("format") != "hermes-snapshot/v2":
@@ -1106,7 +1205,9 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
             sessions_dir = os.path.join(home, "sessions")
             os.makedirs(sessions_dir, exist_ok=True)
             ok_name = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@-]*\.json$")
+            ok_job_id = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@-]{0,127}$")
             written = skipped = invalid = 0
+            dropped = max(0, len(entries) - 500)
             for item in entries[:500]:
                 if not isinstance(item, dict) or not isinstance(item.get("data"), dict):
                     invalid += 1
@@ -1119,12 +1220,20 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
                 if os.path.exists(fp):
                     skipped += 1
                     continue
-                tmp = fp + ".tmp"
-                with open(tmp, "w", encoding="utf-8") as fh:
-                    json.dump(item["data"], fh, indent=2, default=str)
-                os.replace(tmp, fp)
+                import tempfile
+                fd, tmp = tempfile.mkstemp(dir=sessions_dir, prefix=".restore-", suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        json.dump(sanitize_secrets(item["data"]), fh, indent=2, default=str)
+                    os.replace(tmp, fp)
+                except BaseException:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+                    raise
                 written += 1
-            jobs_added = 0
+            jobs_added = jobs_invalid = 0
             jobs = snap.get("jobs")
             if isinstance(jobs, dict) and isinstance(jobs.get("jobs"), list):
                 jobs_path = os.path.join(home, "cron", "jobs.json")
@@ -1136,29 +1245,46 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
                     except Exception:
                         existing = {"jobs": []}
                 seen = {j.get("id") for j in existing.get("jobs", []) if isinstance(j, dict)}
+                jobs_dropped = max(0, len(jobs["jobs"]) - 200)
                 for job in jobs["jobs"][:200]:
-                    if isinstance(job, dict) and job.get("id") not in seen:
-                        existing.setdefault("jobs", []).append(job)
-                        seen.add(job.get("id"))
-                        jobs_added += 1
-                tmp = jobs_path + ".tmp"
+                    jid = job.get("id") if isinstance(job, dict) else None
+                    if not isinstance(job, dict) or not isinstance(jid, str) or not ok_job_id.match(jid) or jid in seen:
+                        jobs_invalid += 1
+                        continue
+                    existing.setdefault("jobs", []).append(sanitize_secrets(job))
+                    seen.add(jid)
+                    jobs_added += 1
+                fd, tmp = None, None
                 os.makedirs(os.path.dirname(jobs_path), exist_ok=True)
-                with open(tmp, "w", encoding="utf-8") as fh:
-                    json.dump(existing, fh, indent=2, default=str)
-                os.replace(tmp, jobs_path)
+                fd, tmp = tempfile.mkstemp(dir=os.path.dirname(jobs_path), prefix=".jobs-", suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                        json.dump(existing, fh, indent=2, default=str)
+                    os.replace(tmp, jobs_path)
+                except BaseException:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+                    raise
+            else:
+                jobs_dropped = 0
             return web.json_response(
                 {
                     "ok": True,
                     "sessions_restored": written,
                     "sessions_skipped": skipped,
                     "sessions_invalid": invalid,
+                    "sessions_dropped": dropped,
                     "jobs_added": jobs_added,
+                    "jobs_invalid": jobs_invalid,
+                    "jobs_dropped": jobs_dropped,
                     "settings_kept": True,
                     "message": f"Restored {written} chat(s), skipped {skipped} existing, added {jobs_added} job(s). This device keeps its own settings.",
                 }
             )
         except Exception as exc:
-            return web.json_response({"ok": False, "message": f"Restore failed: {exc}"}, status=500)
+            return web.json_response({"ok": False, "message": "Restore failed. Try again."}, status=500)
 
     async def _post_debug_share(request):
         """Produce the diagnostics bundle locally.
@@ -1176,20 +1302,15 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
             import re
             import time
 
-            # Log locations vary by host: Hermes keeps its own logs in a logs/
-            # subdir, while the mobile service writes service.log and a small
-            # gateway.log beside HERMES_HOME. Search both levels and any logs/
-            # subdir so a host layout change degrades to "found what exists"
-            # instead of a bundle with zero lines in it.
+            # Logs live under HERMES_HOME only (plus its logs/ subdir). A parent
+            # dir is never searched: it widens the read surface for no gain.
             def _find_log(name: str) -> str | None:
-                roots = (home, os.path.dirname(home.rstrip("/")))
-                for d in roots:
-                    direct = os.path.join(d, name)
-                    if os.path.exists(direct):
-                        return direct
-                    nested = os.path.join(d, "logs", name)
-                    if os.path.exists(nested):
-                        return nested
+                direct = os.path.join(home, name)
+                if os.path.exists(direct):
+                    return direct
+                nested = os.path.join(home, "logs", name)
+                if os.path.exists(nested):
+                    return nested
                 return None
 
             logs: list[str] = []
@@ -1227,16 +1348,31 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
                 fh.write(json.dumps(payload, indent=2))
                 fh.write("\n\n")
                 fh.write("\n".join(logs))
+            # Retention: debug bundles accumulate one file per tap. Keep the
+            # newest 5, delete the rest, so repeated calls cannot fill storage.
+            try:
+                debugs = sorted(
+                    (f for f in os.listdir(out_dir) if f.startswith("hermes-debug-")),
+                    reverse=True,
+                )
+                for stale in debugs[5:]:
+                    try:
+                        os.unlink(os.path.join(out_dir, stale))
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+            base = os.path.basename(out_path)
             return web.json_response(
                 {
                     "ok": True,
-                    "urls": [f"file://{out_path}"],
-                    "summary": f"Wrote {len(logs)} log line(s) to {out_path}",
+                    "urls": [f"file://{base}"],
+                    "summary": f"Wrote {len(logs)} log line(s) to {base}",
                 }
             )
         except Exception as exc:
             return web.json_response(
-                {"ok": False, "urls": [], "summary": f"Debug share failed: {exc}"},
+                {"ok": False, "urls": [], "summary": "Debug share failed. Try again."},
                 status=500,
             )
 

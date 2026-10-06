@@ -1,0 +1,19 @@
+Hermes Mobile runs your AI assistant directly on your phone. Chats, memory, routines and the gateway itself all live on your device. Nothing routes through our servers.
+
+HOW IT WORKS
+Install once (a one-time system download of about 300 MB), add your own provider API key, and start chatting. The gateway starts with the app and keeps running in the background.
+
+PHONE CONTROL
+Ask the assistant about your phone and control it in plain words: check battery, Wi-Fi and Bluetooth, set volume, adjust brightness, vibrate, toggle the flashlight, or lock the screen. Anything that needs your approval asks once in Settings, Phone, then works by request.
+
+YOUR MODELS, YOUR KEYS
+Bring your own key from your provider and switch models without restarting. Every finished reply is labeled with the model that actually served it, so you always know what answered.
+
+ROUTINES AND MEMORY
+Schedule repeated work with jobs and routines, keep long-term memory across chats, and inspect everything from the diagnostics screens: connection path test, logs, backup and restore.
+
+PRIVATE BY DESIGN
+Your keys stay in encrypted storage on the device. Chats stay on the device. The only network calls are the ones your provider needs to answer.
+
+REQUIREMENTS
+Android 9 or newer, about 500 MB free for the on-device system, and an API key from a supported provider.

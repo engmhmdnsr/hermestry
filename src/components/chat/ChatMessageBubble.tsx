@@ -413,9 +413,9 @@ export const ChatMessageBubble: React.FC<ChatMessageBubbleProps> = memo(
             <ThinkingBlock thinking={msg.thinking} isDone={msg.thinkingDone !== false} t={t} />
           )}
 
-          {(msg.tools?.length ?? 0) > 0 && (
+          {(Array.isArray(msg.tools) ? msg.tools : []).length > 0 && (
             <ToolExecutionsBlock
-              tools={msg.tools ?? []}
+              tools={Array.isArray(msg.tools) ? msg.tools : []}
               toolOutputs={msg.toolOutputs ?? []}
               live={live}
               t={t}

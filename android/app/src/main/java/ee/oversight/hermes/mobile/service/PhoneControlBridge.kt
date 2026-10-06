@@ -31,8 +31,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  * The agent's tools execute inside the proot guest, which shares the host
  * network namespace (proot runs without `-n`), so guest Python reaches this
  * server at 127.0.0.1:[PORT] exactly like the gateway at :8080. Nothing here
- * is exported off-device: the socket binds loopback only, and remote callers
- * go through the gateway's authed `/api/phone/...` proxy instead.
+ * is exported off-device: the socket binds loopback only, callers present a
+ * per-boot token (env HERMES_BRIDGE_TOKEN inside the gateway), and remote
+ * callers go through the gateway's authed `/api/phone/...` proxy instead.
  *
  * Honesty rules (each enforced by read-back, never by assumption):
  * - Every mutating call reads the value back and returns the measured state.
@@ -49,13 +50,16 @@ object PhoneControlBridge {
 
   private var server: ServerSocket? = null
   private var acceptThread: Thread? = null
-  private val pool = Executors.newCachedThreadPool()
+  private var pool: java.util.concurrent.ExecutorService = Executors.newFixedThreadPool(8)
   private val running = AtomicBoolean(false)
   @Volatile private var boundContext: Context? = null
+  @Volatile private var bridgeToken: String? = null
 
   @Synchronized
-  fun start(ctx: Context) {
+  fun start(ctx: Context, token: String) {
     if (running.get()) return
+    if (pool.isShutdown) pool = Executors.newFixedThreadPool(8)
+    bridgeToken = token
     boundContext = ctx.applicationContext
     val srv = ServerSocket(PORT, 50, InetAddress.getByName("127.0.0.1"))
     server = srv
@@ -76,9 +80,11 @@ object PhoneControlBridge {
   fun stop() {
     running.set(false)
     try { server?.close() } catch (_: Exception) {}
+    try { pool.shutdownNow() } catch (_: Exception) {}
     server = null
     acceptThread = null
     boundContext = null
+    bridgeToken = null
   }
 
   fun isRunning(): Boolean = running.get()
@@ -95,6 +101,7 @@ object PhoneControlBridge {
         val method = parts[0].uppercase()
         val path = parts[1].substringBefore("?")
         var contentLength = 0
+        var presentedToken: String? = null
         while (true) {
           val line = reader.readLine() ?: break
           if (line.isEmpty()) break
@@ -102,8 +109,18 @@ object PhoneControlBridge {
           if (idx > 0 && line.substring(0, idx).trim().equals("content-length", ignoreCase = true)) {
             contentLength = line.substring(idx + 1).trim().toIntOrNull() ?: 0
           }
+          if (idx > 0 && line.substring(0, idx).trim().equals("x-bridge-token", ignoreCase = true)) {
+            presentedToken = line.substring(idx + 1).trim()
+          }
         }
-        val bodyChars = CharArray(contentLength.coerceAtLeast(0))
+        // Per-boot token: only the gateway (env HERMES_BRIDGE_TOKEN) and the
+        // agent inside it know it. Any other app on the device gets 403.
+        val expected = bridgeToken
+        if (expected == null || presentedToken != expected) {
+          respond(s.getOutputStream(), 403, obj("ok" to false, "error" to "forbidden"))
+          return
+        }
+        val bodyChars = CharArray(contentLength.coerceIn(0, 65536))
         var read = 0
         while (read < bodyChars.size) {
           val n = reader.read(bodyChars, read, bodyChars.size - read)

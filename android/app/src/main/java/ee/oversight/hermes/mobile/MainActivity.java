@@ -32,7 +32,7 @@ public class MainActivity extends BridgeActivity {
         // Cleartext stays loopback-scoped via network_security_config.
         try {
             WebSettings settings = this.getBridge().getWebView().getSettings();
-            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         } catch (Exception e) {
             // Release path stays silent on purpose: no debug metadata in
             // the production artifact (REL-01). Debug builds log instead.

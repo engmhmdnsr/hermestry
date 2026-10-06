@@ -112,7 +112,7 @@ object Bootstrap {
 
   // INSTALL-01: app/gateway/protocol compatibility metadata. The plugin
   // exposes this via preflight()/status() and the web UI gates Start on it.
-  const val APP_VERSION = "1.3.0"
+  const val APP_VERSION = "1.4.0"
   const val GATEWAY_VERSION = "0.21.5"
   const val PROTOCOL_VERSION = 1
   const val IMAGE_VERSION = "v1.0.0-image"

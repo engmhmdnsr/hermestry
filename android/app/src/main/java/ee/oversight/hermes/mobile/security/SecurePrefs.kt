@@ -292,6 +292,16 @@ object SecurePrefs {
   @Synchronized
   fun remove(ctx: Context, key: String): Boolean {
     return try {
+      // Same fail-closed guard as putString: on fallback/directBoot the
+      // plain file is the store, so removing a secret there would silently
+      // change credential state while the UI reports storage unavailable.
+      prefs(ctx)
+      if ((fallback || directBoot) && key !in NON_SECRET_KEYS) {
+        val msg = "$FALLBACK_ERROR: secure storage is unavailable on this device, $key was not removed"
+        Log.w(TAG, msg)
+        lastError = msg
+        return false
+      }
       prefs(ctx).edit().remove(key).commit()
     } catch (_: Exception) {
       false
