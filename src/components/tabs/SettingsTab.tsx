@@ -52,6 +52,7 @@ import {
   nativePhoneGrants,
   nativeRequestPhonePerms,
   nativeOpenPhoneGrantPage,
+  nativeSaveSnapshot,
   type NativePhoneGrants,
 } from '../../services/nativeGateway';
 import { deriveUiFlags, type GatewayState } from '../../services/gatewayState';
@@ -2182,6 +2183,17 @@ export const SettingsTab: React.FC = () => {
     setSharingSnapshot(true);
     setSnapshotShareMsg(null);
     try {
+      // Native first: the system Save dialog, the user picks the place.
+      const saved = await nativeSaveSnapshot(name);
+      if (saved.ok) {
+        setSnapshotShareMsg(tx('snapshotSavedTo', 'Saved. You picked the place.'));
+        return;
+      }
+      if (saved.error !== 'web' && saved.error !== 'unsupported') {
+        if (!saved.error) return; // user cancelled the dialog, stay silent
+        setSnapshotShareMsg(tx('snapshotShareFail', 'Could not read the snapshot file.'));
+        return;
+      }
       const blob = await service.snapshotFile(name);
       if (!blob) {
         setSnapshotShareMsg(tx('snapshotShareFail', 'Could not read the snapshot file.'));

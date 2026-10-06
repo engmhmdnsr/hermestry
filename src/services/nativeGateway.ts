@@ -88,6 +88,7 @@ interface HermesGatewayPlugin {
   pickProjectDir?(): Promise<{ uri?: string; name?: string; hostPath?: string }>;
   importProjectTree?(options: { uri: string; id: string }): Promise<{ count?: number; guestPath?: string }>;
   exportProjectTree?(options: { id: string }): Promise<{ count?: number }>;
+  saveSnapshot?(options: { name: string }): Promise<{ bytes?: number }>;
 }
 
 function getPlugin(): HermesGatewayPlugin | null {
@@ -368,6 +369,26 @@ export async function nativeExportProjectTree(
     const code = /cancelled|not_found|copy_failed|bad_id|busy|unsupported/.exec(msg)?.[0];
     if (code === 'cancelled') return { ok: false, count: 0 };
     return { ok: false, count: 0, error: code || 'copy_failed' };
+  }
+}
+
+// Save a gateway snapshot through the system Save dialog (ACTION_CREATE_DOCUMENT).
+// The user picks the place and the file name. Silent null when the user cancels.
+export async function nativeSaveSnapshot(
+  name: string
+): Promise<{ ok: boolean; bytes: number; error?: string }> {
+  if (!isNativeGateway()) return { ok: false, bytes: 0, error: 'web' };
+  const plugin = await waitForBridge();
+  if (!plugin || typeof plugin.saveSnapshot !== 'function')
+    return { ok: false, bytes: 0, error: 'unsupported' };
+  try {
+    const res = await plugin.saveSnapshot({ name });
+    return { ok: true, bytes: typeof res?.bytes === 'number' ? res.bytes : 0 };
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : '';
+    const code = /cancelled|not_found|write_failed|bad_name|busy|unavailable|unsupported/.exec(msg)?.[0];
+    if (code === 'cancelled') return { ok: false, bytes: 0 };
+    return { ok: false, bytes: 0, error: code || 'write_failed' };
   }
 }
 
