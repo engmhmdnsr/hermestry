@@ -153,6 +153,8 @@ object PhoneControlBridge {
       method == "POST" && path == "/phone/bluetooth_enable" -> answer(requestBtEnable(ctx))
       method == "POST" && path == "/phone/open_write_settings" -> answer(openSystemPage(ctx, Settings.ACTION_MANAGE_WRITE_SETTINGS))
       method == "POST" && path == "/phone/open_admin_activation" -> answer(openAdminActivation(ctx))
+      method == "GET" && path == "/phone/gateway" -> answer(getGatewayStatus(ctx))
+      method == "POST" && path == "/phone/gateway" -> answer(setGatewayState(ctx, body))
       else -> respond(out, 404, obj("ok" to false, "error" to "unknown phone route"))
     }
   }
@@ -395,6 +397,42 @@ object PhoneControlBridge {
       200 to obj("ok" to true, "opened" to true)
     } catch (e: Exception) {
       500 to obj("ok" to false, "error" to (e.message ?: "open failed"))
+    }
+  }
+
+  private fun getGatewayStatus(ctx: Context): Pair<Int, String> {
+    return try {
+      val state = MobileGatewayService.getMachineState(ctx)
+      200 to obj("ok" to true, "state" to state.name)
+    } catch (e: Exception) {
+      500 to obj("ok" to false, "error" to (e.message ?: "gateway status failed"))
+    }
+  }
+
+  private fun setGatewayState(ctx: Context, body: String): Pair<Int, String> {
+    val cmd = field(body, "action")?.uppercase() ?: return 400 to obj("ok" to false, "error" to "action START|STOP required")
+    return try {
+      val intent = Intent(ctx, MobileGatewayService::class.java).apply {
+        setAction(cmd)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+      }
+      if (cmd == "START") {
+        // On Android 16+, startForegroundService must be called from foreground context
+        // Use startForegroundService directly since we're in a background thread
+        try {
+          ctx.startForegroundService(intent)
+        } catch (_: Exception) {
+          // Fallback for older Android
+          ctx.startService(intent)
+        }
+      } else if (cmd == "STOP") {
+        ctx.startService(intent)
+      } else {
+        return 400 to obj("ok" to false, "error" to "action START|STOP required")
+      }
+      200 to obj("ok" to true, "action" to cmd, "started" to (cmd == "START"))
+    } catch (e: Exception) {
+      500 to obj("ok" to false, "error" to (e.message ?: "gateway action failed"))
     }
   }
 }

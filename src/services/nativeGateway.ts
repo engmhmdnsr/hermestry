@@ -89,7 +89,9 @@ interface HermesGatewayPlugin {
   importProjectTree?(options: { uri: string; id: string }): Promise<{ count?: number; guestPath?: string }>;
   exportProjectTree?(options: { id: string }): Promise<{ count?: number }>;
   saveSnapshot?(options: { name: string }): Promise<{ bytes?: number }>;
-}
+    gatewayStart?(): Promise<{ ok: boolean; before: string; after: string; started: boolean }>;
+    gatewayStop?(): Promise<{ ok: boolean; before: string; after: string; stopped: boolean }>;
+  }
 
 function getPlugin(): HermesGatewayPlugin | null {
   try {
@@ -282,6 +284,22 @@ export async function nativeSetAutostart(enabled: boolean): Promise<void> {
   // older APK never makes the caller throw.
   if (!plugin || typeof plugin.setAutostart !== 'function') return;
   await plugin.setAutostart({ enabled });
+}
+
+export async function nativeGatewayStart(): Promise<{ ok: boolean; before: string; after: string; started: boolean }> {
+  const plugin = await waitForBridge();
+  if (!plugin || typeof plugin.gatewayStart !== 'function') {
+    return { ok: false, before: '', after: '', started: false };
+  }
+  return plugin.gatewayStart();
+}
+
+export async function nativeGatewayStop(): Promise<{ ok: boolean; before: string; after: string; stopped: boolean }> {
+  const plugin = await waitForBridge();
+  if (!plugin || typeof plugin.gatewayStop !== 'function') {
+    return { ok: false, before: '', after: '', stopped: false };
+  }
+  return plugin.gatewayStop();
 }
 
 // Local-API key minted by Bootstrap (SecurePrefs server_key). The WebView

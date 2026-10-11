@@ -729,6 +729,8 @@ class MobileGatewayService : Service() {
       "Phone control is available at http://127.0.0.1:8091 " +
       "(GET /phone/status; POST /phone/volume, /phone/brightness, /phone/vibrate, " +
       "/phone/flashlight, /phone/lock, /phone/wifi_panel, /phone/bluetooth_panel; " +
+      "GET /phone/gateway reports the gateway state; " +
+      "POST /phone/gateway with action START or STOP starts or stops it; " +
       "same shapes proxied authed at /api/phone/*). " +
       "Actions needing a user grant answer 403 with needs_grant: surface it, never claim success. " +
       "Send header X-Bridge-Token with the value of env HERMES_BRIDGE_TOKEN on every bridge call."
@@ -1078,6 +1080,10 @@ class MobileGatewayService : Service() {
         logRaw(ctx, "service stop blocked: ${e.message}")
         throw IllegalStateException(REASON_SERVICE_START_BLOCKED, e)
       }
+    }
+
+    fun getMachineState(ctx: Context): GatewayMachineState {
+      return gatewayState.value
     }
 
     /**

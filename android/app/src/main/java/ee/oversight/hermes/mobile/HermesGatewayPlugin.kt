@@ -682,6 +682,47 @@ class HermesGatewayPlugin : Plugin() {
       .put("imageVersion", compat?.imageVersion ?: ""))
   }
 
+  @PluginMethod
+  fun gatewayStart(call: PluginCall) {
+    scope.launch {
+      try {
+        val res = MobileGatewayService.getMachineState(context)
+        val before = res.name
+        MobileGatewayService.start(context)
+        // Give the service a moment to transition
+        kotlinx.coroutines.delay(500)
+        val after = MobileGatewayService.gatewayState.value.name
+        call.resolve(JSObject()
+          .put("ok", true)
+          .put("before", before)
+          .put("after", after)
+          .put("started", after == "RUNNING" || after == "STARTING"))
+      } catch (e: Exception) {
+        call.reject(stableFailure(e, "gateway_start_failed"))
+      }
+    }
+  }
+
+  @PluginMethod
+  fun gatewayStop(call: PluginCall) {
+    scope.launch {
+      try {
+        val res = MobileGatewayService.getMachineState(context)
+        val before = res.name
+        MobileGatewayService.stop(context)
+        kotlinx.coroutines.delay(500)
+        val after = MobileGatewayService.gatewayState.value.name
+        call.resolve(JSObject()
+          .put("ok", true)
+          .put("before", before)
+          .put("after", after)
+          .put("stopped", after == "STOPPED" || after == "STOPPING"))
+      } catch (e: Exception) {
+        call.reject(stableFailure(e, "gateway_stop_failed"))
+      }
+    }
+  }
+
   /** Startup phase detail (GATEWAY-04) without a full status round-trip. */
   @PluginMethod
   fun startupInfo(call: PluginCall) {

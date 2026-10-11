@@ -268,6 +268,9 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
   // restart underneath the first.
   const [modelSwitching, setModelSwitching] = useState(false);
   const modelSwitchBusyRef = useRef(false);
+  // Chat-side gateway start: the offline banner offers a Start button on
+  // native builds so a dead gateway restarts from the chat, no Settings trip.
+  const [startingGateway, setStartingGateway] = useState(false);
   // Save lifecycle read by the async model switch: those reads happen long
   // after this render, so they go through refs instead of the captured values.
   const saveStateRef = useRef(settingsSaveState);
@@ -2031,6 +2034,27 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                   >
                     {tx('reconnectNow', 'Reconnect now')}
                   </button>
+                  {isNativeGateway() && (
+                    <button
+                      disabled={startingGateway}
+                      onClick={() => {
+                        if (startingGateway) return;
+                        setStartingGateway(true);
+                        void (async () => {
+                          try {
+                            await startGateway();
+                          } finally {
+                            setStartingGateway(false);
+                          }
+                        })();
+                      }}
+                      className="hm-hit r-xs min-h-[36px] px-4 bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)] t-caption font-semibold cursor-pointer disabled:opacity-60"
+                    >
+                      {startingGateway
+                        ? tx('startingGateway', 'Starting...')
+                        : tx('startGatewayNow', 'Start gateway')}
+                    </button>
+                  )}
                 </div>
               </div>
             )}
