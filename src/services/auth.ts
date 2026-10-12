@@ -6,6 +6,12 @@ import { gwFetch } from './gwFetch';
 // end with /api or all URLs double to /api/api/... -> 404.
 export const AUTH_BASE_URL = 'https://www.oversight.ee';
 
+// Server login rate limit: after a few bad passwords the API answers
+// "too many attempts, try again later" and stays locked for this window.
+// AuthScreens shows a countdown riding on this value; if the server is
+// still locked when it ends, the next attempt re-arms the countdown.
+export const AUTH_LOCKOUT_MS = 5 * 60 * 1000;
+
 // Storage keys: localStorage on web, lockout.* slots on native (SecurePrefs, allowlisted)
 const LS_ACCESS = 'hermes.auth.accessToken';
 const LS_REFRESH = 'hermes.auth.refreshToken';

@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { X, Mail, Lock, User, KeyRound, ArrowLeft } from 'lucide-react';
 import { useHermes } from '../../context/HermesContext';
 import {
+  AUTH_LOCKOUT_MS,
   login as authLogin,
   register as authRegister,
   verifyEmail as authVerify,
@@ -105,6 +106,21 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ initialView = 'login',
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Server login lockout: when the API answers "too many attempts", the
+  // Sign in button locks and counts down instead of firing dead attempts
+  // that would extend the server-side lock.
+  const [lockoutUntil, setLockoutUntil] = useState(0);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (lockoutUntil <= Date.now()) return;
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [lockoutUntil]);
+  const lockoutLeftMs = Math.max(0, lockoutUntil - nowMs);
+  const lockoutLeft =
+    lockoutLeftMs > 0
+      ? `${Math.floor(lockoutLeftMs / 60000)}:${String(Math.floor((lockoutLeftMs % 60000) / 1000)).padStart(2, '0')}`
+      : '';
 
   const clearFeedback = () => {
     setMessage(null);
@@ -138,6 +154,7 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ initialView = 'login',
 
   const handleLogin = async () => {
     clearFeedback();
+    if (lockoutUntil > Date.now()) return;
     if (!email.trim() || !password) {
       setError(tx('authErrorGeneric', 'Something went wrong. Try again.'));
       return;
@@ -145,10 +162,17 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ initialView = 'login',
     setLoading(true);
     try {
       const r = await authLogin({ email: email.trim(), password });
+      setLockoutUntil(0);
       setMessage(tx('authSuccessLogin', 'Signed in.'));
       onAuthenticated?.({ accessToken: r.accessToken, refreshToken: r.refreshToken, user: r.user });
     } catch (e) {
-      setError(failMessage(e));
+      const msg = failMessage(e);
+      if (/too many attempts/i.test(msg)) {
+        // Server-side lock: park the button on a countdown so further taps
+        // cannot extend the lock. A still-locked server re-arms it.
+        setLockoutUntil(Date.now() + AUTH_LOCKOUT_MS);
+      }
+      setError(msg);
     } finally {
       setLoading(false);
     }
@@ -291,8 +315,10 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ initialView = 'login',
             <Field label={tx('authPasswordLabel', 'Password')} type="password" value={password} onChange={setPassword} placeholder={tx('authPasswordPlaceholder', 'Your password')} autoComplete="current-password" id="auth-password" />
             <div className="flex gap-2">
               <div className="flex-1">
-                <PrimaryButton loading={loading} onClick={handleLogin}>
-                  {loading ? tx('authLoading', 'Please wait') : tx('authLoginAction', 'Sign in')}
+                <PrimaryButton loading={loading || lockoutLeftMs > 0} onClick={handleLogin}>
+                  {lockoutLeftMs > 0
+                    ? `${tx('authRetryIn', 'Try again in')} ${lockoutLeft}`
+                    : loading ? tx('authLoading', 'Please wait') : tx('authLoginAction', 'Sign in')}
                 </PrimaryButton>
               </div>
               <div className="flex-1">
