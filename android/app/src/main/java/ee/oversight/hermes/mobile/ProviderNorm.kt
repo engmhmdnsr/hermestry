@@ -66,9 +66,9 @@ val PROVIDER_ALIASES = mapOf(
 
 val KNOWN_PROVIDERS: Set<String> = PROVIDER_OPTIONS.map { it.first }.toSet()
 
-/** Normalize typed provider ids: trim, lowercase, whitespace -> dash, aliases -> canonical.
+/** Normalize typed provider ids: trim, lowercase, whitespace/underscore -> dash, aliases -> canonical.
  *  So "OpenCode GO" / "opencode go" / "go" all resolve to "opencode-go". */
 fun normProvider(p: String): String {
-  val slug = p.trim().lowercase().replace(Regex("\\s+"), "-")
+  val slug = p.trim().lowercase().replace(Regex("[\\s_]+"), "-")
   return PROVIDER_ALIASES[slug] ?: slug
 }

@@ -385,6 +385,11 @@ object Bootstrap {
         // dirs the gateway expects before the first run.
         File(fs, "root").mkdirs()
         File(fs, "tmp").mkdirs()
+        // DNS-01: the image may ship without /etc/resolv.conf; without it
+        // apt/pip inside the guest fail while the host is online. Seed public
+        // resolvers so a fresh install resolves from the first boot.
+        File(fs, "etc").mkdirs()
+        File(fs, "etc/resolv.conf").writeText("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
         File(fs, ".rootfs_ok").writeText("bookworm aarch64 one-shot")
         File(fs, ".image_ok").writeText(IMAGE_VERSION)
       } finally {

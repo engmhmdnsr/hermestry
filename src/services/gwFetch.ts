@@ -8,7 +8,15 @@ import { Capacitor, CapacitorHttp } from '@capacitor/core';
 // which runs on the native stack with no origin check; on web keep fetch.
 // The result is shaped as a real Response, so call sites stay unchanged.
 export async function gwFetch(input: string, init: RequestInit = {}): Promise<Response> {
-  if (!Capacitor.isNativePlatform()) return fetch(input, init);
+  if (!Capacitor.isNativePlatform()) {
+    // Native has connect/read timeouts below; a bare web fetch would hang
+    // forever on a stalled offline WebView, so default to a 15s deadline
+    // unless the caller already owns cancellation.
+    if (!init.signal && typeof AbortSignal.timeout === 'function') {
+      return fetch(input, { ...init, signal: AbortSignal.timeout(15000) });
+    }
+    return fetch(input, init);
+  }
   if (init.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   const method = (init.method || 'GET').toUpperCase();
   const headers: Record<string, string> = {};

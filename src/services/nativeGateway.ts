@@ -730,6 +730,9 @@ export async function nativeStreamPost(opts: {
       if (watchdog) clearTimeout(watchdog);
       watchdog = setTimeout(() => {
         watchdogSettled = true;
+        // The race below only settles the caller; the native connection keeps
+        // reading until it is aborted, so kill it here too.
+        onAbort();
         resolveWatchdog('error:watchdog idle timeout');
       }, WATCHDOG_IDLE_MS);
     };

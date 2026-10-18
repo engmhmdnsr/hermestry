@@ -110,10 +110,12 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ initialView = 'login',
   // Sign in button locks and counts down instead of firing dead attempts
   // that would extend the server-side lock.
   const [lockoutUntil, setLockoutUntil] = useState(0);
-  const [nowMs, setNowMs] = useState(() => Date.now());
+  // Monotonic clock: performance.now() is immune to wall-clock changes, so
+  // moving the device time can neither skip nor stretch the countdown.
+  const [nowMs, setNowMs] = useState(() => performance.now());
   useEffect(() => {
-    if (lockoutUntil <= Date.now()) return;
-    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    if (lockoutUntil <= performance.now()) return;
+    const id = window.setInterval(() => setNowMs(performance.now()), 1000);
     return () => window.clearInterval(id);
   }, [lockoutUntil]);
   const lockoutLeftMs = Math.max(0, lockoutUntil - nowMs);
@@ -154,7 +156,7 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ initialView = 'login',
 
   const handleLogin = async () => {
     clearFeedback();
-    if (lockoutUntil > Date.now()) return;
+    if (lockoutUntil > performance.now()) return;
     if (!email.trim() || !password) {
       setError(tx('authErrorGeneric', 'Something went wrong. Try again.'));
       return;
@@ -170,7 +172,7 @@ export const AuthScreens: React.FC<AuthScreensProps> = ({ initialView = 'login',
       if (/too many attempts/i.test(msg)) {
         // Server-side lock: park the button on a countdown so further taps
         // cannot extend the lock. A still-locked server re-arms it.
-        setLockoutUntil(Date.now() + AUTH_LOCKOUT_MS);
+        setLockoutUntil(performance.now() + AUTH_LOCKOUT_MS);
       }
       setError(msg);
     } finally {

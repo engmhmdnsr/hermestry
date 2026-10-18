@@ -262,6 +262,9 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     running: 'Running',
     stopped: 'Stopped',
     gatewayStarted: 'Service started',
+    startingGateway: 'Starting…',
+    startGatewayNow: 'Start gateway',
+    retryNeedsGateway: 'The Hermes server is not ready. Start it, then retry.',
     gatewayStopped: 'Service stopped',
     startDaemon: 'Start service',
     stopShort: 'Stop',
@@ -297,6 +300,8 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     pinRepeated: 'Repeated-digit PINs are not allowed. Choose a different one.',
     saveNewPin: 'Save New PIN',
     setPinEnable: 'Set PIN & Enable Lock',
+    enterCurrentPin: 'Enter current PIN to change it',
+    confirmCurrentPinFirst: 'Confirm your current PIN first via Disable flow, then set a new PIN.',
     discordBridge: 'Discord Bot Bridge',
     discordBridgeDesc: 'Optional bridge to chat with Hermes via Discord',
     botTokenPlaceholder: 'Bot token…',
@@ -367,6 +372,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
 
     // App lock gate
     tooManyAttempts: 'Too many wrong attempts. Try again in',
+    authRetryIn: 'Try again in',
     incorrectPin: 'Incorrect PIN.',
     attemptsLeft: 'attempts left',
     lockedTitle: 'Workspace Locked',
@@ -1679,6 +1685,9 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     running: 'يعمل',
     stopped: 'متوقف',
     gatewayStarted: 'بدأت الخدمة',
+    startingGateway: 'جارٍ التشغيل…',
+    startGatewayNow: 'تشغيل الخدمة',
+    retryNeedsGateway: 'خدمة ⁨Hermes⁩ غير جاهزة. شغّلها ثم أعد المحاولة.',
     gatewayStopped: 'توقفت الخدمة',
     startDaemon: 'تشغيل الخدمة',
     stopShort: 'إيقاف',
@@ -1714,6 +1723,8 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
     pinRepeated: 'الرموز ذات الأرقام المكررة غير مسموحة. اختر رمزاً آخر.',
     saveNewPin: 'حفظ الرمز الجديد',
     setPinEnable: 'تعيين الرمز وتفعيل القفل',
+    enterCurrentPin: 'أدخل رمز ⁨PIN⁩ الحالي لتغييره',
+    confirmCurrentPinFirst: 'أكّد رمز ⁨PIN⁩ الحالي أولاً من مسار التعطيل، ثم عيّن رمزاً جديداً.',
     discordBridge: 'جسر بوت ديسكورد',
     discordBridgeDesc: 'جسر اختياري للمحادثة مع هيرمس عبر ديسكورد',
     botTokenPlaceholder: 'رمز البوت…',
@@ -1784,6 +1795,7 @@ export const TRANSLATIONS: Record<string, Record<string, string>> = {
 
     // App lock gate
     tooManyAttempts: 'محاولات خاطئة كثيرة. حاول مجدداً بعد',
+    authRetryIn: 'حاول مجدداً بعد',
     incorrectPin: 'رمز ⁨PIN⁩ غير صحيح.',
     attemptsLeft: 'محاولات متبقية',
     lockedTitle: 'مساحة العمل مقفلة',

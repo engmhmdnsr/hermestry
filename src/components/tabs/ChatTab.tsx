@@ -2051,7 +2051,7 @@ export const ChatTab: React.FC<ChatTabProps> = ({ onGoSettings, isDesktop = fals
                       className="hm-hit r-xs min-h-[36px] px-4 bg-[var(--app-accent)] hover:bg-[var(--app-accent-hover)] text-[var(--app-on-accent)] t-caption font-semibold cursor-pointer disabled:opacity-60"
                     >
                       {startingGateway
-                        ? tx('startingGateway', 'Starting...')
+                        ? tx('startingGateway', 'Starting…')
                         : tx('startGatewayNow', 'Start gateway')}
                     </button>
                   )}

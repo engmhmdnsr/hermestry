@@ -3550,6 +3550,10 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           break;
         }
         case 'assistant.commentary': {
+          // A resumed run replays the full transcript with already_streamed
+          // set; without this guard the replayed commentary would be appended
+          // to the live bubble a second time.
+          if (data.already_streamed === true) break;
           const text = asString(data.text);
           if (text) {
             callbacks.onThinkingDone();
@@ -3820,8 +3824,10 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     // its thinking badge would be force-closed. Everything that touches shared
     // turn state therefore runs in this synchronous section, where these ids
     // still belong to the turn being stopped.
-    const stopToken = turnTokenRef.current;
+    // Claim the token first so the guard below compares against the value
+    // this stop owns: a newer turn started after this point changes it again.
     turnTokenRef.current += 1;
+    const stopToken = turnTokenRef.current;
     const stoppedAgentId = lastAgentMsgIdRef.current;
     const runId = activeRunId;
     if (abortControllerRef.current) {
