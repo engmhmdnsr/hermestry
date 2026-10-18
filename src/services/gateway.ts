@@ -481,6 +481,7 @@ export class GatewayService {
   }
 
   private normalizeMessage(m: any, sessionId: string, idx: number): ChatMessage {
+    const rawTools = m.toolOutputs ?? m.tool_outputs ?? m.toolResults ?? [];
     return {
       id: m.id || `${sessionId}-msg-${idx}`,
       sender: m.role === 'assistant' ? 'hermes' : 'you',
@@ -488,6 +489,9 @@ export class GatewayService {
       thinking: m.thinking || '',
       thinkingDone: true,
       tools: m.tools || [],
+      // Tool results ride every live turn in memory; dropping them here made
+      // a server reload silently lose them. Tolerate server key variants.
+      toolOutputs: Array.isArray(rawTools) ? rawTools : [],
       timestamp: m.created_at ? m.created_at * 1000 : Date.now(),
     };
   }

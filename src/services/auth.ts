@@ -1,5 +1,6 @@
 import { isNativeGateway, nativeSecretGet, nativeSecretSet } from './nativeGateway';
 import { gwFetch } from './gwFetch';
+import { clearKnownSecrets } from './redaction';
 
 // Origin root only: every call site already carries the /api prefix
 // (unauthedFetch + the two direct account calls), so the base must NOT
@@ -244,6 +245,9 @@ export async function clearAuthStorage(): Promise<void> {
   memRefresh = null;
   memUser = null;
   loaded = true;
+  // The scrub registry holds live token values for log redaction: leaving
+  // them registered after logout keeps secrets in memory for no reason.
+  clearKnownSecrets();
   if (isNative()) {
     await Promise.all([
       nativeSet(NATIVE_ACCESS, ''),
@@ -445,7 +449,11 @@ async function doRefresh(): Promise<string | null> {
         body: JSON.stringify({ refresh_token: rt }),
       });
       if (!res.ok) {
-        await clearAuthStorage();
+        // Only a rejected refresh (401/403) means the session is dead.
+        // A 5xx or a timeout is the server (or the network) failing, not the
+        // user: keep the tokens so the next attempt retries instead of
+        // logging the user out over a transient blip.
+        if (res.status === 401 || res.status === 403) await clearAuthStorage();
         return null;
       }
       const data = await parseJsonSafe(res);
@@ -460,7 +468,9 @@ async function doRefresh(): Promise<string | null> {
       if (u) await persistUser(u);
       return accessToken;
     } catch {
-      await clearAuthStorage();
+      // Transport failure (offline, DNS, timeout): the tokens may still be
+      // good. Keep them and let the caller retry; only an explicit server
+      // rejection above wipes the session.
       return null;
     } finally {
       refreshFlight = null;
@@ -698,7 +708,7 @@ export async function listSessions(): Promise<SessionInfo[]> {
 }
 
 export async function revokeSession(sessionId: string): Promise<void> {
-  const res = await authedFetch(`/auth/sessions/${encodeURIComponent(sessionId)}`, {
+  const res = await authedFetch(`/api/auth/sessions/${encodeURIComponent(sessionId)}`, {
     method: 'DELETE',
   });
   const data = await parseJsonSafe(res);
@@ -730,7 +740,7 @@ export async function addCredential(payload: AddCredentialPayload): Promise<Cred
 }
 
 export async function deleteCredential(id: string): Promise<void> {
-  const res = await authedFetch(`/auth/credentials/${encodeURIComponent(id)}`, {
+  const res = await authedFetch(`/api/auth/credentials/${encodeURIComponent(id)}`, {
     method: 'DELETE',
   });
   const data = await parseJsonSafe(res);

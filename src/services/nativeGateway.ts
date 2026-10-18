@@ -616,6 +616,7 @@ export async function nativeRestart(): Promise<void> {
 // stream, so the POST runs on HttpURLConnection and ships raw bytes as
 // base64 chunks. Resolves 'done' on clean EOF, 'cancelled' on abort,
 // 'error' otherwise; non-2xx goes through onStatus like res.ok handling.
+let streamSeq = 0;
 export async function nativeStreamPost(opts: {
   url: string;
   headers: Record<string, string>;
@@ -632,7 +633,10 @@ export async function nativeStreamPost(opts: {
 }): Promise<'done' | 'cancelled' | 'error' | string> {
   const plugin = getPlugin();
   if (!plugin || typeof plugin.streamPost !== 'function') return 'error';
-  const id = `s${Date.now().toString(36)}${Math.floor(Math.random() * 0xffff).toString(36)}`;
+  // Monotonic per-process suffix: two streams started in the same ms no
+  // longer share a listener id (16-bit Math.random collided every ~65k).
+  streamSeq = (streamSeq + 1) % 1296;
+  const id = `s${Date.now().toString(36)}${streamSeq.toString(36)}${Math.floor(Math.random() * 0xffff).toString(36)}`;
   const subs: Array<{ remove: () => void }> = [];
   let settle: ((v: 'done' | 'cancelled' | string) => void) | null = null;
   const finished = new Promise<'done' | 'cancelled' | string>((resolve) => {
@@ -739,7 +743,20 @@ export async function nativeStreamPost(opts: {
     noteActivity = armWatchdog;
     armWatchdog();
     try {
-      await plugin.streamPost({ id, url: opts.url, headers: opts.headers, body: opts.body });
+      // The start call itself must race the watchdog: a hung bridge start
+      // never resolves, and awaiting it first would leave the watchdog
+      // firing with nobody listening. The mapped branch absorbs the loser's
+      // settlement, so neither side is ever an unhandled rejection.
+      const startOutcome: string = await Promise.race([
+        plugin.streamPost({ id, url: opts.url, headers: opts.headers, body: opts.body }).then(
+          () => 'started',
+          () => 'start-failed',
+        ),
+        watchdogPromise,
+      ]);
+      // A rejected start used to throw straight to 'error': keep that.
+      if (startOutcome === 'start-failed') return 'error';
+      if (startOutcome !== 'started') return startOutcome;
       const result = await Promise.race([finished, watchdogPromise]);
       return result as 'done' | 'cancelled' | 'error' | string;
     } finally {

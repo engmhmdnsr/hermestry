@@ -130,6 +130,13 @@ export const registerKnownSecrets = (values: Array<string | undefined | null>): 
   if (registeredSecrets.length > 24) registeredSecrets = registeredSecrets.slice(-24);
 };
 
+/** Drop every registered secret value: called from clearAuthStorage so tokens
+ *  stop lingering in memory after logout / account wipe. Registration stays
+ *  append-only during a session; this is the only reset. */
+export const clearKnownSecrets = (): void => {
+  registeredSecrets = [];
+};
+
 // Deep-clone a value with secrets redacted by key name AND by content.
 // Strings are passed through redactText; object keys use isSensitiveKey;
 // knownSecrets lets callers also scrub live vault values (LOG-01).

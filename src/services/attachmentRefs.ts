@@ -122,6 +122,19 @@ export function previewUrlFor(ref: AttachmentRef): string | undefined {
   if (!blob) return undefined;
   const hit = previewUrls.get(ref.localRef);
   if (hit) return hit;
+  // Bound the derived-URL cache: Map iterates in insertion order, so the
+  // first key is the oldest. Evicting only revokes the object URL; the Blob
+  // stays in the registry, so the preview is recreated on demand.
+  if (previewUrls.size >= 30) {
+    const oldest = previewUrls.keys().next();
+    if (!oldest.done) {
+      const oldKey = oldest.value;
+      try {
+        URL.revokeObjectURL(previewUrls.get(oldKey)!);
+      } catch {}
+      previewUrls.delete(oldKey);
+    }
+  }
   const url = URL.createObjectURL(blob);
   previewUrls.set(ref.localRef, url);
   return url;

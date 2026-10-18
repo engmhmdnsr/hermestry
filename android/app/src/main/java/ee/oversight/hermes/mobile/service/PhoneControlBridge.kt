@@ -93,6 +93,11 @@ object PhoneControlBridge {
 
   private fun handle(sock: Socket) {
     sock.use { s ->
+      // Bound every read: Content-Length counts bytes but the body is read
+      // as chars, so a multibyte body would park a pool thread forever on a
+      // keep-alive socket. A timeout turns that into a 500, not a leak.
+      // (Bodies here are tiny ASCII JSON; this only bounds the damage.)
+      try { s.soTimeout = 15_000 } catch (_: Exception) {}
       try {
         val reader = BufferedReader(InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8))
         val requestLine = reader.readLine() ?: return

@@ -1135,6 +1135,25 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
                 except OSError:
                     pass
                 raise
+            # Retention: snapshots accumulate one file per tap. Backups are
+            # user exports, so keep the newest 20 (debug bundles keep 5);
+            # without any cap repeated taps fill the disk.
+            try:
+                snaps = sorted(
+                    (
+                        f
+                        for f in os.listdir(out_dir)
+                        if f.startswith("hermes-") and f.endswith(".json")
+                    ),
+                    reverse=True,
+                )
+                for stale in snaps[20:]:
+                    try:
+                        os.unlink(os.path.join(out_dir, stale))
+                    except OSError:
+                        pass
+            except OSError:
+                pass
             base = os.path.basename(out_path)
             return web.json_response(
                 {
@@ -1167,7 +1186,7 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
                 return web.json_response({"ok": False, "message": "bad snapshot name"}, status=400)
             if not os.path.isfile(fp):
                 return web.json_response({"ok": False, "message": "snapshot not found"}, status=404)
-            safe_name = name.replace('"', "_").replace("\r", "_").replace("\n", "_")
+            safe_name = name.replace('"', "_").replace("\r", "_").replace("\n", "_").replace(";", "_").replace("\\", "_").replace("/", "_")
             return web.FileResponse(fp, headers={"Content-Disposition": f'attachment; filename="{safe_name}"'})
         except Exception as exc:
             return web.json_response({"ok": False, "message": "Could not read the snapshot file."}, status=500)
@@ -1225,6 +1244,11 @@ def _http_routes(api) -> list[tuple[str, str, Any]]:
                 try:
                     with os.fdopen(fd, "w", encoding="utf-8") as fh:
                         json.dump(sanitize_secrets(item["data"]), fh, indent=2, default=str)
+                        # Durability before the atomic rename: a crash between
+                        # write and replace must not leave a truncated session
+                        # file behind. flush + fsync pushes the bytes to disk.
+                        fh.flush()
+                        os.fsync(fh.fileno())
                     os.replace(tmp, fp)
                 except BaseException:
                     try:

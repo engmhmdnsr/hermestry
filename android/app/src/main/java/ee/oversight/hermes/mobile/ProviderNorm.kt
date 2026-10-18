@@ -60,6 +60,7 @@ val PROVIDER_ALIASES = mapOf(
   "tencent-cloud" to "tencent-tokenhub", "tencentmaas" to "tencent-tokenhub",
   "tokenplan" to "tencent-tokenplan", "tencent-lkeap" to "tencent-tokenplan",
   "go" to "opencode-go", "opencode-go-sub" to "opencode-go",
+  "opencode-go-api" to "opencode-go", "opencode_go" to "opencode-go",
   "kilo" to "kilocode", "kilo-code" to "kilocode", "kilo-gateway" to "kilocode",
   "lm-studio" to "lmstudio", "lm_studio" to "lmstudio"
 )

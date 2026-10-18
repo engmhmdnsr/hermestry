@@ -34,13 +34,23 @@ export const migrateV1toV2: Migration = (parsed) => {
   if (providers.length === 0) {
     const provider = next.provider;
     const apiKey = next.apiKey;
-    if (typeof provider === 'string' && provider && typeof apiKey === 'string' && apiKey) {
+    // Keyless local providers (lmstudio/ollama) carry an empty key by
+    // design: requiring a non-empty key here dropped a working v1 keyless
+    // setup to an empty list, and the guard below then wiped the selection.
+    const flatNorm =
+      typeof provider === 'string' ? provider.toLowerCase().replace(/[\s_]+/g, '-') : '';
+    const flatKeyless = flatNorm !== '' && KEYLESS_MIGRATION_OK.has(flatNorm);
+    if (
+      typeof provider === 'string' &&
+      provider &&
+      ((typeof apiKey === 'string' && apiKey) || flatKeyless)
+    ) {
       providers = [
         {
           id: 'prov_' + provider,
           provider,
           name: provider.toUpperCase(),
-          apiKey,
+          apiKey: typeof apiKey === 'string' ? apiKey : '',
           baseUrl: typeof next.baseUrl === 'string' ? next.baseUrl : '',
           defaultModel: typeof next.modelId === 'string' ? next.modelId : '',
           enabled: true,
@@ -52,8 +62,14 @@ export const migrateV1toV2: Migration = (parsed) => {
   providers = providers.filter((p) => !(p.id === 'prov_deepseek_default' && !p.apiKey));
   next.providers = providers;
   if (typeof next.provider === 'string' && next.provider) {
+    // Compare normalized: a stored 'LMStudio'/'lm_studio' is the same
+    // provider as the lowercase keyless set, not a dead selection.
+    const activeNorm = next.provider.toLowerCase().replace(/[\s_]+/g, '-');
     const hasKeyed = providers.some(
-      (p) => p.provider === next.provider && (!!p.apiKey || KEYLESS_MIGRATION_OK.has(p.provider))
+      (p) =>
+        typeof p.provider === 'string' &&
+        p.provider.toLowerCase().replace(/[\s_]+/g, '-') === activeNorm &&
+        (!!p.apiKey || KEYLESS_MIGRATION_OK.has(activeNorm)),
     );
     if (!hasKeyed) {
       next.provider = '';

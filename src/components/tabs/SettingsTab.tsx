@@ -2271,7 +2271,7 @@ export const SettingsTab: React.FC = () => {
       settings.appLockPin,
       ...configuredProviders.map((p) => p.apiKey || ''),
     ];
-    const preLeaked = assertNoPlaintextSecrets({ preflight: 'bundle', secrets: preSecrets.filter(Boolean).length ? 'has-keys' : '' }, []);
+    const preLeaked = assertNoPlaintextSecrets({ preflight: 'bundle' }, preSecrets.filter(Boolean));
     // Also run assert on a synthetic bundle preview; if it trips, abort without calling the gateway
     if (preLeaked.length > 0) {
       const blocked = `${tx('debugFailedPlain', 'The diagnostics bundle was not exported. Try again.')} (${preLeaked.join(', ')})`;

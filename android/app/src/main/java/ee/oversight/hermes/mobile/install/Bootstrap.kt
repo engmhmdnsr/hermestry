@@ -397,6 +397,14 @@ object Bootstrap {
       }
     } else onStep("prebuilt image ready")
 
+    // DNS-01 for the prebuilt path too: it skips the extraction block above,
+    // so a prebuilt image without /etc/resolv.conf would boot DNS-blind.
+    // Rewriting every boot is idempotent and keeps both paths identical.
+    try {
+      File(fs, "etc").mkdirs()
+      File(fs, "etc/resolv.conf").writeText("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
+    } catch (_: Exception) { onStep("resolv seed skipped (unwritable)") }
+
     val bad = verifyRootfs(fs)
     if (bad.isEmpty()) {
       onStep("rootfs check: loader + libc OK")
@@ -819,7 +827,11 @@ object Bootstrap {
       val f = File(dest, r)
       // Reject ../ escapes: real Debian tars never emit them; fail the link
       // loudly (pending -> throw) instead of resolving outside the rootfs.
-      val canon = try { f.canonicalPath } catch (_: Exception) { return f }
+      // canonicalPath throws only on real fs errors: failing open here would
+      // skip the containment check below, so fail closed instead.
+      val canon = try { f.canonicalPath } catch (_: Exception) {
+        throw IllegalArgumentException("unresolvable link target: $raw")
+      }
       require(canon == destCanon || canon.startsWith(destCanon + File.separator)) {
         "link target escapes rootfs: $raw"
       }

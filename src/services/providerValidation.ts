@@ -36,10 +36,14 @@ export const VALIDATION_MAX_AGE_MS = 5 * 60 * 1000;
 // compared, cached and logged, so the credential must stay out of it.
 export function validationFingerprint(input: ProviderValidationInput): string {
   const key = (input.apiKey || '').trim();
+  // Normalize the URL the same way every writer does: GatewayService trims
+  // and strips trailing slashes, so the fingerprint must too, or the same
+  // endpoint with and without a trailing slash caches as two identities.
+  const base = (input.baseUrl || '').trim().replace(/\/+$/, '');
   return [
     normProvider(input.provider || ''),
     key ? `k${key.length}:${keySignature(key)}` : 'k0',
-    (input.baseUrl || '').trim(),
+    base,
   ].join('|');
 }
 

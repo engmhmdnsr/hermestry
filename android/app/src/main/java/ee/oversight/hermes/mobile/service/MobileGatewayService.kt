@@ -796,8 +796,13 @@ class MobileGatewayService : Service() {
       appendLog("no provider key stored for $provider, the gateway will start without credentials")
     }
     // base_url is independent of the key: export whenever present and mapped.
-    prefs.getString("provider_base_url", "").orEmpty().ifBlank { null }?.let { baseUrl ->
-      providerBaseUrlEnv(provider)?.let { pb.environment()[it] = baseUrl }
+    // A custom provider id has no mapped env var (else -> null below): that
+    // used to drop the URL silently, so say so in the log instead.
+    val baseUrl = prefs.getString("provider_base_url", "").orEmpty().ifBlank { null }
+    val baseUrlEnv = providerBaseUrlEnv(provider)
+    if (baseUrl != null) {
+      if (baseUrlEnv != null) pb.environment()[baseUrlEnv] = baseUrl
+      else appendLog("custom provider base_url has no mapped env var; ignoring")
     }
     SecurePrefs.getString(this, SecurePrefs.KEY_TG).ifBlank { null }?.let {
       pb.environment()["TELEGRAM_BOT_TOKEN"] = it

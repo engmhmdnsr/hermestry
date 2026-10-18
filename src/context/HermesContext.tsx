@@ -1052,13 +1052,6 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     next: HermesSettings,
     mirror?: PersistMirror
   ): Promise<void> => {
-    secretsRef.current = {
-      apiKey: next.apiKey,
-      serverKey: next.serverKey,
-      tgToken: next.tgToken,
-      discordToken: next.discordToken,
-      appLockPin: next.appLockPin,
-    };
     setSettingsSaveState('saving');
     try {
       if (next.appLockEnabled && !vaultLocked()) {
@@ -1124,6 +1117,16 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         next.appLockPin,
         ...(next.providers || []).map((p) => (p as ConfiguredProvider).apiKey as string),
       ]);
+      // In-memory secrets follow the disk, not the form: assigning the ref
+      // before the writes meant a failed save left the runtime using values
+      // the settings state (and the vault) never stored.
+      secretsRef.current = {
+        apiKey: next.apiKey,
+        serverKey: next.serverKey,
+        tgToken: next.tgToken,
+        discordToken: next.discordToken,
+        appLockPin: next.appLockPin,
+      };
       // 'saved' is honest only here: every write above resolved without throw.
       setSettingsSaveError(null);
       setSettingsSaveState('saved');
@@ -3303,6 +3306,11 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     // Read the current id from the ref: state here can predate a session
     // switch racing this delete and would leave a dangling current id.
     if (currentSessionIdRef.current === id) {
+      // Deleting the session that is streaming right now: stop the turn
+      // first, or its late events keep dispatching into whatever session is
+      // selected next (or into an empty chat). stopStream's synchronous
+      // section aborts and clears immediately, so no await is needed here.
+      if (streamingRef.current) stopStream();
       if (updated.length > 0) selectSession(updated[0].id);
       else {
         setCurrentSessionId(null);
@@ -3442,19 +3450,31 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     // takes the stream instead (see the reader try below).
     const nativeStream = isNativeGateway();
     let res: Response | null = null;
+    // Connect watchdog with teeth: the old code set a flag and called
+    // .abort() on the AbortSignal, which has no such method, so a hung
+    // connect hung forever. This controller merges the 15s connect deadline
+    // with the caller's stop signal; the catch below already checks the
+    // timeout flag first, so a deadline abort reads as unreachable while a
+    // user abort still reads as stopped.
+    let webConnectCtrl: AbortController | null = null;
     let webConnectTimer: ReturnType<typeof setTimeout> | null = null;
     let webConnectTimedOut = false;
     if (!nativeStream) {
+      webConnectCtrl = new AbortController();
+      if (abortSignal) {
+        if (abortSignal.aborted) webConnectCtrl.abort();
+        else abortSignal.addEventListener('abort', () => webConnectCtrl?.abort(), { once: true });
+      }
       webConnectTimer = setTimeout(() => {
         webConnectTimedOut = true;
-        try { (abortSignal as unknown as AbortController)?.abort?.(); } catch {}
+        try { webConnectCtrl?.abort(); } catch {}
       }, 15000);
     }
     if (!nativeStream) {
       try {
         const webRes = await fetch(
           `http://127.0.0.1:8080/api/sessions/${encodeURIComponent(sessionId)}/chat/stream`,
-          { method: 'POST', headers, body: JSON.stringify(body), signal: abortSignal }
+          { method: 'POST', headers, body: JSON.stringify(body), signal: webConnectCtrl ? webConnectCtrl.signal : abortSignal }
         );
         if (webConnectTimer) { clearTimeout(webConnectTimer); webConnectTimer = null; }
         if (webConnectTimedOut) {
@@ -3658,6 +3678,10 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               // it would otherwise read as a dropped connection.
               sawTerminal = true;
             } else {
+              // Same resume-replay guard as the named delta/commentary cases:
+              // replayed transcript chunks on an unknown event name must not
+              // duplicate text already on screen.
+              if (data.already_streamed === true) break;
               const text = asString(data.delta || data.text || data.content);
               if (text) {
                 callbacks.onThinkingDone();
@@ -3782,6 +3806,11 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       for (;;) {
         const { done, value } = await bodyReader.read();
         if (done) break;
+        // Any bytes at all are proof the gateway is alive: long tool runs
+        // send only keepalive comments, which the parser swallows without
+        // dispatching. Mirror the native onProgress reset so a quiet but
+        // healthy turn never trips the stall timer on web.
+        resetStallTimer();
         const chunk = decoder.decode(value, { stream: true });
         for (const ev of parser.feed(chunk)) dispatch(ev);
       }
@@ -3935,7 +3964,16 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       cut -= 1;
     }
     const cleanHistory = cut === initialHistory.length ? initialHistory : initialHistory.slice(0, cut);
-    const initialChat = [...cleanHistory, userMessage, agentMessage];
+    // Retry-after-failure reuses the same user text: after trimming the
+    // failed agent bubble, the original user message is the tail. Appending
+    // a copy would show the user's message twice, so drop the tail twin.
+    // (Normal sends always end on a hermes bubble, so this is a no-op there.)
+    let sendHistory = cleanHistory;
+    const tail = sendHistory[sendHistory.length - 1];
+    if (tail && tail.sender === 'you' && (tail.content || '') === trimmed) {
+      sendHistory = sendHistory.slice(0, -1);
+    }
+    const initialChat = [...sendHistory, userMessage, agentMessage];
     gatewayService.saveLocalMessages(sid, initialChat);
     setChat(initialChat);
 
@@ -4265,7 +4303,22 @@ export const HermesProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         addLog('Queued message kept: chat switched before delivery.');
         return;
       }
-      sendMessage(next.text, next.images);
+      // Re-check reachability inside the window: the gateway may have
+      // dropped in those 300ms, and sendMessage's failure would lose a
+      // message that was already popped from the queue.
+      if (streamingRef.current || !connectedRef.current) {
+        queuedRef.current = [next, ...queuedRef.current];
+        setQueuedMessages([...queuedRef.current]);
+        persistOutbox(queuedRef.current);
+        return;
+      }
+      const ok = sendMessage(next.text, next.images);
+      if (!ok) {
+        queuedRef.current = [next, ...queuedRef.current];
+        setQueuedMessages([...queuedRef.current]);
+        persistOutbox(queuedRef.current);
+        addLog('Queued message kept: send failed, will retry on reconnect.');
+      }
     }, 300);
   };
 
